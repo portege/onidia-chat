@@ -1,0 +1,17 @@
+# Binaries
+*.exe
+*.test
+chat-app
+chat_live_test.go
+*_test.go
+e2e_test*.go
+repro*_test.go
+url_default_test.go
+
+# Debug frame dumps
+pet_*.png
+
+# Other
+.env
+go.work
+go.work.sumgeminitest
