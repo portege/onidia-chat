@@ -134,6 +134,12 @@ func main() {
 		forceImage = flag.String("force-image", "", "always fetch/generate an image for this keyword (testing)")
 		pixabayKey = flag.String("pixabay-key", "",
 			"Pixabay API key for image replies (default: $PIXABAY_API_KEY, config pixabay-key, or built-in)")
+		ttsFlag = flag.String("tts", "",
+			`speech replies: "on" (default, needs Typecast + aplay/paplay/ffplay) | "off"`)
+		ttsKey = flag.String("tts-key", "",
+			"Typecast API key for spoken replies (default: $TYPECAST_API_KEY, config tts-key, or built-in)")
+		ttsVoice = flag.String("tts-voice", "",
+			"Typecast voice id for spoken replies (default: config tts-voice, or built-in)")
 	)
 	flag.Parse()
 
@@ -289,6 +295,26 @@ func main() {
 		forceImg = cfg.ForceImage
 	}
 
+	// TTS: explicit -tts flag > config file > on by default. Key/voice:
+	// explicit flag > $TYPECAST_API_KEY > config file > built-in default.
+	ttsVal := strings.ToLower(strings.TrimSpace(*ttsFlag))
+	if ttsVal == "" && cfg != nil {
+		ttsVal = strings.ToLower(strings.TrimSpace(cfg.TTS))
+	}
+	ttsOn := ttsVal != "off"
+	ttsKeyVal := strings.TrimSpace(*ttsKey)
+	if ttsKeyVal == "" {
+		if envKey := os.Getenv("TYPECAST_API_KEY"); envKey != "" {
+			ttsKeyVal = strings.TrimSpace(envKey)
+		} else if cfg != nil {
+			ttsKeyVal = strings.TrimSpace(cfg.TTSKey)
+		}
+	}
+	ttsVoiceVal := strings.TrimSpace(*ttsVoice)
+	if ttsVoiceVal == "" && cfg != nil {
+		ttsVoiceVal = strings.TrimSpace(cfg.TTSVoice)
+	}
+
 	// -fetch-image tests the resolved source's fetch path (the gemini source
 	// has its own -gen-image probe).
 	if *fetchImageFlag != "" {
@@ -392,9 +418,33 @@ func main() {
 		log.Printf("pet: replies go to %s", pipe)
 	}
 
+	// Text-to-speech: the bubble shows immediately; the reply text is queued
+	// and spoken (via Typecast -> aplay/paplay/ffplay) as soon as it's ready.
+	tts := NewTTS(ttsOn, ttsKeyVal, ttsVoiceVal)
+	tts.Start()
+	defer tts.Close()
+	if tts.Enabled() {
+		log.Printf("tts: on (voice %s, player %s)", tts.voiceID, filepath.Base(tts.player))
+	} else if ttsOn {
+		log.Printf("tts: on but no audio player available - speech disabled")
+	} else {
+		log.Printf("tts: off")
+	}
+
 	dirty := true
 	caret := time.NewTicker(530 * time.Millisecond)
 	defer caret.Stop()
+
+	// Header-drag state: pressing the frameless header and moving beyond a
+	// small threshold hands the drag to the WM via _NET_WM_MOVERESIZE; a
+	// plain click (no movement) still toggles collapse on release.
+	const dragThreshold = 4 // px of movement that turns a click into a drag
+	var (
+		pressW                 Widget
+		pressX, pressY         int // window-relative press point
+		pressRootX, pressRootY int // root-relative press point
+		dragging               bool
+	)
 
 	log.Printf("ui ready - type in the textarea, press enter or SEND")
 	for {
@@ -412,7 +462,16 @@ func main() {
 				}
 			case EvMouse:
 				if ev.Pressed {
-					ui.Press(ui.HitTest(ev.X, ev.Y))
+					pressW = ui.HitTest(ev.X, ev.Y)
+					pressX, pressY = ev.X, ev.Y
+					pressRootX, pressRootY = ev.RootX, ev.RootY
+					dragging = false
+					ui.Press(pressW)
+				} else if dragging {
+					// Release that ended a WM drag: not a click, so no
+					// collapse toggle. (The WM consumes the real release;
+					// this is the synthetic one from our UngrabPointer.)
+					ui.press = WNone
 				} else {
 					if ui.Release(ui.HitTest(ev.X, ev.Y)) {
 						// Header clicked: collapse/expand and resize the
@@ -425,6 +484,13 @@ func main() {
 				}
 				dirty = true
 			case EvMotion:
+				if pressW == WHeader && !dragging {
+					dx, dy := ev.X-pressX, ev.Y-pressY
+					if dx*dx+dy*dy >= dragThreshold*dragThreshold {
+						dragging = true
+						win.StartMove(pressRootX, pressRootY)
+					}
+				}
 				if wd := ui.HitTest(ev.X, ev.Y); wd != ui.hover {
 					ui.SetHover(wd)
 					switch wd {
@@ -456,6 +522,8 @@ func main() {
 			} else {
 				ui.AddMsg(ui.Bot.Name, reply.Text)
 			}
+			// Speak the reply at the same time the bubble appears.
+			tts.Speak(reply.Text)
 			dirty = true
 		case <-caret.C:
 			ui.caret = !ui.caret

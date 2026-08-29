@@ -29,6 +29,9 @@ type Config struct {
 	ImageSource      string `ini:"image-source"`        // "pixabay" | "wiki" | "gemini" | "off"
 	PixabayKey       string `ini:"pixabay-key"`         // Pixabay API key (empty = env/built-in default)
 	ForceImage       string `ini:"force-image"`         // always fetch image for this keyword
+	TTS              string `ini:"tts"`                 // "on" (default) | "off"
+	TTSKey           string `ini:"tts-key"`             // Typecast API key
+	TTSVoice         string `ini:"tts-voice"`           // Typecast voice id
 	Provider         string `ini:"provider"`            // "gemini" | "bedrock"
 	AWSProfile       string `ini:"aws-profile"`         // AWS shared profile name
 	AWSRegion        string `ini:"aws-region"`          // AWS region for Bedrock
@@ -128,6 +131,12 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.PixabayKey = val
 	case "force-image":
 		cfg.ForceImage = val
+	case "tts":
+		cfg.TTS = val
+	case "tts-key":
+		cfg.TTSKey = val
+	case "tts-voice":
+		cfg.TTSVoice = val
 	case "provider":
 		cfg.Provider = val
 	case "aws-profile":

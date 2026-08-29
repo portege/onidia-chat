@@ -26,6 +26,8 @@ const (
 type Event struct {
 	Type    EventType
 	X, Y    int // pointer position, window-relative
+	RootX   int // pointer position, root-relative (for _NET_WM_MOVERESIZE)
+	RootY   int
 	W, H    int // new window size (EvResize)
 	N       int // scroll notches: +1 toward newer, -1 toward older
 	Button  uint8
@@ -74,7 +76,8 @@ func (w *Win) pumpEvents() {
 					grabbed = true
 				}
 				send(Event{Type: EvMouse, Button: 1, Pressed: true,
-					X: int(e.EventX), Y: int(e.EventY)})
+					X: int(e.EventX), Y: int(e.EventY),
+					RootX: int(e.RootX), RootY: int(e.RootY)})
 			case 4: // wheel up -> older messages
 				send(Event{Type: EvScroll, N: -1})
 			case 5: // wheel down -> newer messages

@@ -32,6 +32,8 @@ reply is shown inside her speech bubble as well.
   turns as context, and parses an optional `[mood]` tag out of each answer.
 - ✅ **The pet bridge**: `pet.go` writes `[mood] [image pic.png] text` to the pet's
   say-FIFO — best-effort and non-blocking; no pet running? It just skips.
+- ✅ **Text-to-speech**: each reply is spoken aloud via the Typecast API while
+  its bubble is showing (`tts.go` → `aplay`/`paplay`/`ffplay`; async + queued).
 
 ## Wire in your Gemini key
 
@@ -76,6 +78,9 @@ message plus a hint). The key is read from `-api-key`, `$GEMINI_API_KEY`, or
 -fetch-image "Bali"           test the configured image fetch path, then exit (no window)
 -gen-image "robot in Bali"    test the Gemini image generation path, then exit
 -pet-pipe /tmp/path.say       say FIFO (default: auto from $DISPLAY; "off" disables)
+-tts on|off                   speak replies aloud via Typecast (default: on)
+-tts-key KEY                  Typecast API key (default: $TYPECAST_API_KEY, config tts-key, or built-in)
+-tts-voice vc_xxx             Typecast voice id (default: config tts-voice, or built-in)
 -w 380 -h 520                window width and expanded height (starts collapsed)
 -preview                      headless PNG previews, no display needed
 ```
@@ -114,6 +119,13 @@ aws-region = us-east-1
 #   off            - disable forwarding
 #   /absolute/path - write to this exact FIFO
 pet-pipe = auto
+
+# Text-to-speech: speak each reply aloud through the Typecast API while its
+# bubble shows. Requires aplay/paplay/ffplay on PATH and $TYPECAST_API_KEY
+# (or the bundled demo key). Set tts = off to disable.
+tts = on
+# tts-key = your-typecast-key
+# tts-voice = tc_6359e7f6467f9e240b68292c
 
 # Single-line system instruction:
 # system-prompt = You are a terse Linux expert.
@@ -264,6 +276,7 @@ Or without make: `go build -trimpath -ldflags="-s -w" -o chat-app .`
 | click **SEND** | submit (only enabled while the textarea has text) |
 | click textarea | focus it (border turns teal, caret blinks) |
 | click **header** | collapse/expand the conversation history (starts collapsed) |
+| **drag** the header | move the window (`_NET_WM_MOVERESIZE`; the frame has no titlebar) |
 | click **✕** (header, far right) | quit the app |
 | **Alt+F4** | quit too (the WM delete protocol stays enabled) |
 | wheel over history | scroll toward older / newer messages |
@@ -296,6 +309,7 @@ you ──▶ textarea ──▶ SEND/Enter ──▶ UI appends your bubble, sh
 ├── font.go        5×7 bitmap font (+true lowercase) and draw primitives
 ├── chat.go        the brain: Gemini client, persona, mood-tag handling
 ├── pet.go         desktop-pet say-FIFO bridge (non-blocking writes)
+├── tts.go         Typecast text-to-speech (async fetch + aplay/paplay/ffplay)
 ├── preview.go     -preview PNG renderer (like the pet's -debug mode)
 ├── x11win.go      ARGB window setup, WM hints, cursors, keyboard mapping
 ├── x11draw.go     frame upload (chunked PutImage)

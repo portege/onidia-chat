@@ -15,3 +15,4 @@ pet_*.png
 .env
 go.work
 go.work.sumgeminitest
+chat-app.ini

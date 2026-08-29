@@ -33,6 +33,7 @@ type Win struct {
 	cursorText    xproto.Cursor // XC_xterm over the textarea
 
 	atomDeleteWindow xproto.Atom
+	atomMoveResize   xproto.Atom // _NET_WM_MOVERESIZE (frameless header drag)
 
 	// Logical window size (tracks the WM's ConfigureNotify requests).
 	winW, winH int
@@ -148,6 +149,7 @@ func Open(w, h int) (*Win, error) {
 func (w *Win) setupHints() {
 	utf8 := mustInternAtom(w.conn, "UTF8_STRING")
 	w.atomDeleteWindow = mustInternAtom(w.conn, "WM_DELETE_WINDOW")
+	w.atomMoveResize = mustInternAtom(w.conn, "_NET_WM_MOVERESIZE")
 	w.setStrProp(mustInternAtom(w.conn, "WM_NAME"), utf8, "chat - ai-helper")
 	w.setStrProp(mustInternAtom(w.conn, "_NET_WM_NAME"), utf8, "chat - ai-helper")
 	w.setStrProp(mustInternAtom(w.conn, "WM_CLASS"), xproto.AtomString, "chat-app\x00ChatApp\x00")
@@ -212,6 +214,37 @@ func (w *Win) Resize(width, height int) {
 	xproto.ConfigureWindow(w.conn, w.win,
 		xproto.ConfigWindowWidth|xproto.ConfigWindowHeight,
 		[]uint32{uint32(width), uint32(height)})
+}
+
+// StartMove hands control to the window manager so it can drag the window
+// (the window is frameless, so the header is our only drag handle). rootX/Y
+// are the pointer position at button-press. The WM grabs the pointer itself,
+// so our own button-grab is released first or the WM's grab cannot arm.
+func (w *Win) StartMove(rootX, rootY int) {
+	if w.closed {
+		return
+	}
+	xproto.UngrabPointer(w.conn, xproto.TimeCurrentTime)
+	const netWMMoveResizeMove = 8 // _NET_WM_MOVERESIZE_MOVE
+	u := xproto.ClientMessageDataUnionData32New([]uint32{
+		uint32(rootX), uint32(rootY),
+		netWMMoveResizeMove, 1, 1, // direction=move, button=left, source=application
+	})
+	ev := xproto.ClientMessageEvent{
+		Format: 32,
+		Window: w.win,
+		Type:   w.atomMoveResize,
+		Data:   u,
+	}
+	b := ev.Bytes()
+	if len(b) < 32 {
+		buf := make([]byte, 32)
+		copy(buf, b)
+		b = buf
+	}
+	xproto.SendEvent(w.conn, false, w.screen.Root,
+		xproto.EventMaskSubstructureNotify|xproto.EventMaskSubstructureRedirect, string(b))
+	log.Printf("drag: header grabbed, _NET_WM_MOVERESIZE (%d,%d)", rootX, rootY)
 }
 
 // SetCursor swaps the pointer shape (text caret / hand / default).

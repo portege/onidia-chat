@@ -45,7 +45,8 @@ const botPersona = `You are Buddy, a tiny cheerful chat companion living in a ch
 	`Keep every reply SHORT and playful: 1-3 plain sentences, no markdown, no emoji, no lists ` +
 	`(the app draws text with a tiny bitmap font). ` +
 	`If an emotion fits the answer, START it with exactly one mood tag from ` +
-	`[happy] [wink] [sad] [thinking] [anxious] [angry] [surprised] [sleepy]; ` +
+	`[happy] [wink] [sad] [thinking] [anxious] [angry] [surprised] [sleepy] ` +
+	`[fear] [disgust] [contempt] [confused] [skeptical] [embarrassed]; ` +
 	`the tag is stripped before display.`
 
 // defaultModel: 3.7-flash currently answers with 503 "high demand" on this
@@ -174,6 +175,8 @@ var moodTag = regexp.MustCompile(`^\[([a-z]+)\]\s*`)
 var petMoods = map[string]bool{
 	"happy": true, "wink": true, "sad": true, "thinking": true,
 	"anxious": true, "angry": true, "surprised": true, "sleepy": true,
+	"fear": true, "disgust": true, "contempt": true, "confused": true,
+	"skeptical": true, "embarrassed": true,
 }
 
 // imgTag matches a leading "[IMG: ...] " tag emitted by the model when it
