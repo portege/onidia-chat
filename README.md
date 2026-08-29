@@ -68,11 +68,12 @@ message plus a hint). The key is read from `-api-key`, `$GEMINI_API_KEY`, or
 -model gemini-3.6-flash       model ID (Gemini or Bedrock; default depends on -provider)
 -api-key KEY                  Google Gemini API key (default: $GEMINI_API_KEY, $GOOGLE_API_KEY, or built-in; "off" = stub)
 -api-url URL                  Gemini endpoint base (default: https://generativelanguage.googleapis.com)
--image-source wiki            image replies: "wiki" (Wikipedia photo, default),
-                               "gemini" (AI generated), or "off"
+-image-source pixabay         image replies: "pixabay" (Pixabay photo, default),
+                               "wiki" (Wikipedia thumbnail), "gemini" (AI generated), or "off"
+-pixabay-key KEY              Pixabay API key (default: $PIXABAY_API_KEY, config pixabay-key, or built-in)
 -images    true               legacy alias; use -image-source (false = off)
 -force-image "Bali"           always fetch/generate an image for this keyword (testing)
--fetch-image "Bali"           test the Wikipedia fetch path, then exit (no window)
+-fetch-image "Bali"           test the configured image fetch path, then exit (no window)
 -gen-image "robot in Bali"    test the Gemini image generation path, then exit
 -pet-pipe /tmp/path.say       say FIFO (default: auto from $DISPLAY; "off" disables)
 -w 380 -h 520                window width and expanded height (starts collapsed)
@@ -123,9 +124,11 @@ You are Buddy, a tiny cheerful chat companion...
 Keep every reply SHORT and playful...
 ```
 
-# Image replies: "wiki" = Wikipedia thumbnail (default, free),
-# "gemini" = AI-generated illustration, "off" = text only.
-image-source = wiki
+# Image replies: "pixabay" = Pixabay photo (default, free shared key),
+# "wiki" = Wikipedia thumbnail, "gemini" = AI-generated illustration,
+# "off" = text only.
+image-source = pixabay
+# pixabay-key = your-key (a free shared key is built in)
 # force-image = Bali
 ```
 
@@ -140,15 +143,19 @@ A sample `chat-app.ini` is included in this repository.
 ## Image replies
 
 When a prompt looks visual, Buddy emits an `[IMG: <description>]` tag. The app
-strips the tag and either fetches a real photo from Wikipedia or asks Gemini to
-generate an illustration, depending on `-image-source`:
+strips the tag and either fetches a real photo from Pixabay (default) or
+Wikipedia, or asks Gemini to generate an illustration, depending on
+`-image-source`:
 
 | source | what happens | cost / speed |
 |--------|--------------|--------------|
-| `wiki` (default) | searches Wikipedia for the description and shows the thumbnail | free, ~1 s |
+| `pixabay` (default) | searches Pixabay for the description and shows the web-format photo (safesearch on) | free shared key, ~1 s |
+| `wiki` | searches Wikipedia for the description and shows the article thumbnail | free, ~1 s |
 | `gemini` | calls `gemini-3.1-flash-image` to generate a picture from the description | image-gen quota, ~5–15 s |
 | `off` | tag is ignored, text-only replies | - |
 
+- The Pixabay source uses a bundled free key; override with `-pixabay-key`,
+  `$PIXABAY_API_KEY`, or `pixabay-key` in `chat-app.ini`.
 - The image is best-effort: if the source fails, the reply is text-only.
 - Disable entirely: `./chat-app -image-source off` (or legacy `-images=false`).
 - Force a keyword for testing: `./chat-app -force-image Bali`.
@@ -182,8 +189,8 @@ model = amazon.nova-lite-v1:0
 
 Bedrock reads the usual AWS credential chain (`AWS_ACCESS_KEY_ID`,
 `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_PROFILE`, `~/.aws/credentials`).
-Image replies still use `-image-source wiki` (Wikipedia) by default, or
-`-image-source gemini` if you also have a Gemini API key.
+Image replies still use `-image-source pixabay` (Pixabay) by default, or
+`-image-source wiki` / `gemini` if you prefer those sources.
 
 Example prompts that should trigger an image:
 

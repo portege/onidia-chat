@@ -1,8 +1,9 @@
 // images.go - conditional image handling for chat replies.
 //
 // When the model emits an [IMG: <description>] tag, the app either fetches a
-// relevant thumbnail from Wikipedia's free REST API (no key needed) or asks a
-// Gemini image model to generate one, depending on the -image-source setting.
+// relevant photo from Pixabay (default), a thumbnail from Wikipedia's free
+// REST API (no key needed), or asks a Gemini image model to generate one,
+// depending on the -image-source setting.
 
 package main
 
@@ -32,7 +33,13 @@ const (
 	maxImageWidth    = 280 // px inside the bubble
 	maxImageHeight   = 180 // px
 	imageSearchBase  = "https://en.wikipedia.org/api/rest_v1/page/summary/"
+	pixabayAPIBase   = "https://pixabay.com/api/"
 	geminiImageModel = "gemini-3.1-flash-image" // Nano Banana 2
+
+	// defaultPixabayKey is a free shared key baked in so image replies work
+	// out of the box; override with -pixabay-key, $PIXABAY_API_KEY, or
+	// pixabay-key in chat-app.ini. Rotate it if it ever leaks.
+	defaultPixabayKey = "57324196-80f538aa87774c57d2e3c7b71"
 )
 
 // GenerateImage asks a Gemini image model to create a picture from the prompt.
@@ -91,6 +98,85 @@ func FetchImage(keyword string, client *http.Client) *ImageResult {
 		return &ImageResult{Err: err}
 	}
 	return &ImageResult{Image: img, URL: summary.Thumbnail.Source}
+}
+
+// FetchPixabayImage searches Pixabay for the keyword and downloads the best
+// hit's web-format photo (640px, a good fit for the chat bubble).
+func FetchPixabayImage(keyword, apiKey string, client *http.Client) *ImageResult {
+	return fetchPixabayImage(keyword, apiKey, pixabayAPIBase, client)
+}
+
+// fetchPixabayImage is the testable core: baseURL lets tests point at a fake
+// server instead of the real Pixabay API.
+func fetchPixabayImage(keyword, apiKey, baseURL string, client *http.Client) *ImageResult {
+	if strings.TrimSpace(apiKey) == "" {
+		return &ImageResult{Err: fmt.Errorf("pixabay: no API key (set pixabay-key in chat-app.ini, $PIXABAY_API_KEY, or -pixabay-key)")}
+	}
+	if client == nil {
+		client = &http.Client{Timeout: imageTimeout}
+	}
+
+	searchURL := baseURL + "?key=" + url.QueryEscape(strings.TrimSpace(apiKey)) +
+		"&safesearch=true&per_page=3&q=" + url.QueryEscape(keyword)
+	req, err := http.NewRequest(http.MethodGet, searchURL, nil)
+	if err != nil {
+		return &ImageResult{Err: err}
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "chat-app/1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return &ImageResult{Err: err}
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return &ImageResult{Err: err}
+	}
+	if resp.StatusCode != http.StatusOK {
+		body := string(raw)
+		if len(body) > 200 {
+			body = body[:200] + "..."
+		}
+		return &ImageResult{Err: fmt.Errorf("pixabay http %d: %s", resp.StatusCode, body)}
+	}
+
+	var result struct {
+		Hits []struct {
+			WebformatURL  string `json:"webformatURL"`
+			LargeImageURL string `json:"largeImageURL"`
+			PreviewURL    string `json:"previewURL"`
+		} `json:"hits"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return &ImageResult{Err: err}
+	}
+
+	imgURL := ""
+	for _, hit := range result.Hits {
+		// 640px web format is the sweet spot for a 260px bubble; fall back to
+		// the larger or smaller variant when a hit lacks it.
+		for _, cand := range []string{hit.WebformatURL, hit.LargeImageURL, hit.PreviewURL} {
+			if cand != "" {
+				imgURL = cand
+				break
+			}
+		}
+		if imgURL != "" {
+			break
+		}
+	}
+	if imgURL == "" {
+		return &ImageResult{Err: fmt.Errorf("no pixabay hit for %q", keyword)}
+	}
+
+	img, err := downloadImage(imgURL, client)
+	if err != nil {
+		return &ImageResult{Err: err}
+	}
+	return &ImageResult{Image: img, URL: imgURL}
 }
 
 func downloadImage(imgURL string, client *http.Client) (image.Image, error) {

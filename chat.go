@@ -55,8 +55,8 @@ const defaultModel = "gemini-3.6-flash"
 
 // imageTagInstruction is appended to the system prompt whenever image replies
 // are enabled. It asks the model to emit an [IMG: ...] tag when a picture would
-// help the answer; the tag is parsed out and either fetched from Wikipedia
-// (wiki) or generated via Gemini (gemini).
+// help the answer; the tag is parsed out and either fetched from Pixabay
+// (pixabay, default) or Wikipedia (wiki), or generated via Gemini (gemini).
 const imageTagInstruction = ` When your answer would benefit from an image (place, landmark, animal, famous person, object, food, etc.), start your reply with "[IMG: <short visual description>]" on its own line. If you also want to express an emotion, put the image tag first, then the mood tag. All tags are stripped before display.`
 
 // wikiImageTagInstruction is used when image-source=wiki, so the model emits a
@@ -68,11 +68,12 @@ const wikiImageTagInstruction = ` When your answer would benefit from an image (
 type Bot struct {
 	Name              string
 	APIKey            string   // Gemini API key (used for Gemini text + image generation)
+	PixabayKey        string   // Pixabay API key (used when ImageSource is "pixabay")
 	Model             string   // provider-specific model ID
 	APIURL            string   // Gemini endpoint base
 	PetPipe           string   // desktop-pet say FIFO; empty disables forwarding
 	SystemInstruction string   // system prompt sent to every model
-	ImageSource       string   // "wiki" | "gemini" | "off"
+	ImageSource       string   // "pixabay" | "wiki" | "gemini" | "off"
 	ForceImageKeyword string   // if set, always fetch/generate an image for this keyword
 	Provider          Provider // the active LLM backend (nil = offline stub)
 	HTTP              *http.Client
@@ -183,8 +184,9 @@ var imgTag = regexp.MustCompile(`^\[IMG:\s*([^\]\n]+)\]\s*`)
 // the conversation so far, INCLUDING the new user message. The answer is
 // also forwarded to the desktop-pet's say-pipe with its mood tag intact.
 // If the model emits an [IMG: ...] tag and images are enabled, the picture is
-// fetched from Wikipedia (image-source=wiki) or generated via Gemini
-// (image-source=gemini) and returned alongside the text.
+// fetched from Pixabay (image-source=pixabay, default) or Wikipedia
+// (image-source=wiki), or generated via Gemini (image-source=gemini), and
+// returned alongside the text.
 func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 	if b.Provider == nil {
 		return ReplyResult{Text: fmt.Sprintf("you said: %s -- wire in a provider (gemini or bedrock) to wake me up!", userText)}
@@ -210,6 +212,13 @@ func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 			img, err = b.GenerateImage(imgDesc)
 			if err != nil {
 				log.Printf("image generation for %q: %v", imgDesc, err)
+			}
+		case "pixabay":
+			imgResult := FetchPixabayImage(CleanKeyword(imgDesc), b.PixabayKey, b.HTTP)
+			if imgResult.Err != nil {
+				log.Printf("pixabay image fetch for %q: %v", imgDesc, imgResult.Err)
+			} else {
+				img = imgResult.Image
 			}
 		default: // "wiki"
 			imgResult := FetchImage(CleanKeyword(imgDesc), b.HTTP)

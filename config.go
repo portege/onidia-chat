@@ -26,7 +26,8 @@ type Config struct {
 	SystemFile       string `ini:"system-file"`
 	SystemPromptFull string `ini:"system-prompt-multi"` // multi-line alias
 	Images           bool   `ini:"images"`              // enable image replies (legacy: use image-source)
-	ImageSource      string `ini:"image-source"`        // "wiki" | "gemini" | "off"
+	ImageSource      string `ini:"image-source"`        // "pixabay" | "wiki" | "gemini" | "off"
+	PixabayKey       string `ini:"pixabay-key"`         // Pixabay API key (empty = env/built-in default)
 	ForceImage       string `ini:"force-image"`         // always fetch image for this keyword
 	Provider         string `ini:"provider"`            // "gemini" | "bedrock"
 	AWSProfile       string `ini:"aws-profile"`         // AWS shared profile name
@@ -123,6 +124,8 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.Images = parseBool(val)
 	case "image-source":
 		cfg.ImageSource = val
+	case "pixabay-key":
+		cfg.PixabayKey = val
 	case "force-image":
 		cfg.ForceImage = val
 	case "provider":

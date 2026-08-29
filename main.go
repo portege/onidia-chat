@@ -129,9 +129,11 @@ func main() {
 		genImageFlag = flag.String("gen-image", "",
 			"test gemini image generation: generate a picture from this prompt and exit")
 		imageSource = flag.String("image-source", "",
-			`image replies: "wiki" (Wikipedia photo, default) | "gemini" (AI generated) | "off"`)
+			`image replies: "pixabay" (Pixabay photo, default) | "wiki" (Wikipedia thumbnail) | "gemini" (AI generated) | "off"`)
 		images     = flag.Bool("images", true, "legacy alias; use -image-source (false = off)")
 		forceImage = flag.String("force-image", "", "always fetch/generate an image for this keyword (testing)")
+		pixabayKey = flag.String("pixabay-key", "",
+			"Pixabay API key for image replies (default: $PIXABAY_API_KEY, config pixabay-key, or built-in)")
 	)
 	flag.Parse()
 
@@ -141,15 +143,6 @@ func main() {
 	flag.Visit(func(f *flag.Flag) {
 		explicitFlags[f.Name] = true
 	})
-
-	if *fetchImageFlag != "" {
-		img := FetchImage(CleanKeyword(*fetchImageFlag), nil)
-		if img.Err != nil {
-			log.Fatalf("image fetch: %v", img.Err)
-		}
-		fmt.Printf("%s -> %dx%d\n", img.URL, img.Image.Bounds().Dx(), img.Image.Bounds().Dy())
-		return
-	}
 
 	// Load INI config file. `-config` wins; otherwise a conventional
 	// chat-app.ini is auto-loaded from the working directory or the binary's
@@ -256,7 +249,7 @@ func main() {
 		}
 	}
 
-	// Image source: explicit flag > config file > legacy images bool > wiki default
+	// Image source: explicit flag > config file > legacy images bool > pixabay default
 	imgSource := strings.ToLower(strings.TrimSpace(*imageSource))
 	if imgSource == "" && cfg != nil {
 		imgSource = strings.ToLower(strings.TrimSpace(cfg.ImageSource))
@@ -267,20 +260,53 @@ func main() {
 		} else if cfg != nil && !cfg.Images && !explicitFlags["images"] {
 			imgSource = "off"
 		} else {
-			imgSource = "wiki"
+			imgSource = "pixabay"
 		}
 	}
 	switch imgSource {
-	case "wiki", "gemini", "off":
+	case "pixabay", "wiki", "gemini", "off":
 		// ok
 	default:
-		log.Printf("warning: unknown image-source %q, using wiki", imgSource)
-		imgSource = "wiki"
+		log.Printf("warning: unknown image-source %q, using pixabay", imgSource)
+		imgSource = "pixabay"
+	}
+
+	// Pixabay key: explicit flag > $PIXABAY_API_KEY > config file > built-in
+	pxKey := strings.TrimSpace(*pixabayKey)
+	if pxKey == "" {
+		if envKey := os.Getenv("PIXABAY_API_KEY"); envKey != "" {
+			pxKey = strings.TrimSpace(envKey)
+		} else if cfg != nil {
+			pxKey = strings.TrimSpace(cfg.PixabayKey)
+		}
+	}
+	if pxKey == "" {
+		pxKey = defaultPixabayKey
 	}
 
 	forceImg := *forceImage
 	if forceImg == "" && cfg != nil {
 		forceImg = cfg.ForceImage
+	}
+
+	// -fetch-image tests the resolved source's fetch path (the gemini source
+	// has its own -gen-image probe).
+	if *fetchImageFlag != "" {
+		kw := CleanKeyword(*fetchImageFlag)
+		var img *ImageResult
+		switch imgSource {
+		case "gemini":
+			log.Fatalf("image-source=gemini generates images; use -gen-image %q instead", kw)
+		case "wiki":
+			img = FetchImage(kw, nil)
+		default: // pixabay
+			img = FetchPixabayImage(kw, pxKey, nil)
+		}
+		if img.Err != nil {
+			log.Fatalf("image fetch: %v", img.Err)
+		}
+		fmt.Printf("%s -> %dx%d\n", img.URL, img.Image.Bounds().Dx(), img.Image.Bounds().Dy())
+		return
 	}
 
 	if *genImageFlag != "" {
@@ -319,6 +345,7 @@ func main() {
 	ui.Bot.PetPipe = pipe
 	ui.Bot.SystemInstruction = resolveSystemPrompt(sysPrompt, sysFile)
 	ui.Bot.ImageSource = imgSource
+	ui.Bot.PixabayKey = pxKey
 	ui.Bot.ForceImageKeyword = forceImg
 	// Build the selected provider.
 	var botProvider Provider
