@@ -3,7 +3,6 @@
 *.test
 chat-app
 chat_live_test.go
-*_test.go
 e2e_test*.go
 repro*_test.go
 url_default_test.go
