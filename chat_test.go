@@ -187,3 +187,59 @@ func TestReplySanitizesBeforeProvider(t *testing.T) {
 		t.Fatal("system prompt sent to the model lacks the security rule")
 	}
 }
+
+// TestReplyAppliesCharacterAge verifies the settings dialog's age reaches the
+// model as part of the system prompt (and is omitted when unset).
+func TestReplyAppliesCharacterAge(t *testing.T) {
+	fp := &fakeProvider{}
+	bot := &Bot{Provider: fp, SystemInstruction: "You are Buddy.", ImageSource: "off", CharacterAge: 12}
+	bot.Reply([]Msg{{From: "you", Text: "hi"}}, "hi")
+	if !strings.Contains(fp.system, "12 years old") {
+		t.Errorf("system prompt lacks the age line: %q", fp.system)
+	}
+
+	fp2 := &fakeProvider{}
+	bot2 := &Bot{Provider: fp2, SystemInstruction: "You are Buddy.", ImageSource: "off"}
+	bot2.Reply([]Msg{{From: "you", Text: "hi"}}, "hi")
+	if strings.Contains(fp2.system, "years old") {
+		t.Errorf("unset age must not inject an age line: %q", fp2.system)
+	}
+}
+
+// TestReplyAppliesCharacterName verifies the settings dialog's name reaches
+// the model as part of the system prompt (and a blank name is omitted).
+func TestReplyAppliesCharacterName(t *testing.T) {
+	fp := &fakeProvider{}
+	bot := &Bot{Provider: fp, SystemInstruction: "You are Buddy.", ImageSource: "off",
+		CharacterName: "Onidia"}
+	bot.Reply([]Msg{{From: "you", Text: "hi"}}, "hi")
+	if !strings.Contains(fp.system, "your name is Onidia") {
+		t.Errorf("system prompt lacks the name line: %q", fp.system)
+	}
+
+	fp2 := &fakeProvider{}
+	bot2 := &Bot{Provider: fp2, SystemInstruction: "You are Buddy.", ImageSource: "off"}
+	bot2.Reply([]Msg{{From: "you", Text: "hi"}}, "hi")
+	if strings.Contains(fp2.system, "your name is") {
+		t.Errorf("unset name must not inject a name line: %q", fp2.system)
+	}
+}
+
+// TestReplyAppliesSleepWindow verifies the settings dialog's sleep window
+// reaches the model as part of the system prompt (and is omitted when unset).
+func TestReplyAppliesSleepWindow(t *testing.T) {
+	fp := &fakeProvider{}
+	bot := &Bot{Provider: fp, SystemInstruction: "You are Buddy.", ImageSource: "off",
+		SleepSet: true, SleepFrom: 22, SleepTo: 7}
+	bot.Reply([]Msg{{From: "you", Text: "hi"}}, "hi")
+	if !strings.Contains(fp.system, "sleep from 22:00 until 07:00") {
+		t.Errorf("system prompt lacks the sleep window: %q", fp.system)
+	}
+
+	fp2 := &fakeProvider{}
+	bot2 := &Bot{Provider: fp2, SystemInstruction: "You are Buddy.", ImageSource: "off"}
+	bot2.Reply([]Msg{{From: "you", Text: "hi"}}, "hi")
+	if strings.Contains(fp2.system, "Sleep schedule") {
+		t.Errorf("unset sleep window must not inject a schedule line: %q", fp2.system)
+	}
+}

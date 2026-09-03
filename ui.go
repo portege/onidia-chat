@@ -9,9 +9,11 @@ package main
 // like one family.
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
+	"strconv"
 	"strings"
 )
 
@@ -25,6 +27,18 @@ const (
 	WInput
 	WButton
 	WClose
+
+	// Settings modal (see drawSettings): the header's gear button plus the
+	// widgets that live inside the modal.
+	WSettings // gear button in the header
+	WModal    // dim backdrop around the panel (absorbs outside clicks)
+	WName     // character-name text field
+	WDrop     // character-age dropdown box
+	WDropFrom // sleep-time FROM dropdown box
+	WDropTo   // sleep-time TO dropdown box
+	WOption   // one row of an open dropdown list
+	WSave     // modal SAVE button
+	WCancel   // modal CANCEL button
 )
 
 // Msg is one chat entry.
@@ -48,6 +62,7 @@ var (
 	colBtnOff      = color.RGBA{221, 216, 230, 255} // disabled button
 	colInputBorder = color.RGBA{216, 210, 226, 255}
 	colWhite       = color.RGBA{255, 255, 255, 255}
+	colError       = color.RGBA{196, 60, 74, 255} // save-failure text in the modal
 )
 
 const (
@@ -75,6 +90,37 @@ const (
 
 	maxInput  = 280 // textarea rune cap
 	winRadius = 12  // window shell corner rounding (transparent corners)
+
+	// Settings modal layout (drawSettings).
+	modalPad     = 20  // panel inner padding
+	modalBtnW    = 90  // SAVE / CANCEL button width
+	panelW       = 300 // modal panel width (clamped to the window)
+	panelH       = 340 // modal panel height (name + age + sleep rows + buttons)
+	dropH        = 32  // dropdown box height
+	optH         = 24  // dropdown list row height
+	minSettingsH = 440 // window height forced while the modal is open
+
+	maxNameChars = 16 // character-name field rune cap
+
+	minCharAge          = 7  // youngest character age in the dropdown
+	maxCharAge          = 13 // oldest character age in the dropdown
+	defaultCharacterAge = 10 // pre-selected age when none is configured
+
+	numHours         = 24 // entries in a sleep-time dropdown (0:00 .. 23:00)
+	visibleHourRows  = 5  // hour-list rows shown before it scrolls
+	defaultSleepFrom = 22 // pre-selected sleep start when none is configured
+	defaultSleepTo   = 7  // pre-selected sleep end when none is configured
+)
+
+// numAges is how many entries the age dropdown shows.
+const numAges = maxCharAge - minCharAge + 1
+
+// Which dropdown list is currently expanded (UI.openDrop).
+const (
+	dropNone = iota
+	dropAge
+	dropFrom
+	dropTo
 )
 
 // UI holds all mutable chat-window state.
@@ -99,6 +145,28 @@ type UI struct {
 	press Widget
 
 	wantClose bool // set by a click on the header's close button
+
+	// Settings modal state (see drawSettings). name / age / sleepFrom /
+	// sleepTo are the committed values: unset until the first save, or
+	// loaded from the config (age 0 = unset; sleep uses -1 because hour 0
+	// is valid; name "" = unset).
+	settingsOpen   bool
+	nameFocused    bool   // the name field owns the keyboard
+	nameDraft      []rune // name typed in the modal; committed on SAVE
+	openDrop       int    // which dropdown list is expanded (dropNone/dropAge/...)
+	hourScroll     int    // first visible row of the open hour list
+	ageDraft       int    // age picked in the modal; committed on SAVE
+	sleepFromDraft int    // sleep start hour picked in the modal
+	sleepToDraft   int    // sleep end hour picked in the modal
+	wasCollapsed   bool   // collapse state when the modal opened
+	prevH          int    // window height before the modal forced minSettingsH
+	name           string // committed character name ("" = not set yet)
+	age            int    // committed character age (0 = not set yet)
+	sleepFrom      int    // committed sleep-window start hour (-1 = unset)
+	sleepTo        int    // committed sleep-window end hour (-1 = unset)
+	savePath       string // INI file settings are written to ("" = ./chat-app.ini)
+	saveErr        string // last save error, shown inside the modal
+	optIdx         int    // dropdown row under the pointer (set by HitTest)
 }
 
 // NewUI creates a UI sized w x h with a welcome message from the bot.
@@ -112,6 +180,8 @@ func NewUI(w, h int) *UI {
 		caret:     true,
 		collapsed: true,
 		expandedH: max(h, 260),
+		sleepFrom: -1, // -1 = no sleep window configured yet
+		sleepTo:   -1,
 	}
 	u.AddMsg(u.Bot.Name,
 		"hi! i am buddy. ask me anything - my answers come from google gemini, and onidia the desktop-pet says them out loud!")
@@ -143,15 +213,135 @@ func (u *UI) closeRect() image.Rectangle {
 	return image.Rect(u.W-padX-hdrBtn, y, u.W-padX, y+hdrBtn)
 }
 
+// settingsRect is the gear button in the header, left of the close button.
+func (u *UI) settingsRect() image.Rectangle {
+	x1 := u.closeRect().Min.X - btnGap
+	y := (headerH - hdrBtn) / 2
+	return image.Rect(x1-hdrBtn, y, x1, y+hdrBtn)
+}
+
+// modalPanel is the centred settings dialog rectangle.
+func (u *UI) modalPanel() image.Rectangle {
+	pw := min(panelW, u.W-2*modalPad)
+	return image.Rect((u.W-pw)/2, (u.H-panelH)/2, (u.W+pw)/2, (u.H+panelH)/2)
+}
+
+// nameRect is the character-name text field, the first row of the panel.
+func (u *UI) nameRect() image.Rectangle {
+	p := u.modalPanel()
+	return image.Rect(p.Min.X+modalPad, p.Min.Y+66, p.Max.X-modalPad, p.Min.Y+66+dropH)
+}
+
+// dropRect is the character-age dropdown box inside the panel.
+func (u *UI) dropRect() image.Rectangle {
+	p := u.modalPanel()
+	return image.Rect(p.Min.X+modalPad, p.Min.Y+126, p.Max.X-modalPad, p.Min.Y+126+dropH)
+}
+
+// sleepFromRect / sleepToRect are the two half-width sleep-time dropdowns.
+func (u *UI) sleepFromRect() image.Rectangle {
+	p := u.modalPanel()
+	w := (p.Dx() - 2*modalPad - 12) / 2
+	y := p.Min.Y + 200
+	return image.Rect(p.Min.X+modalPad, y, p.Min.X+modalPad+w, y+dropH)
+}
+
+func (u *UI) sleepToRect() image.Rectangle {
+	f := u.sleepFromRect()
+	dx := f.Dx() + 12
+	return image.Rect(f.Min.X+dx, f.Min.Y, f.Max.X+dx, f.Max.Y)
+}
+
+// dropListRect is the expanded age list; empty unless the age list is open.
+func (u *UI) dropListRect() image.Rectangle {
+	if u.openDrop != dropAge {
+		return image.Rectangle{}
+	}
+	d := u.dropRect()
+	return image.Rect(d.Min.X, d.Max.Y+4, d.Max.X, d.Max.Y+4+numAges*optH)
+}
+
+// openHourBox is the FROM/TO box whose list is open; empty when none is.
+func (u *UI) openHourBox() image.Rectangle {
+	switch u.openDrop {
+	case dropFrom:
+		return u.sleepFromRect()
+	case dropTo:
+		return u.sleepToRect()
+	}
+	return image.Rectangle{}
+}
+
+// hourListRect is the expanded hour list: five visible rows below its box;
+// the remaining hours are reached by scrolling. Empty when no hour list open.
+func (u *UI) hourListRect() image.Rectangle {
+	box := u.openHourBox()
+	if box == (image.Rectangle{}) {
+		return image.Rectangle{}
+	}
+	return image.Rect(box.Min.X, box.Max.Y+4, box.Max.X, box.Max.Y+4+visibleHourRows*optH)
+}
+
+// modalButtons returns the CANCEL and SAVE button rectangles.
+func (u *UI) modalButtons() (cancel, save image.Rectangle) {
+	p := u.modalPanel()
+	total := 2*modalBtnW + btnGap
+	sx := p.Min.X + (p.Dx()-total)/2
+	by := p.Max.Y - 14 - btnH
+	return image.Rect(sx, by, sx+modalBtnW, by+btnH),
+		image.Rect(sx+modalBtnW+btnGap, by, sx+total, by+btnH)
+}
+
+// inRect reports whether the point is inside r.
+func inRect(x, y int, r image.Rectangle) bool {
+	return x >= r.Min.X && x < r.Max.X && y >= r.Min.Y && y < r.Max.Y
+}
+
 // HitTest maps window-relative pointer coordinates to a widget.
 func (u *UI) HitTest(x, y int) Widget {
 	if x < 0 || y < 0 || x >= u.W || y >= u.H {
 		return WNone
 	}
+	if u.settingsOpen {
+		// The modal owns the whole window while it is open. An open
+		// dropdown list is an overlay: it wins over the widgets it covers.
+		switch u.openDrop {
+		case dropAge:
+			if l := u.dropListRect(); inRect(x, y, l) {
+				u.optIdx = clamp((y-l.Min.Y)/optH, 0, numAges-1)
+				return WOption
+			}
+		case dropFrom, dropTo:
+			if l := u.hourListRect(); inRect(x, y, l) {
+				u.optIdx = clamp(u.hourScroll+(y-l.Min.Y)/optH, 0, numHours-1)
+				return WOption
+			}
+		}
+		if cancel, save := u.modalButtons(); inRect(x, y, save) {
+			return WSave
+		} else if inRect(x, y, cancel) {
+			return WCancel
+		}
+		if r := u.nameRect(); inRect(x, y, r) {
+			return WName
+		}
+		if d := u.dropRect(); inRect(x, y, d) {
+			return WDrop
+		}
+		if r := u.sleepFromRect(); inRect(x, y, r) {
+			return WDropFrom
+		}
+		if r := u.sleepToRect(); inRect(x, y, r) {
+			return WDropTo
+		}
+		return WModal
+	}
 	if y < headerH {
-		cr := u.closeRect()
-		if x >= cr.Min.X && x < cr.Max.X && y >= cr.Min.Y && y < cr.Max.Y {
+		if inRect(x, y, u.closeRect()) {
 			return WClose
+		}
+		if inRect(x, y, u.settingsRect()) {
+			return WSettings
 		}
 		return WHeader
 	}
@@ -177,6 +367,9 @@ func (u *UI) Resize(w, h int) {
 		minH = headerH + inputH
 	}
 	u.W, u.H = max(w, 200), max(h, minH)
+	if u.settingsOpen {
+		u.H = max(u.H, minSettingsH) // the modal needs the taller window
+	}
 	if !u.collapsed {
 		u.expandedH = u.H // remember the size to restore after collapsing
 	}
@@ -205,6 +398,11 @@ func (u *UI) Press(w Widget) { u.press = w }
 // the same widget. Returns true when the header was clicked (collapse state
 // toggled), so the caller can resize the window to match the new size.
 func (u *UI) Release(w Widget) bool {
+	if u.settingsOpen {
+		// Clicking anywhere else in the modal moves focus off the name
+		// field; only a click on the field itself keeps it.
+		u.nameFocused = w == WName
+	}
 	if w != WNone && w == u.press {
 		switch w {
 		case WInput:
@@ -216,6 +414,46 @@ func (u *UI) Release(w Widget) bool {
 			// The app is frameless, so this button is the way out besides
 			// Alt+F4; main() polls WantClose and exits.
 			u.wantClose = true
+		case WSettings:
+			if u.openSettings() {
+				return true // the window grew to fit the modal
+			}
+		case WName:
+			// Focus already moved above; typing now edits the name draft.
+		case WDrop:
+			u.toggleDrop(dropAge)
+		case WDropFrom:
+			u.toggleDrop(dropFrom)
+		case WDropTo:
+			u.toggleDrop(dropTo)
+		case WOption:
+			switch u.openDrop {
+			case dropAge:
+				if u.optIdx >= 0 && u.optIdx < numAges {
+					u.ageDraft = minCharAge + u.optIdx
+				}
+			case dropFrom:
+				if u.optIdx >= 0 && u.optIdx < numHours {
+					u.sleepFromDraft = u.optIdx
+				}
+			case dropTo:
+				if u.optIdx >= 0 && u.optIdx < numHours {
+					u.sleepToDraft = u.optIdx
+				}
+			}
+			u.openDrop = dropNone
+		case WSave:
+			u.saveSettings()
+			if u.saveErr == "" {
+				u.press = WNone
+				return u.closeSettings()
+			}
+			// Save failed: the error is shown in the modal, which stays open.
+		case WCancel:
+			u.press = WNone
+			return u.closeSettings()
+		case WModal:
+			u.openDrop = dropNone // a click outside the widgets closes the list
 		case WHeader:
 			if u.collapsed {
 				// Expand: restore the last non-collapsed height.
@@ -243,6 +481,133 @@ func (u *UI) Collapsed() bool { return u.collapsed }
 // loop exits when it is set.
 func (u *UI) WantClose() bool { return u.wantClose }
 
+// openSettings shows the settings modal. The conversation window is expanded
+// (and grown if needed) so the panel and its dropdown fit; returns true when
+// the window size changed, so the caller must resize.
+func (u *UI) openSettings() bool {
+	u.settingsOpen = true
+	u.openDrop = dropNone
+	u.hourScroll = 0
+	u.saveErr = ""
+	u.nameFocused = false
+	u.nameDraft = []rune(u.name)
+	u.ageDraft = u.age
+	if u.ageDraft <= 0 {
+		u.ageDraft = defaultCharacterAge
+	}
+	u.sleepFromDraft = u.sleepFrom
+	if u.sleepFromDraft < 0 {
+		u.sleepFromDraft = defaultSleepFrom
+	}
+	u.sleepToDraft = u.sleepTo
+	if u.sleepToDraft < 0 {
+		u.sleepToDraft = defaultSleepTo
+	}
+	u.wasCollapsed = u.collapsed
+	u.hover, u.press = WNone, WNone
+	changed := false
+	if u.collapsed {
+		u.collapsed = false
+		u.H = max(u.expandedH, minSettingsH)
+		changed = true
+	}
+	if u.H < minSettingsH {
+		u.prevH = u.H
+		u.H = minSettingsH
+		changed = true
+	}
+	u.scroll = clamp(u.scroll, 0, u.maxScroll())
+	return changed
+}
+
+// closeSettings hides the modal and restores the collapse state and window
+// height from before it opened. Returns true when the window must be resized.
+func (u *UI) closeSettings() bool {
+	u.settingsOpen = false
+	u.openDrop = dropNone
+	u.nameFocused = false
+	u.hover, u.press = WNone, WNone
+	resized := false
+	if u.wasCollapsed && !u.collapsed {
+		u.collapsed = true
+		u.H = headerH + inputH
+		resized = true
+	} else if u.prevH > 0 && !u.collapsed {
+		u.H = u.prevH
+		resized = true
+	}
+	u.prevH = 0
+	return resized
+}
+
+// toggleDrop opens the given dropdown list, closing any other. Opening an
+// hour list scrolls the selection into view.
+func (u *UI) toggleDrop(which int) {
+	if u.openDrop == which {
+		u.openDrop = dropNone
+		return
+	}
+	u.openDrop = which
+	if which == dropFrom || which == dropTo {
+		sel := u.sleepFromDraft
+		if which == dropTo {
+			sel = u.sleepToDraft
+		}
+		u.hourScroll = clamp(sel-2, 0, numHours-visibleHourRows)
+	}
+}
+
+// ScrollHourList scrolls the open FROM/TO hour list; returns false when no
+// hour list is open, so the caller scrolls the message history instead.
+func (u *UI) ScrollHourList(dy int) bool {
+	if !u.settingsOpen || (u.openDrop != dropFrom && u.openDrop != dropTo) {
+		return false
+	}
+	u.hourScroll = clamp(u.hourScroll+dy, 0, numHours-visibleHourRows)
+	if u.hover == WOption {
+		// Keep the highlighted row inside the scrolled viewport.
+		u.optIdx = clamp(u.optIdx, u.hourScroll, u.hourScroll+visibleHourRows-1)
+	}
+	return true
+}
+
+// saveSettings commits the modal's drafts: the persona picks them up live
+// and character-age / sleep-time are rewritten in the INI file. Failures are
+// reported in the modal, which then stays open.
+func (u *UI) saveSettings() {
+	path := u.savePath
+	if path == "" {
+		path = "chat-app.ini"
+	}
+	name := strings.TrimSpace(string(u.nameDraft))
+	if err := SetConfigValue(path, "character", "character-name", name); err != nil {
+		u.saveErr = err.Error()
+		return
+	}
+	if err := SetConfigValue(path, "character", "character-age", strconv.Itoa(u.ageDraft)); err != nil {
+		u.saveErr = err.Error()
+		return
+	}
+	sleep := fmt.Sprintf("%02d:00-%02d:00", u.sleepFromDraft, u.sleepToDraft)
+	if err := SetConfigValue(path, "character", "sleep-time", sleep); err != nil {
+		u.saveErr = err.Error()
+		return
+	}
+	u.saveErr = ""
+	u.name = name
+	u.age = u.ageDraft
+	u.sleepFrom, u.sleepTo = u.sleepFromDraft, u.sleepToDraft
+	if u.Bot != nil {
+		if name != "" {
+			u.Bot.Name = name // bubble sender label
+		}
+		u.Bot.CharacterName = name
+		u.Bot.CharacterAge = u.ageDraft
+		u.Bot.SleepSet = true
+		u.Bot.SleepFrom, u.Bot.SleepTo = u.sleepFromDraft, u.sleepToDraft
+	}
+}
+
 // SetHover updates the hovered widget (drives cursor shape + button tint).
 func (u *UI) SetHover(w Widget) { u.hover = w }
 
@@ -256,6 +621,32 @@ const (
 
 // Key applies one key event; returns true when the UI changed.
 func (u *UI) Key(r rune, sym uint32) bool {
+	if u.settingsOpen {
+		// While the modal is up the textarea is dormant: Enter saves,
+		// Escape cancels, and typing edits the name field (when focused).
+		switch sym {
+		case ksEscape:
+			u.closeSettings()
+			return true
+		case ksReturn, ksKPEnter:
+			u.saveSettings()
+			if u.saveErr == "" {
+				u.closeSettings()
+			}
+			return true
+		case ksBackspace:
+			if u.nameFocused && len(u.nameDraft) > 0 {
+				u.nameDraft = u.nameDraft[:len(u.nameDraft)-1]
+				return true
+			}
+			return false
+		}
+		if u.nameFocused && r >= 0x20 && r <= 0x7e && len(u.nameDraft) < maxNameChars {
+			u.nameDraft = append(u.nameDraft, r)
+			return true
+		}
+		return false
+	}
 	switch sym {
 	case ksReturn, ksKPEnter:
 		u.Submit()
@@ -317,6 +708,9 @@ func (u *UI) Render() *image.NRGBA {
 		u.drawMessages(frame)
 	}
 	u.drawInputBar(frame)
+	if u.settingsOpen {
+		u.drawSettings(frame)
+	}
 	roundWindowCorners(frame, winRadius)
 	return frame
 }
@@ -371,18 +765,242 @@ func (u *UI) drawHeader(frame *image.NRGBA) {
 	drawText(frame, cr.Min.X+(hdrBtn-textWidth("x", 1))/2,
 		cr.Min.Y+(hdrBtn-glyphH)/2, "x", 1, glyphCol)
 
-	// Toggle icon: + (collapsed) / - (expanded), left of the close button.
+	// Settings gear: a small square button left of the close button.
+	sr := u.settingsRect()
+	switch {
+	case u.press == WSettings:
+		fill, glyphCol = colPlum, colWhite
+	case u.hover == WSettings:
+		fill, glyphCol = colHairLight, colPlum
+	default:
+		fill, glyphCol = colTealShade, colWhite
+	}
+	drawRoundRect(frame, sr.Min.X, sr.Min.Y, hdrBtn, hdrBtn, 8, colTealShade)
+	drawRoundRect(frame, sr.Min.X+2, sr.Min.Y+2, hdrBtn-4, hdrBtn-4, 6, fill)
+	drawGear(frame, sr.Min.X+hdrBtn/2, sr.Min.Y+hdrBtn/2, glyphCol, fill)
+
+	// Toggle icon: + (collapsed) / - (expanded), left of the gear button.
 	icon := "+"
 	if !u.collapsed {
 		icon = "-"
 	}
 	iconW := textWidth(icon, 1)
-	iconX := cr.Min.X - btnGap - iconW
+	iconX := sr.Min.X - btnGap - iconW
 	drawText(frame, iconX, (headerH-glyphH)/2, icon, 1, colWhite)
 
 	sub := "AI HELPER"
 	drawText(frame, iconX-padX-textWidth(sub, 1), (headerH-glyphH)/2, sub, 1,
 		color.RGBA{255, 255, 255, 190})
+}
+
+// Settings modal -------------------------------------------------------------
+
+// drawSettings renders the modal: a dim backdrop, the panel with the
+// character-age dropdown and SAVE/CANCEL buttons, and - drawn last so it
+// overlays the buttons it covers - the expanded option list.
+func (u *UI) drawSettings(frame *image.NRGBA) {
+	fillRect(frame, 0, 0, u.W, u.H, color.RGBA{40, 30, 55, 120}) // dim backdrop
+
+	p := u.modalPanel()
+	drawRoundRect(frame, p.Min.X, p.Min.Y, p.Dx(), p.Dy(), winRadius, colPlum)
+	drawRoundRect(frame, p.Min.X+2, p.Min.Y+2, p.Dx()-4, p.Dy()-4, winRadius-2, colBubbleFill)
+
+	drawText(frame, p.Min.X+modalPad, p.Min.Y+14, "SETTINGS", uiFontScale, colPlum)
+	if u.saveErr != "" {
+		msg := u.saveErr
+		if cols := (p.Dx() - 2*modalPad) / cellW; len([]rune(msg)) > cols {
+			rs := []rune(msg)
+			msg = string(rs[:max(0, cols-3)]) + "..."
+		}
+		drawText(frame, p.Min.X+modalPad, p.Min.Y+36, msg, 1, colError)
+	}
+
+	drawText(frame, p.Min.X+modalPad, p.Min.Y+52, "NAME", 1, colMuted)
+	u.drawNameBox(frame)
+
+	drawText(frame, p.Min.X+modalPad, p.Min.Y+112, "CHARACTER AGE", 1, colMuted)
+	u.drawSelectBox(frame, u.dropRect(), strconv.Itoa(u.ageDraft), u.openDrop == dropAge, WDrop)
+
+	drawText(frame, p.Min.X+modalPad, p.Min.Y+172, "SLEEP TIME", 1, colMuted)
+	fr, tr := u.sleepFromRect(), u.sleepToRect()
+	drawText(frame, fr.Min.X, p.Min.Y+186, "FROM", 1, colMuted)
+	drawText(frame, tr.Min.X, p.Min.Y+186, "TO", 1, colMuted)
+	u.drawSelectBox(frame, fr, fmt.Sprintf("%02d:00", u.sleepFromDraft), u.openDrop == dropFrom, WDropFrom)
+	u.drawSelectBox(frame, tr, fmt.Sprintf("%02d:00", u.sleepToDraft), u.openDrop == dropTo, WDropTo)
+
+	u.drawModalButtons(frame)
+	if u.openDrop == dropAge {
+		u.drawDropList(frame)
+	}
+	if u.openDrop == dropFrom || u.openDrop == dropTo {
+		u.drawHourList(frame)
+	}
+}
+
+// drawNameBox paints the editable character-name field: white body, teal
+// border while focused, placeholder when empty, caret after the last glyph.
+func (u *UI) drawNameBox(frame *image.NRGBA) {
+	r := u.nameRect()
+	border := colPlum
+	if u.nameFocused || u.hover == WName {
+		border = colHeader
+	}
+	drawRoundRect(frame, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), 8, border)
+	drawRoundRect(frame, r.Min.X+2, r.Min.Y+2, r.Dx()-4, r.Dy()-4, 6, colWhite)
+
+	text := string(u.nameDraft)
+	dy := r.Min.Y + (dropH-glyphH*uiFontScale)/2
+	if text == "" {
+		drawText(frame, r.Min.X+12, dy, "type a name...", uiFontScale, colMuted)
+	} else {
+		drawText(frame, r.Min.X+12, dy, text, uiFontScale, colText)
+	}
+	if u.nameFocused && u.caret {
+		fillRect(frame, r.Min.X+12+textWidth(text, uiFontScale), dy, 2,
+			glyphH*uiFontScale, colPlum)
+	}
+}
+
+// drawSelectBox paints one dropdown box: white body with the current value
+// and a chevron that flips while the list is open.
+func (u *UI) drawSelectBox(frame *image.NRGBA, r image.Rectangle, text string, open bool, w Widget) {
+	border := colPlum
+	if u.press == w {
+		border = colTealShade
+	} else if u.hover == w {
+		border = colHeader
+	}
+	drawRoundRect(frame, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), 8, border)
+	drawRoundRect(frame, r.Min.X+2, r.Min.Y+2, r.Dx()-4, r.Dy()-4, 6, colWhite)
+
+	dy := r.Min.Y + (dropH-glyphH*uiFontScale)/2
+	drawText(frame, r.Min.X+12, dy, text, uiFontScale, colText)
+	drawChevron(frame, r.Max.X-16, r.Min.Y+dropH/2-1, open, colMuted)
+}
+
+// drawDropList paints the expanded option list (7..13) over the panel. The
+// selected age gets a dot marker; the hovered row is tinted.
+func (u *UI) drawDropList(frame *image.NRGBA) {
+	l := u.dropListRect()
+	drawRoundRect(frame, l.Min.X, l.Min.Y, l.Dx(), l.Dy(), 8, colPlum)
+	drawRoundRect(frame, l.Min.X+2, l.Min.Y+2, l.Dx()-4, l.Dy()-4, 6, colWhite)
+
+	for i := 0; i < numAges; i++ {
+		ry := l.Min.Y + i*optH
+		if u.hover == WOption && u.optIdx == i {
+			// Rounded ends on the first/last row so the highlight follows
+			// the list's rounded corners.
+			if i == 0 || i == numAges-1 {
+				drawRoundRect(frame, l.Min.X+3, ry, l.Dx()-6, optH, 6, colHairLight)
+			} else {
+				fillRect(frame, l.Min.X+3, ry, l.Dx()-6, optH, colHairLight)
+			}
+		}
+		ty := ry + (optH-glyphH*uiFontScale)/2
+		val := minCharAge + i
+		drawText(frame, l.Min.X+26, ty, strconv.Itoa(val), uiFontScale, colText)
+		if val == u.ageDraft {
+			fillDisc(frame, l.Min.X+15, ry+optH/2, 3, colHeader)
+		}
+	}
+}
+
+// drawHourList paints the expanded 0:00..23:00 list of the FROM/TO dropdowns:
+// five rows visible at a time (wheel-scrolled, see ScrollHourList), the
+// selected hour marked with a dot and a mini scrollbar on the right.
+func (u *UI) drawHourList(frame *image.NRGBA) {
+	box := u.openHourBox()
+	if box == (image.Rectangle{}) {
+		return
+	}
+	l := u.hourListRect()
+	drawRoundRect(frame, l.Min.X, l.Min.Y, l.Dx(), l.Dy(), 8, colPlum)
+	drawRoundRect(frame, l.Min.X+2, l.Min.Y+2, l.Dx()-4, l.Dy()-4, 6, colWhite)
+
+	sel := u.sleepFromDraft
+	if u.openDrop == dropTo {
+		sel = u.sleepToDraft
+	}
+	for i := u.hourScroll; i < u.hourScroll+visibleHourRows && i < numHours; i++ {
+		ry := l.Min.Y + (i-u.hourScroll)*optH
+		if u.hover == WOption && u.optIdx == i {
+			// Rounded ends wherever the highlight touches the list's
+			// rounded corners (first/last row overall or of the viewport).
+			if i == 0 || i == numHours-1 || i == u.hourScroll ||
+				i == u.hourScroll+visibleHourRows-1 {
+				drawRoundRect(frame, l.Min.X+3, ry, l.Dx()-6, optH, 6, colHairLight)
+			} else {
+				fillRect(frame, l.Min.X+3, ry, l.Dx()-6, optH, colHairLight)
+			}
+		}
+		drawText(frame, l.Min.X+26, ry+(optH-glyphH*uiFontScale)/2,
+			fmt.Sprintf("%02d:00", i), uiFontScale, colText)
+		if i == sel {
+			fillDisc(frame, l.Min.X+15, ry+optH/2, 3, colHeader)
+		}
+	}
+
+	// Mini scrollbar: track on the right, thumb sized to the visible share.
+	trackY0, trackY1 := l.Min.Y+4, l.Max.Y-4
+	trackH := trackY1 - trackY0
+	thumbH := max(trackH*visibleHourRows/numHours, 10)
+	maxScroll := numHours - visibleHourRows
+	thumbY := trackY0 + (trackH-thumbH)*u.hourScroll/max(maxScroll, 1)
+	fillRect(frame, l.Max.X-8, trackY0, 3, trackH, colInputBorder)
+	fillRect(frame, l.Max.X-8, thumbY, 3, thumbH, colMuted)
+}
+
+// drawModalButtons paints CANCEL (muted) and SAVE (teal, like SEND).
+func (u *UI) drawModalButtons(frame *image.NRGBA) {
+	cancel, save := u.modalButtons()
+	u.drawModalButton(frame, cancel, WCancel, "CANCEL")
+	u.drawModalButton(frame, save, WSave, "SAVE")
+}
+
+func (u *UI) drawModalButton(frame *image.NRGBA, r image.Rectangle, w Widget, lbl string) {
+	fill, label, outline := colBtnOff, colMuted, colInputBorder
+	if w == WSave {
+		fill, label, outline = colBtn, colWhite, colPlum
+	}
+	switch {
+	case u.press == w:
+		fill = colTealShade
+	case u.hover == w:
+		fill, label = colHairLight, colPlum
+	}
+	drawRoundRect(frame, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), 9, outline)
+	drawRoundRect(frame, r.Min.X+2, r.Min.Y+2, r.Dx()-4, r.Dy()-4, 7, fill)
+	lw := textWidth(lbl, uiFontScale)
+	drawText(frame, r.Min.X+(r.Dx()-lw)/2,
+		r.Min.Y+(r.Dy()-glyphH*uiFontScale)/2, lbl, uiFontScale, label)
+}
+
+// drawChevron paints the dropdown's small down/up arrow: three 2px rows that
+// get narrower towards the point.
+func drawChevron(img *image.NRGBA, cx, cy int, up bool, col color.RGBA) {
+	for i := 0; i < 3; i++ {
+		w := 3 + 2*i
+		dy := 2 - 2*i // down: wide on top, narrow at the bottom
+		if up {
+			dy = -dy
+		}
+		fillRect(img, cx-w/2, cy+dy, w, 2, col)
+	}
+}
+
+// drawGear paints a small cog centred at (cx,cy): a disc with eight teeth
+// and a hole punched in the button's own fill colour.
+func drawGear(img *image.NRGBA, cx, cy int, col, hole color.RGBA) {
+	fillRect(img, cx-2, cy-7, 5, 3, col) // N
+	fillRect(img, cx-2, cy+4, 5, 3, col) // S
+	fillRect(img, cx-7, cy-2, 3, 5, col) // W
+	fillRect(img, cx+4, cy-2, 3, 5, col) // E
+	fillRect(img, cx+3, cy-6, 3, 3, col) // NE
+	fillRect(img, cx+3, cy+3, 3, 3, col) // SE
+	fillRect(img, cx-6, cy-6, 3, 3, col) // NW
+	fillRect(img, cx-6, cy+3, 3, 3, col) // SW
+	fillDisc(img, cx, cy, 5, col)
+	fillDisc(img, cx, cy, 2, hole)
 }
 
 func (u *UI) drawMessages(frame *image.NRGBA) {

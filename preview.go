@@ -78,6 +78,47 @@ func dumpPreviews() {
 	u5.Submit()
 	writePNG("chat_ui_thinking.png", u5.Render())
 
+	// Settings modal over an expanded conversation: opened via the gear,
+	// dropdowns closed, SAVE/CANCEL at the bottom.
+	u7 := NewUI(380, 520)
+	u7.collapsed = false
+	seedConvo(u7)
+	u7.name = "Onidia"
+	u7.age = 10
+	u7.sleepFrom, u7.sleepTo = 22, 7
+	u7.openSettings()
+	u7.hover = WDrop
+	writePNG("chat_ui_settings.png", u7.Render())
+
+	// Same modal with the age dropdown expanded (7-13); the option list
+	// overlays the buttons and the pointer rests on the selected row.
+	u8 := NewUI(380, 520)
+	u8.collapsed = false
+	seedConvo(u8)
+	u8.name = "Onidia"
+	u8.age = 10
+	u8.sleepFrom, u8.sleepTo = 22, 7
+	u8.openSettings()
+	u8.openDrop = dropAge
+	u8.hover = WOption
+	u8.optIdx = 3 // row for age 10
+	writePNG("chat_ui_settings_open.png", u8.Render())
+
+	// Sleep-time dropdowns: the FROM list is expanded. Only five of the 24
+	// hours fit, so the list is scrolled to the selection with a scrollbar.
+	u9 := NewUI(380, 520)
+	u9.collapsed = false
+	seedConvo(u9)
+	u9.name = "Onidia"
+	u9.age = 10
+	u9.sleepFrom, u9.sleepTo = 22, 7
+	u9.openSettings()
+	u9.openDrop = dropFrom
+	u9.hourScroll = 19 // rows 19:00..23:00 visible, 22:00 highlighted
+	u9.hover = WOption
+	u9.optIdx = 22
+	writePNG("chat_ui_settings_sleep.png", u9.Render())
+
 	// Narrow window: the layout reflows (bubbles and textarea shrink).
 	u4 := NewUI(280, 430)
 	u4.collapsed = false

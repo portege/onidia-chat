@@ -12,6 +12,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -35,6 +36,11 @@ type Config struct {
 	Provider         string `ini:"provider"`            // "gemini" | "bedrock"
 	AWSProfile       string `ini:"aws-profile"`         // AWS shared profile name
 	AWSRegion        string `ini:"aws-region"`          // AWS region for Bedrock
+	CharacterAge     int    `ini:"character-age"`       // chat character's age (settings dialog, 7-13)
+	CharacterName    string `ini:"character-name"`      // chat character's name (settings dialog)
+	SleepFrom        int    // sleep-window start hour (0-23), from sleep-time
+	SleepTo          int    // sleep-window end hour (0-23), from sleep-time
+	SleepSet         bool   // sleep-time was present in the config
 }
 
 // LoadConfig reads a simple INI file and returns populated Config.
@@ -143,10 +149,150 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.AWSProfile = val
 	case "aws-region":
 		cfg.AWSRegion = val
+	case "character-age":
+		cfg.CharacterAge = parseIntVal(val)
+	case "character-name":
+		cfg.CharacterName = val
+	case "sleep-time":
+		if from, to, ok := parseSleepTime(val); ok {
+			cfg.SleepFrom, cfg.SleepTo, cfg.SleepSet = from, to, true
+		}
 	}
+}
+
+// parseIntVal parses a plain integer config value; junk parses as 0.
+func parseIntVal(s string) int {
+	n, _ := strconv.Atoi(strings.TrimSpace(s))
+	return n
+}
+
+// parseSleepTime parses a sleep window "22:00-07:00" (the settings dialog's
+// format; bare hours like "22-7" are accepted too) into start/end hours.
+func parseSleepTime(s string) (from, to int, ok bool) {
+	parts := strings.SplitN(s, "-", 2)
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	from, ok1 := parseHour(parts[0])
+	to, ok2 := parseHour(parts[1])
+	if !ok1 || !ok2 {
+		return 0, 0, false
+	}
+	return from, to, true
+}
+
+// parseHour parses one "HH", "H" or "HH:MM" value into the hour 0..23.
+func parseHour(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, ":"); i >= 0 {
+		s = s[:i] // drop the minutes: the dropdown steps by whole hours
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 || n > 23 {
+		return 0, false
+	}
+	return n, true
 }
 
 func parseBool(s string) bool {
 	s = strings.ToLower(strings.TrimSpace(s))
 	return s == "true" || s == "yes" || s == "1" || s == "on"
+}
+
+// SetConfigValue sets a single key = value pair in an INI file while
+// preserving everything else: comments, sections and unknown keys stay
+// byte-for-byte identical (the settings dialog must not destroy API keys or
+// hand-tuned prompts). The key is matched on uncommented lines outside ```
+// multi-line fences only. When the key already exists its line is rewritten
+// in place; otherwise it is inserted right after the [section] header, or
+// appended as a fresh section at the end of the file. A missing file is
+// created. The write is atomic (temp file + rename).
+func SetConfigValue(path, section, key, val string) error {
+	var lines []string
+	raw, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		lines = strings.Split(string(raw), "\n")
+	case os.IsNotExist(err):
+		lines = []string{
+			"# chat-app configuration (INI format)",
+			"# Partially maintained by the in-app settings dialog.",
+			"",
+		}
+	default:
+		return fmt.Errorf("read config %s: %w", path, err)
+	}
+
+	// Pass 1: find an existing uncommented "key = ..." line (outside fences).
+	inFence := false
+	for i, line := range lines {
+		s := strings.TrimSpace(line)
+		if inFence {
+			if strings.HasPrefix(s, "```") {
+				inFence = false // end of the multi-line block
+			}
+			continue
+		}
+		if s == "" || strings.HasPrefix(s, "#") || strings.HasPrefix(s, ";") {
+			continue
+		}
+		if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+			continue // section header
+		}
+		idx := strings.Index(s, "=")
+		if idx <= 0 {
+			continue
+		}
+		k := strings.TrimSpace(s[:idx])
+		if strings.HasPrefix(strings.TrimSpace(s[idx+1:]), "```") {
+			inFence = true // multi-line value starts on this line
+		}
+		if k == key {
+			lines[i] = key + " = " + val
+			return writeConfigLines(path, lines)
+		}
+	}
+
+	// Pass 2: the key is new - insert it right after its section header.
+	if section != "" {
+		header := "[" + section + "]"
+		for i, line := range lines {
+			if strings.TrimSpace(line) == header {
+				out := make([]string, 0, len(lines)+1)
+				out = append(out, lines[:i+1]...)
+				out = append(out, key+" = "+val)
+				out = append(out, lines[i+1:]...)
+				return writeConfigLines(path, out)
+			}
+		}
+	}
+
+	// Pass 3: no section either - append one at the end of the file.
+	end := len(lines)
+	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	lines = append(lines[:end:end], "")
+	if section != "" {
+		lines = append(lines, "["+section+"]")
+	}
+	lines = append(lines, key+" = "+val)
+	return writeConfigLines(path, lines)
+}
+
+// writeConfigLines joins and atomically replaces the INI file.
+func writeConfigLines(path string, lines []string) error {
+	out := strings.Join(lines, "\n")
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n" // INI files always end with a newline
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(out), 0o644); err != nil {
+		return fmt.Errorf("write config %s: %w", path, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("replace config %s: %w", path, err)
+	}
+	return nil
 }

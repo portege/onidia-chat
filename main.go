@@ -373,6 +373,27 @@ func main() {
 	ui.Bot.ImageSource = imgSource
 	ui.Bot.PixabayKey = pxKey
 	ui.Bot.ForceImageKeyword = forceImg
+	// Settings dialog wiring: saves go to the loaded INI file (or a
+	// conventional ./chat-app.ini when none was loaded), and a character-age
+	// from the config seeds the dialog and the persona.
+	ui.savePath = configPath
+	if ui.savePath == "" {
+		ui.savePath = "chat-app.ini"
+	}
+	if cfg != nil && cfg.CharacterName != "" {
+		ui.name = cfg.CharacterName
+		ui.Bot.Name = cfg.CharacterName
+		ui.Bot.CharacterName = cfg.CharacterName
+	}
+	if cfg != nil && cfg.CharacterAge > 0 {
+		ui.age = cfg.CharacterAge
+		ui.Bot.CharacterAge = cfg.CharacterAge
+	}
+	if cfg != nil && cfg.SleepSet {
+		ui.sleepFrom, ui.sleepTo = cfg.SleepFrom, cfg.SleepTo
+		ui.Bot.SleepSet = true
+		ui.Bot.SleepFrom, ui.Bot.SleepTo = cfg.SleepFrom, cfg.SleepTo
+	}
 	// Build the selected provider.
 	var botProvider Provider
 	switch providerVal {
@@ -459,6 +480,11 @@ func main() {
 			case EvKey:
 				if ui.Key(ev.Key, ev.Sym) {
 					dirty = true
+					// Enter/Escape in the settings modal can restore the
+					// pre-modal window size.
+					if cw, ch := win.windowSize(); cw != ui.W || ch != ui.H {
+						win.Resize(ui.W, ui.H)
+					}
 				}
 			case EvMouse:
 				if ev.Pressed {
@@ -494,9 +520,10 @@ func main() {
 				if wd := ui.HitTest(ev.X, ev.Y); wd != ui.hover {
 					ui.SetHover(wd)
 					switch wd {
-					case WInput:
+					case WInput, WName:
 						win.SetCursor(win.cursorText)
-					case WButton, WHeader, WClose:
+					case WButton, WHeader, WClose, WSettings,
+						WDrop, WDropFrom, WDropTo, WOption, WSave, WCancel:
 						win.SetCursor(win.cursorHand)
 					default:
 						win.SetCursor(win.cursorDefault)
@@ -504,7 +531,9 @@ func main() {
 					dirty = true
 				}
 			case EvScroll:
-				ui.ScrollBy(ev.N * 40)
+				if !ui.ScrollHourList(ev.N) {
+					ui.ScrollBy(ev.N * 40)
+				}
 				dirty = true
 			case EvResize:
 				if ev.W > 0 && ev.H > 0 && (ev.W != ui.W || ev.H != ui.H) {
@@ -527,7 +556,7 @@ func main() {
 			dirty = true
 		case <-caret.C:
 			ui.caret = !ui.caret
-			if ui.focused {
+			if ui.focused || (ui.settingsOpen && ui.nameFocused) {
 				dirty = true
 			}
 		}

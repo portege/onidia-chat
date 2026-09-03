@@ -142,6 +142,20 @@ Keep every reply SHORT and playful...
 image-source = pixabay
 # pixabay-key = your-key (a free shared key is built in)
 # force-image = Bali
+
+[character]
+# Name of the character, typed into the settings dialog's NAME field; it
+# labels the bot's chat bubbles and is told to the persona.
+# character-name = Onidia
+#
+# Age of the chat character (7-13). Also editable in-app: click the gear
+# button in the header, pick an age, SAVE - the dialog rewrites this key
+# in place and the persona is told the age.
+# character-age = 10
+#
+# Sleep window "HH:00-HH:00", picked with the FROM/TO dropdowns in the same
+# dialog; the persona is told the schedule.
+# sleep-time = 22:00-07:00
 ```
 
 Precedence (highest first):
@@ -254,6 +268,9 @@ make preview     # renders chat_ui_*.png sample states and exits
 | `chat_ui_convo.png`    | conversation, typed text + caret, hovered SEND |
 | `chat_ui_sent.png`     | after submit: your bubble + the bot's answer |
 | `chat_ui_thinking.png` | the "..." bubble while the Gemini call is in flight |
+| `chat_ui_settings.png` | the settings dialog over a conversation |
+| `chat_ui_settings_open.png` | settings dialog with the age dropdown expanded |
+| `chat_ui_settings_sleep.png` | settings dialog with the sleep FROM hour list scrolled open |
 | `chat_ui_narrow.png`   | 280×430 window: layout reflow |
 
 ## Build & run
@@ -276,6 +293,8 @@ Or without make: `go build -trimpath -ldflags="-s -w" -o chat-app .`
 | click **SEND** | submit (only enabled while the textarea has text) |
 | click textarea | focus it (border turns teal, caret blinks) |
 | click **header** | collapse/expand the conversation history (starts collapsed) |
+| click **⚙ gear** (header, left of ✕) | open the settings dialog (character age 7-13, sleep window FROM/TO; SAVE writes `character-age` + `sleep-time` to `chat-app.ini`) |
+| in the dialog | type the character's name into NAME, click a dropdown to drop its list (hour lists scroll with the wheel), pick a value, **SAVE** (or **Enter**); **CANCEL** / **Esc** discards |
 | **drag** the header | move the window (`_NET_WM_MOVERESIZE`; the frame has no titlebar) |
 | click **✕** (header, far right) | quit the app |
 | **Alt+F4** | quit too (the WM delete protocol stays enabled) |

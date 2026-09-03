@@ -66,6 +66,18 @@ const imageTagInstruction = ` When your answer would benefit from an image (plac
 // match a real page. Descriptive phrases ("sunny beach with palm trees") 404.
 const wikiImageTagInstruction = ` When your answer would benefit from an image (place, landmark, animal, famous person, object, food, etc.), start your reply with "[IMG: <concise Wikipedia article title>]" on its own line. Pick a single, well-known article name (e.g. "Bali", "Eiffel Tower", "Capybara"), not a descriptive sentence. If you also want to express an emotion, put the image tag first, then the mood tag. All tags are stripped before display.`
 
+// ageInstructionFmt is appended to the system prompt when a character age is
+// set in the settings dialog (7-13), so answers stay age-appropriate.
+const ageInstructionFmt = " Character setting: you are %d years old; keep your replies age-appropriate."
+
+// nameInstructionFmt is appended when a character name is set in the settings
+// dialog, so the model answers to it.
+const nameInstructionFmt = " Character setting: your name is %s."
+
+// sleepInstructionFmt is appended when a sleep window is configured in the
+// settings dialog, so the character acts its schedule.
+const sleepInstructionFmt = " Sleep schedule: you sleep from %02d:00 until %02d:00; messages during those hours catch you sleepy and half-asleep."
+
 // Bot answers user messages via the configured LLM provider.
 type Bot struct {
 	Name              string
@@ -77,6 +89,11 @@ type Bot struct {
 	SystemInstruction string   // system prompt sent to every model
 	ImageSource       string   // "pixabay" | "wiki" | "gemini" | "off"
 	ForceImageKeyword string   // if set, always fetch/generate an image for this keyword
+	CharacterAge      int      // character age from the settings dialog (0 = unset)
+	CharacterName     string   // character name from the settings dialog ("" = unset)
+	SleepSet          bool     // a sleep window is configured (see SleepFrom/SleepTo)
+	SleepFrom         int      // sleep-window start hour (0-23)
+	SleepTo           int      // sleep-window end hour (0-23)
 	Provider          Provider // the active LLM backend (nil = offline stub)
 	HTTP              *http.Client
 }
@@ -214,7 +231,17 @@ func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 		clean[lastUser].Text = userDataBlock(clean[lastUser].Text)
 	}
 
-	rawReply, err := b.Provider.GenerateText(effectiveSystem(b.SystemInstruction, b.ImageSource), clean, sanitizeUserInput(userText))
+	sys := effectiveSystem(b.SystemInstruction, b.ImageSource)
+	if b.CharacterName != "" {
+		sys += fmt.Sprintf(nameInstructionFmt, b.CharacterName)
+	}
+	if b.CharacterAge > 0 {
+		sys += fmt.Sprintf(ageInstructionFmt, b.CharacterAge)
+	}
+	if b.SleepSet {
+		sys += fmt.Sprintf(sleepInstructionFmt, b.SleepFrom, b.SleepTo)
+	}
+	rawReply, err := b.Provider.GenerateText(sys, clean, sanitizeUserInput(userText))
 	if err != nil {
 		return ReplyResult{Text: fmt.Sprintf("ouch - %s call failed: %v", b.Provider.Name(), err)}
 	}
