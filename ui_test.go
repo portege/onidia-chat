@@ -153,6 +153,90 @@ func TestRenderRoundedCorners(t *testing.T) {
 	}
 }
 
+// TestInputDescenderSpace guards the textarea height: typed letters that
+// dip below the baseline (g, y, p, q) must render fully with comfortable
+// clearance above the textarea's inner bottom, even when the input wraps to
+// all inputRows lines. This test previously caught descender rows getting
+// visually chopped at the bottom edge of the input.
+func TestInputDescenderSpace(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"single line", "big happy gym"}, // y+p+g descend
+		{"wrapped to all rows", "how are you doing today? give a quick summary please"},
+	}
+	for _, c := range cases {
+		u := NewUI(380, headerH+inputH) // collapsed prompt-only window
+		u.input = []rune(c.input)
+		u.focused = true
+		u.caret = false
+		frame := u.Render()
+
+		ta := u.inputRect()
+		minY, maxY := ta.Max.Y, ta.Min.Y
+		for y := ta.Min.Y; y < ta.Max.Y; y++ {
+			for x := ta.Min.X; x < ta.Max.X; x++ {
+				p := frame.NRGBAAt(x, y)
+				if p.R < 128 && p.G < 128 && p.B < 128 {
+					if y < minY {
+						minY = y
+					}
+					if y > maxY {
+						maxY = y
+					}
+				}
+			}
+		}
+		innerBottom := ta.Max.Y - 2 // white fill inside the 2px border
+		if d := innerBottom - maxY; d < 8 {
+			t.Errorf("%s: only %dpx below the descender bottoms (bbox y[%d..%d], textarea inner bottom %d)",
+				c.name, d, minY, maxY, innerBottom)
+		}
+	}
+}
+
+// TestGlyphDescendersDistinct guards the lowercase bitmap font: the
+// descender letters g / j / p / q / y must each have a distinct glyph so a
+// well-rendered "g" can never be mistaken for a "q". They used to share
+// identical bitmaps (g == q), which is what made the input's "g" read as "q".
+// It also enforces the 9-row cell contract: true descenders carry ink below
+// the baseline (rows 7-8) while every other glyph stops at row 6.
+func TestGlyphDescendersDistinct(t *testing.T) {
+	desc := []rune{'g', 'j', 'p', 'q', 'y'}
+	seen := map[[9]uint8]rune{}
+	for _, r := range desc {
+		g, ok := font5x7[r]
+		if !ok {
+			t.Fatalf("font missing descender glyph %q", r)
+		}
+		if prev, dup := seen[g]; dup {
+			t.Errorf("glyph %q is identical to %q (%#v); descender tails must differ", r, prev, g)
+		}
+		seen[g] = r
+		if g[7] == 0 && g[8] == 0 {
+			t.Errorf("glyph %q has no ink in the rows 7-8 descender zone; its tail would be chopped at the baseline", r)
+		}
+	}
+	// punctuation that dips below the baseline too
+	for _, r := range []rune{',', ';'} {
+		g := font5x7[r]
+		if g[7] == 0 && g[8] == 0 {
+			t.Errorf("glyph %q should descend below the baseline", r)
+		}
+	}
+	// every other glyph must stop above the descender zone
+	isDesc := map[rune]bool{'g': true, 'j': true, 'p': true, 'q': true, 'y': true, ',': true, ';': true, '_': true}
+	for r, g := range font5x7 {
+		if isDesc[r] {
+			continue
+		}
+		if g[7] != 0 || g[8] != 0 {
+			t.Errorf("glyph %q unexpectedly has ink below the baseline (rows 7-8: %#x %#x)", r, g[7], g[8])
+		}
+	}
+}
+
 // --- settings dialog (gear icon + character-age dropdown) ---
 
 // TestSettingsGearHitTest verifies the gear button: it sits inside the header,
@@ -578,5 +662,106 @@ func TestSettingsNameField(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "character-age = 7") {
 		t.Errorf("INI lost the age while saving the name:\n%s", b)
+	}
+}
+
+// --- paginated bubbles (multi-paragraph replies) ---
+
+// TestSplitPages verifies paragraph splitting: blank lines are dropped,and
+// a single paragraph stays unpaginated while 2+ become pages.
+
+func TestSplitPages(t *testing.T) {
+	got := splitPages("one line")
+	if len(got) != 1 || got[0] != "one line" {
+		t.Errorf("splitPages(one line) = %q, want [one line]", got)
+	}
+	got = splitPages("one\ftwo\fthree")
+	if len(got) != 3 || got[0] != "one" || got[2] != "three" {
+		t.Errorf("splitPages = %q, want [one two three]", got)
+	}
+	got = splitPages("\f one \f two \f")
+	if len(got) != 2 || got[0] != "one" || got[1] != "two" {
+		t.Errorf("splitPages trimmed empties = %q, want [one two]", got)
+	}
+}
+
+// TestAddMsgPaginates verifies AddMsg splits multi-paragraph replies into
+// Pages (starting at page 0)and leaves single paragraphs unpaginated.
+
+func TestAddMsgPaginates(t *testing.T) {
+	u := NewUI(380, 520)
+	before := len(u.msgs)
+	u.AddMsg("bot", "one\ntwo\nthree")
+	m := u.msgs[before]
+	if len(m.Pages) != 3 || m.Page != 0 || m.Pages[1] != "two" {
+		t.Errorf("paged msg: pages=%v page=%d, want 3 pages at page 0", m.Pages, m.Page)
+
+	}
+	u.AddMsg("bot", "just one paragraph")
+	m2 := u.msgs[before+1]
+	if len(m2.Pages) != 0 {
+		t.Errorf("single paragraph got pages %v, want nil", m2.Pages)
+
+	}
+}
+
+// TestPagerFlip verifies the < > buttons on a paginated bubble flip its page,
+// clamping at the firstand last page.
+
+func TestPagerFlip(t *testing.T) {
+	u := NewUI(380, 520)
+	u.collapsed = false
+	u.msgs = nil
+	u.AddMsg("bot", "one\ntwo\nthree")
+	b := u.blocks()[0]
+	if !b.paginated || b.pageCount != 3 {
+		t.Fatalf("block: paginated=%v pages=%d, want true/3", b.paginated, b.pageCount)
+	}
+	// Recompute the pager geometry from the bubble's current page each step:
+	// the bubble width (and so the pager position) depends on the paragraph.
+	hitNext := func() (int, int) {
+		_, nr, _, _ := pagerRects(u.blocks()[0], padX, msgTopPad+labelH)
+		return (nr.Min.X + nr.Max.X) / 2, headerH + (nr.Min.Y+nr.Max.Y)/2
+	}
+	hitPrev := func() (int, int) {
+		pr, _, _, _ := pagerRects(u.blocks()[0], padX, msgTopPad+labelH)
+		return (pr.Min.X + pr.Max.X) / 2, headerH + (pr.Min.Y+pr.Max.Y)/2
+	}
+	flip := func(x, y int, want Widget) {
+		w := u.HitTest(x, y)
+		if w != want {
+			t.Errorf("pager hit at (%d,%d): got %v want %v", x, y, w, want)
+			return
+		}
+		u.Press(w)
+		u.Release(w)
+	}
+
+	// Next: 0 -> 1 -> 2 (last), then one more next is inert (disabled button).
+	for want := 1; want <= 2; want++ {
+		nx, ny := hitNext()
+		flip(nx, ny, WPageNext)
+		if m := u.msgs[0]; m.Page != want {
+			t.Errorf("page after next: got %d want %d", m.Page, want)
+		}
+	}
+	nx, ny := hitNext()
+	flip(nx, ny, WMessages) // next is disabled at the last page
+	if m := u.msgs[0]; m.Page != 2 {
+		t.Errorf("next clamped: got %d want 2", m.Page)
+	}
+
+	// Prev: 2 -> 1 -> 0 (first), then one more prev is inert (disabled button).
+	for want := 1; want >= 0; want-- {
+		px, py := hitPrev()
+		flip(px, py, WPagePrev)
+		if m := u.msgs[0]; m.Page != want {
+			t.Errorf("page after prev: got %d want %d", m.Page, want)
+		}
+	}
+	px, py := hitPrev()
+	flip(px, py, WMessages) // prev is disabled at the first page
+	if m := u.msgs[0]; m.Page != 0 {
+		t.Errorf("prev clamped: got %d want 0", m.Page)
 	}
 }

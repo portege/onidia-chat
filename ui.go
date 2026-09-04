@@ -39,6 +39,8 @@ const (
 	WOption   // one row of an open dropdown list
 	WSave     // modal SAVE button
 	WCancel   // modal CANCEL button
+	WPagePrev // prev page in a paginated chat bubble
+	WPageNext // next page in a paginated chat bubble
 )
 
 // Msg is one chat entry.
@@ -46,6 +48,8 @@ type Msg struct {
 	From  string // "you" or the bot's name
 	Text  string
 	Image image.Image // optional image to render inside the bubble
+	Pages []string    // paragraphs; >1 turns the bubble into a pager (see Page)
+	Page  int         // current page index into Pages (0 = first)
 }
 
 // Palette - shared with the desktop-pet (plum outlines, pastel teal).
@@ -68,17 +72,19 @@ var (
 const (
 	uiFontScale = 2
 	cellW       = advW * uiFontScale         // glyph advance in px (12)
-	lineH       = (glyphH + 3) * uiFontScale // text line pitch (20)
+	lineH       = (glyphH + 3) * uiFontScale // text line pitch (24): generous
+	// enough that descender tails (g, y, p, q) never touch the next line
 
-	headerH   = 44 // header strip height
-	inputH    = 74 // input bar height
+	headerH = 44  // header strip height
+	inputH  = 108 // input bar height: 3 lineH rows of text plus headroom so
+	// descender tails (g, y, p, q) stay well clear of the textarea bottom
 	inputPad  = 10
 	btnW      = 84
 	btnH      = 44
 	padX      = 12
 	btnGap    = 12
 	hdrBtn    = 24 // header close-button square side
-	inputRows = 2  // wrapped input lines visible in the textarea
+	inputRows = 3  // wrapped input lines visible in the textarea
 
 	bubOutline = 2
 	bubRadius  = 8
@@ -87,6 +93,10 @@ const (
 	bubGap     = 10 // vertical gap between messages
 	labelH     = 10 // sender label strip above a bubble
 	msgTopPad  = 8  // padding above the first message
+
+	// Pagination: a reply with 2+ paragraphs becomes a paged bubble.
+	pagStrip = 20 // height of the pager strip at the bubble's foot
+	pagBtn   = 14 // prev/next page button side
 
 	maxInput  = 280 // textarea rune cap
 	winRadius = 12  // window shell corner rounding (transparent corners)
@@ -167,6 +177,8 @@ type UI struct {
 	savePath       string // INI file settings are written to ("" = ./chat-app.ini)
 	saveErr        string // last save error, shown inside the modal
 	optIdx         int    // dropdown row under the pointer (set by HitTest)
+	pagerMsg       int    // msg index under the pointer in a paginated bubble (-1 = none)
+	pagerDir       int    // -1 prev / +1 next, from the last pager hit-test
 }
 
 // NewUI creates a UI sized w x h with a welcome message from the bot.
@@ -182,6 +194,7 @@ func NewUI(w, h int) *UI {
 		expandedH: max(h, 260),
 		sleepFrom: -1, // -1 = no sleep window configured yet
 		sleepTo:   -1,
+		pagerMsg:  -1, // no pager under the pointer yet
 	}
 	u.AddMsg(u.Bot.Name,
 		"hi! i am buddy. ask me anything - my answers come from google gemini, and onidia the desktop-pet says them out loud!")
@@ -353,6 +366,9 @@ func (u *UI) HitTest(x, y int) Widget {
 		return WInput
 	}
 	if !u.collapsed {
+		if w := u.pagerAt(x, y); w != WNone {
+			return w
+		}
 		return WMessages
 	}
 	return WNone
@@ -378,14 +394,102 @@ func (u *UI) Resize(w, h int) {
 
 // AddMsg appends a text message and sticks the view to the newest entry.
 func (u *UI) AddMsg(from, text string) {
-	u.msgs = append(u.msgs, Msg{From: from, Text: text})
+	u.msgs = append(u.msgs, newMsg(from, text, nil))
 	u.scroll = u.maxScroll()
 }
 
 // AddMsgWithImage appends a message that may include an image.
 func (u *UI) AddMsgWithImage(from, text string, img image.Image) {
-	u.msgs = append(u.msgs, Msg{From: from, Text: text, Image: img})
+	u.msgs = append(u.msgs, newMsg(from, text, img))
 	u.scroll = u.maxScroll()
+}
+
+// pagerAt checks whether (x,y) window coordinates fall on a paginated
+// bubble's prev/next page button. When they do it records the target msg
+// index (u.pagerMsg) and direction (u.pagerDir) and returns the widget.
+func (u *UI) pagerAt(x, y int) Widget {
+	areaY, areaH := u.msgArea()
+	if areaH <= 0 {
+		return WNone
+	}
+	bs := u.blocks()
+	contentH := msgTopPad
+	for i, b := range bs {
+		if i > 0 {
+			contentH += bubGap
+		}
+		contentH += b.h
+	}
+	scroll := clamp(u.scroll, 0, max(0, contentH-areaH))
+	ly := y - areaY // layer-relative Y (the pager rects live in the msg layer)
+	ty := msgTopPad - scroll
+	for mi, b := range bs {
+		if ty+b.h > 0 && ty < areaH && b.paginated {
+			bx := padX
+			if b.m.From == "you" {
+				bx = u.W - padX - b.bubW
+			}
+			by := ty + labelH
+			if b.img != nil {
+				by += imgGapTop + b.img.Bounds().Dy() + imgGapBot
+			}
+			prev, next, _, _ := pagerRects(b, bx, by)
+			if inRect(x, ly, next) && b.m.Page < b.pageCount-1 {
+				u.pagerMsg, u.pagerDir = mi, +1
+				return WPageNext
+			}
+			if inRect(x, ly, prev) && b.m.Page > 0 {
+				u.pagerMsg, u.pagerDir = mi, -1
+				return WPagePrev
+			}
+		}
+		ty += b.h + bubGap
+	}
+	return WNone
+}
+
+// flipPage flips the last pager-hit bubble one page in the recorded direction,
+// clamping at the firstand last page. The bubble resizes per page; drawMessages
+// re-clamps the scroll on the next frame.
+
+func (u *UI) flipPage() {
+	if u.pagerMsg < 0 || u.pagerMsg >= len(u.msgs) {
+		return
+	}
+	m := &u.msgs[u.pagerMsg]
+	if len(m.Pages) <= 1 {
+		return
+	}
+	np := m.Page + u.pagerDir
+	if np < 0 || np >= len(m.Pages) {
+		return
+	}
+	m.Page = np
+}
+
+// newMsg builds a chat entry, paginating the reply when it holds more
+// than one paragraph (see splitPages): then the bubble shows one page at a
+// time with a pager strip in its foot. The LLM separates paragraphs with
+// newlines (see newlineToPageBreak) which become \f page breaks here.
+func newMsg(from, text string, img image.Image) Msg {
+	m := Msg{From: from, Text: text, Image: img}
+	if ps := splitPages(newlineToPageBreak(text)); len(ps) > 1 {
+		m.Pages = ps
+	}
+	return m
+}
+
+// splitPages splits text on \f (form feed) into trimmed, non-empty pages.
+// A reply with 2+ pages becomes a paged bubble; a single page stays one
+// page (Pages nil).
+func splitPages(text string) []string {
+	var ps []string
+	for _, page := range strings.Split(text, "\f") {
+		if t := strings.TrimSpace(page); t != "" {
+			ps = append(ps, t)
+		}
+	}
+	return ps
 }
 
 // ScrollBy moves the view by dy px (positive shows newer messages).
@@ -452,6 +556,8 @@ func (u *UI) Release(w Widget) bool {
 		case WCancel:
 			u.press = WNone
 			return u.closeSettings()
+		case WPagePrev, WPageNext:
+			u.flipPage()
 		case WModal:
 			u.openDrop = dropNone // a click outside the widgets closes the list
 		case WHeader:
@@ -1046,11 +1152,14 @@ const (
 )
 
 type msgBlock struct {
-	m     Msg
-	lines []string
-	bubW  int
-	h     int         // total block height including the label strip
-	img   image.Image // scaled image to draw above the bubble (may be nil)
+	m         Msg
+	lines     []string
+	bubW      int
+	bubH      int         // bubble-only height, including the pager strip
+	h         int         // total block height including the label strip + image
+	img       image.Image // scaled image to draw above the bubble (may be nil)
+	paginated bool        // bubble has a pager strip (m.Pages > 1)
+	pageCount int         // number of pages (len m.Pages)
 }
 
 func (u *UI) blocks() []msgBlock {
@@ -1068,13 +1177,21 @@ func (u *UI) blocks() []msgBlock {
 }
 
 func (u *UI) blockFor(m Msg, cols, maxW int) msgBlock {
-	lines := wrapText(m.Text, cols)
+	text := m.Text
+	paginated := len(m.Pages) > 1
+	if paginated {
+		text = m.Pages[clamp(m.Page, 0, len(m.Pages)-1)]
+	}
+	lines := wrapText(text, cols)
 	textW := 0
 	for _, l := range lines {
 		textW = max(textW, textWidth(l, uiFontScale))
 	}
 	bubW := min(textW+2*bubOutline+2*bubPadX, maxW)
 	bubH := len(lines)*lineH + 2*bubPadY
+	if paginated {
+		bubH += pagStrip // pager controls live in a strip at the bubble's foot
+	}
 
 	imgH := 0
 	var img image.Image
@@ -1094,7 +1211,7 @@ func (u *UI) blockFor(m Msg, cols, maxW int) msgBlock {
 	if imgH > 0 {
 		h += imgGapTop + imgH + imgGapBot
 	}
-	return msgBlock{m: m, lines: lines, bubW: bubW, h: h, img: img}
+	return msgBlock{m: m, lines: lines, bubW: bubW, bubH: bubH, h: h, img: img, paginated: paginated, pageCount: len(m.Pages)}
 }
 
 func (u *UI) contentHeight() int {
@@ -1162,8 +1279,52 @@ func (u *UI) drawMsgBlock(layer *image.NRGBA, b msgBlock, y int) {
 		drawText(layer, tx, ty, l, uiFontScale, colText)
 		ty += lineH
 	}
+	if b.paginated {
+		// Pager strip at the bubble's foot: separator hairline + < 1/3 >.
+		stripY := by + b.bubH - pagStrip
+		fillRect(layer, bx+bubOutline+4, stripY, b.bubW-2*bubOutline-8, 1, colInputBorder)
+		u.drawPager(layer, b, bx, by)
+	}
 }
 
+// drawPager paints the < prev / n/N label / next > controls in the bubble's
+// pager strip. Disabled ends (first/last page) draw muted.
+func (u *UI) drawPager(layer *image.NRGBA, b msgBlock, bx, by int) {
+	prev, next, lblX, lbl := pagerRects(b, bx, by)
+	u.drawPagBtn(layer, prev, "<", b.m.Page > 0)
+	u.drawPagBtn(layer, next, ">", b.m.Page < b.pageCount-1)
+	y := by + b.bubH - pagStrip + (pagStrip-pagBtn)/2
+	drawText(layer, lblX, y+(pagBtn-glyphH)/2, lbl, 1, colMuted)
+}
+
+// pagerRects lays out the pager buttons and label right-aligned in the bubble's
+// foot strip. Returns layer-relative rects, the label's left-x and the label.
+// Single source of truth for hit-testing (pagerAt) and drawing (drawPager).
+func pagerRects(b msgBlock, bx, by int) (prev, next image.Rectangle, lblX int, lbl string) {
+	lbl = fmt.Sprintf("%d/%d", b.m.Page+1, b.pageCount)
+	lw := textWidth(lbl, 1)
+	x1 := bx + b.bubW - bubOutline - 4
+	y := by + b.bubH - pagStrip + (pagStrip-pagBtn)/2
+	x := x1
+	next = image.Rect(x-pagBtn, y, x, y+pagBtn)
+	x -= pagBtn + 3 // now: label right edge
+	lblX = x - lw   // label left edge (drawn right-aligned at lblX)
+	x = lblX - 3    // now: prev button right edge
+	prev = image.Rect(x-pagBtn, y, x, y+pagBtn)
+	return prev, next, lblX, lbl
+}
+
+// drawPagBtn paints one square pager chevron button ("<" or ">").
+func (u *UI) drawPagBtn(layer *image.NRGBA, r image.Rectangle, glyph string, on bool) {
+	fill, col, outline := colBubbleFill, colPlum, colPlum
+	if !on {
+		fill, col, outline = colBubbleFill, colMuted, colInputBorder
+	}
+	drawRoundRect(layer, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), 4, outline)
+	drawRoundRect(layer, r.Min.X+1, r.Min.Y+1, r.Dx()-2, r.Dy()-2, 3, fill)
+	gw := textWidth(glyph, 1)
+	drawText(layer, r.Min.X+(r.Dx()-gw)/2, r.Min.Y+(r.Dy()-glyphH)/2, glyph, 1, col)
+}
 func (u *UI) drawInputBar(frame *image.NRGBA) {
 	fillRect(frame, 0, u.H-inputH, u.W, 1, colInputBorder)
 

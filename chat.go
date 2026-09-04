@@ -48,7 +48,8 @@ const botPersona = `You are Buddy, a tiny cheerful chat companion living in a ch
 	`If an emotion fits the answer, START it with exactly one mood tag from ` +
 	`[happy] [wink] [sad] [thinking] [anxious] [angry] [surprised] [sleepy] ` +
 	`[fear] [disgust] [contempt] [confused] [skeptical] [embarrassed]; ` +
-	`the tag is stripped before display.`
+	`the tag is stripped before display.` +
+	` When a longer answer has multiple paragraphs, separate each paragraph with a newline character; the app renders every newline as a page break, one paragraph per page, with a pager strip to flip through them.`
 
 // defaultModel: 3.7-flash currently answers with 503 "high demand" on this
 // key, and pre-3.6 models are deprecated on generateContent - 3.6 flash
@@ -186,8 +187,9 @@ type geminiResponse struct {
 	} `json:"error,omitempty"`
 }
 
-// moodTag matches a leading "[happy] " style tag.
-var moodTag = regexp.MustCompile(`^\[([a-z]+)\]\s*`)
+// replyTag matches one [IMG: ...] or [mood] tag plus any blanks after it.
+// Group 2 holds the image description, group 3 the mood word.
+var replyTag = regexp.MustCompile(`(\[IMG:\s*([^\]]*)\]|\[([a-z]+)\])[ \t]*`)
 
 // petMoods are the tags the pet understands (see desktop-pet docs).
 var petMoods = map[string]bool{
@@ -196,10 +198,6 @@ var petMoods = map[string]bool{
 	"fear": true, "disgust": true, "contempt": true, "confused": true,
 	"skeptical": true, "embarrassed": true,
 }
-
-// imgTag matches a leading "[IMG: ...] " tag emitted by the model when it
-// decides a picture would help the answer.
-var imgTag = regexp.MustCompile(`^\[IMG:\s*([^\]\n]+)\]\s*`)
 
 // Reply produces the assistant answer for one user message. history holds
 // the conversation so far, INCLUDING the new user message. The answer is
@@ -249,6 +247,9 @@ func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 	// Split off the mood and image tags: chat shows bare text, the pet gets
 	// the mood, and the image tag drives the picture (if enabled).
 	mood, imgDesc, text := stripTags(rawReply)
+	// The LLM uses newlines as page breaks; convert them to \f for the chat
+	// bubble pager (see newlineToPageBreak).
+	text = newlineToPageBreak(text)
 	if b.ForceImageKeyword != "" {
 		imgDesc = b.ForceImageKeyword
 	}
@@ -356,24 +357,44 @@ func userDataBlock(text string) string {
 	return "<<<USER>>>\n" + text + "\n<<<END USER>>>"
 }
 
-// stripTags extracts an optional leading mood tag and an optional leading
-// [IMG: ...] tag from the model reply. The remaining text is returned clean.
+// stripTags extracts the reply's mood and image description and returns the
+// bare text. The model is asked to lead with its [mood] / [IMG: ...] tags
+// (and to put the mood right after the image tag), so a tag only counts as
+// the reply's mood/image in that "header" position: at the very start of the
+// reply, at the start of a line, or directly after another header tag. The
+// same tags buried mid-sentence are prose - they are stripped from the text
+// but ignored. Removal keeps the newlines around the tags intact so the
+// paragraph -> page-break conversion downstream still sees them.
 func stripTags(raw string) (mood, imgDesc, text string) {
 	text = strings.TrimSpace(raw)
-	for {
-		if m := moodTag.FindStringSubmatch(text); m != nil {
-			if petMoods[m[1]] && mood == "" {
-				mood = m[1]
+	prevEnd, prevCounted := -1, false
+	for _, loc := range replyTag.FindAllStringSubmatchIndex(text, -1) {
+		counted := loc[0] == 0 || text[loc[0]-1] == '\n' ||
+			(loc[0] == prevEnd && prevCounted)
+		switch {
+		case loc[4] >= 0: // [IMG: desc]
+			if counted && imgDesc == "" {
+				imgDesc = strings.TrimSpace(text[loc[4]:loc[5]])
 			}
-			text = strings.TrimSpace(text[len(m[0]):])
-			continue
+		case loc[6] >= 0: // [mood]
+			if counted && mood == "" && petMoods[text[loc[6]:loc[7]]] {
+				mood = text[loc[6]:loc[7]]
+			}
 		}
-		if m := imgTag.FindStringSubmatch(text); m != nil && imgDesc == "" {
-			imgDesc = strings.TrimSpace(m[1])
-			text = strings.TrimSpace(text[len(m[0]):])
-			continue
-		}
-		break
+		prevEnd, prevCounted = loc[1], counted
 	}
-	return
+	return mood, imgDesc, strings.TrimSpace(replyTag.ReplaceAllString(text, ""))
+}
+
+// newlineToPageBreak turns every newline form a model reply might use - an
+// actual LF/CRLF, or the literal two-character escape "\n" LLMs often emit -
+// into a form-feed page break (\f). The chat bubble (and the pet bubble, which
+// keeps \f verbatim in sanitizeSay) splits pages on \f, so each paragraph the
+// model separated with a newline becomes one page in the pager strip.
+func newlineToPageBreak(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\f")
+	s = strings.ReplaceAll(s, "\r", "\f")
+	s = strings.ReplaceAll(s, "\n", "\f")
+	s = strings.ReplaceAll(s, `\n`, "\f") // literal backslash-n escape
+	return s
 }

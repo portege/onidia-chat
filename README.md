@@ -271,6 +271,7 @@ make preview     # renders chat_ui_*.png sample states and exits
 | `chat_ui_settings.png` | the settings dialog over a conversation |
 | `chat_ui_settings_open.png` | settings dialog with the age dropdown expanded |
 | `chat_ui_settings_sleep.png` | settings dialog with the sleep FROM hour list scrolled open |
+| `chat_ui_paged.png`       | a paginated bot reply: < 1/3 > pager in the bubble's foot strip |
 | `chat_ui_narrow.png`   | 280×430 window: layout reflow |
 
 ## Build & run
@@ -299,6 +300,7 @@ Or without make: `go build -trimpath -ldflags="-s -w" -o chat-app .`
 | click **✕** (header, far right) | quit the app |
 | **Alt+F4** | quit too (the WM delete protocol stays enabled) |
 | wheel over history | scroll toward older / newer messages |
+| click **<** / **>** on a paginated bubble | flip that bubble one page (multi-paragraph bot replies paginate — the persona instructs the LLM to separate paragraphs with a newline, which the app converts to a form-feed page break and renders one paragraph per page) |
 | window corner | resize — bubbles, textarea and scroll reflow |
 
 ## How the pieces fit

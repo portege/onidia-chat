@@ -40,6 +40,9 @@ func TestStripTags(t *testing.T) {
 		{"[happy] [IMG: Bali] hello", "happy", "Bali", "hello"},
 		{"[IMG: a big dog] wow", "", "a big dog", "wow"},
 		{"[unknown] text", "", "", "text"},
+		{"hello [happy] world", "", "", "hello world"},
+		{"hello [IMG: Bali] world", "", "", "hello world"},
+		{"p1.\n[IMG: an image] [happy] p2.", "happy", "an image", "p1.\np2."},
 	}
 	for _, tc := range cases {
 		mood, img, text := stripTags(tc.raw)
@@ -47,6 +50,39 @@ func TestStripTags(t *testing.T) {
 			t.Errorf("stripTags(%q) = (%q, %q, %q), want (%q, %q, %q)",
 				tc.raw, mood, img, text, tc.wantMood, tc.wantImg, tc.wantText)
 		}
+	}
+}
+
+// TestResponsePaginates verifies that a model reply separates paragraphs from
+// the chat bubble: the reply text gets \f page breaks where the model put a
+// newline - real newline bytes, CRLF, or the literal two-character "\n" escape
+// LLMs often emit - so splitPages turns each one into a pager page.
+func TestResponsePaginates(t *testing.T) {
+	fp := &fakeProvider{canned: "gravity pulls things down.\nthey fall."}
+	bot := &Bot{Provider: fp, SystemInstruction: "You are Buddy.", ImageSource: "off"}
+	res := bot.Reply([]Msg{{From: "you", Text: "explain gravity"}}, "explain gravity")
+	if n := strings.Count(res.Text, "\f"); n != 1 {
+		t.Errorf("page breaks count = %d, want 1 (got %q)", n, res.Text)
+	}
+	if !strings.HasPrefix(res.Text, "gravity pulls things down.") {
+		t.Errorf("reply = %q, want first paragraph first", res.Text)
+	}
+
+	fp2 := &fakeProvider{canned: "paragraph one\\\\nparagraph two\\\\nparagraph three"}
+	bot2 := &Bot{Provider: fp2, SystemInstruction: "You are Buddy.", ImageSource: "off"}
+	res2 := bot2.Reply([]Msg{{From: "you", Text: "hi"}}, "hi")
+	if n := strings.Count(res2.Text, "\f"); n != 2 {
+		t.Errorf("literal-escape page breaks count = %d, want 2 (got %q)", n, res2.Text)
+	}
+
+	fp3 := &fakeProvider{canned: "[happy] one\r\ntwo"}
+	bot3 := &Bot{Provider: fp3, SystemInstruction: "You are Buddy.", ImageSource: "off"}
+	res3 := bot3.Reply([]Msg{{From: "you", Text: "hi"}}, "hi")
+	if !strings.Contains(res3.Text, "\f") {
+		t.Errorf("CRLF reply = %q, want a page break", res3.Text)
+	}
+	if res3.Text != "one\ftwo" {
+		t.Errorf("CRLF reply = %q, want %q", res3.Text, "one\ftwo")
 	}
 }
 
@@ -144,12 +180,16 @@ type fakeProvider struct {
 	system  string
 	history []Msg
 	instant string
+	canned  string // when set, returned verbatim as the model's reply
 }
 
 func (f *fakeProvider) Name() string { return "fake" }
 
 func (f *fakeProvider) GenerateText(system string, history []Msg, userText string) (string, error) {
 	f.called, f.system, f.history, f.instant = true, system, history, userText
+	if f.canned != "" {
+		return f.canned, nil
+	}
 	return "hello!", nil
 }
 

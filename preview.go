@@ -119,6 +119,15 @@ func dumpPreviews() {
 	u9.optIdx = 22
 	writePNG("chat_ui_settings_sleep.png", u9.Render())
 
+	// A paginated bot reply: an answer with 3 paragraphs becomes one
+	// bubble per page, with < 1/3 > pager controls in its foot strip.
+	u10 := NewUI(380, 520)
+	u10.collapsed = false
+	seedConvo(u10)
+	u10.AddMsg(u10.Bot.Name,
+		"first, the moon is not made of cheese - it is a giant rock orbiting us.\nsecond,that rock is covered in grey dust and craters from ancient impacts.\nthird,someday humans will probably build bases there - right?")
+	writePNG("chat_ui_paged.png", u10.Render())
+
 	// Narrow window: the layout reflows (bubbles and textarea shrink).
 	u4 := NewUI(280, 430)
 	u4.collapsed = false
