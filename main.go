@@ -394,6 +394,9 @@ func main() {
 		ui.Bot.SleepSet = true
 		ui.Bot.SleepFrom, ui.Bot.SleepTo = cfg.SleepFrom, cfg.SleepTo
 	}
+	if cfg != nil && cfg.Mute {
+		ui.mute = true // the dialog's MUTE SPEECH checkbox starts checked
+	}
 	// Build the selected provider.
 	var botProvider Provider
 	switch providerVal {
@@ -523,7 +526,7 @@ func main() {
 					case WInput, WName:
 						win.SetCursor(win.cursorText)
 					case WButton, WHeader, WClose, WSettings,
-						WDrop, WDropFrom, WDropTo, WOption, WSave, WCancel:
+						WDrop, WDropFrom, WDropTo, WMute, WOption, WSave, WCancel:
 						win.SetCursor(win.cursorHand)
 					default:
 						win.SetCursor(win.cursorDefault)
@@ -551,8 +554,11 @@ func main() {
 			} else {
 				ui.AddMsg(ui.Bot.Name, reply.Text)
 			}
-			// Speak the reply at the same time the bubble appears.
-			tts.Speak(reply.Text)
+			// Speak the reply at the same time the bubble appears -
+			// unless the settings dialog's mute checkbox is on.
+			if !ui.Muted() {
+				tts.Speak(reply.Text)
+			}
 			dirty = true
 		case <-caret.C:
 			ui.caret = !ui.caret

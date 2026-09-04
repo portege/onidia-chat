@@ -36,6 +36,7 @@ const (
 	WDrop     // character-age dropdown box
 	WDropFrom // sleep-time FROM dropdown box
 	WDropTo   // sleep-time TO dropdown box
+	WMute     // mute-speech checkbox row
 	WOption   // one row of an open dropdown list
 	WSave     // modal SAVE button
 	WCancel   // modal CANCEL button
@@ -102,13 +103,17 @@ const (
 	winRadius = 12  // window shell corner rounding (transparent corners)
 
 	// Settings modal layout (drawSettings).
-	modalPad     = 20  // panel inner padding
-	modalBtnW    = 90  // SAVE / CANCEL button width
-	panelW       = 300 // modal panel width (clamped to the window)
-	panelH       = 340 // modal panel height (name + age + sleep rows + buttons)
+	modalPad  = 20  // panel inner padding
+	modalBtnW = 90  // SAVE / CANCEL button width
+	panelW    = 300 // modal panel width (clamped to the window)
+	panelH    = 360 // modal panel height (name + age + sleep rows +
+	// mute checkbox + buttons)
 	dropH        = 32  // dropdown box height
 	optH         = 24  // dropdown list row height
 	minSettingsH = 440 // window height forced while the modal is open
+
+	checkSide = 20  // mute-checkbox square side
+	muteRowY  = 258 // mute-checkbox row top inside the panel
 
 	maxNameChars = 16 // character-name field rune cap
 
@@ -157,9 +162,9 @@ type UI struct {
 	wantClose bool // set by a click on the header's close button
 
 	// Settings modal state (see drawSettings). name / age / sleepFrom /
-	// sleepTo are the committed values: unset until the first save, or
-	// loaded from the config (age 0 = unset; sleep uses -1 because hour 0
-	// is valid; name "" = unset).
+	// sleepTo / mute are the committed values: unset until the first save,
+	// or loaded from the config (age 0 = unset; sleep uses -1 because hour 0
+	// is valid; name "" = unset; mute false = speech on).
 	settingsOpen   bool
 	nameFocused    bool   // the name field owns the keyboard
 	nameDraft      []rune // name typed in the modal; committed on SAVE
@@ -168,12 +173,14 @@ type UI struct {
 	ageDraft       int    // age picked in the modal; committed on SAVE
 	sleepFromDraft int    // sleep start hour picked in the modal
 	sleepToDraft   int    // sleep end hour picked in the modal
+	muteDraft      bool   // mute-speech checkbox in the modal; committed on SAVE
 	wasCollapsed   bool   // collapse state when the modal opened
 	prevH          int    // window height before the modal forced minSettingsH
 	name           string // committed character name ("" = not set yet)
 	age            int    // committed character age (0 = not set yet)
 	sleepFrom      int    // committed sleep-window start hour (-1 = unset)
 	sleepTo        int    // committed sleep-window end hour (-1 = unset)
+	mute           bool   // committed: replies are not spoken aloud (INI "mute")
 	savePath       string // INI file settings are written to ("" = ./chat-app.ini)
 	saveErr        string // last save error, shown inside the modal
 	optIdx         int    // dropdown row under the pointer (set by HitTest)
@@ -265,6 +272,15 @@ func (u *UI) sleepToRect() image.Rectangle {
 	return image.Rect(f.Min.X+dx, f.Min.Y, f.Max.X+dx, f.Max.Y)
 }
 
+// muteRect is the mute-speech checkbox row: the box plus its label, so
+// clicking either toggles the draft.
+func (u *UI) muteRect() image.Rectangle {
+	p := u.modalPanel()
+	w := checkSide + 10 + textWidth("MUTE SPEECH", 1)
+	return image.Rect(p.Min.X+modalPad, p.Min.Y+muteRowY,
+		p.Min.X+modalPad+w, p.Min.Y+muteRowY+checkSide)
+}
+
 // dropListRect is the expanded age list; empty unless the age list is open.
 func (u *UI) dropListRect() image.Rectangle {
 	if u.openDrop != dropAge {
@@ -346,6 +362,9 @@ func (u *UI) HitTest(x, y int) Widget {
 		}
 		if r := u.sleepToRect(); inRect(x, y, r) {
 			return WDropTo
+		}
+		if r := u.muteRect(); inRect(x, y, r) {
+			return WMute
 		}
 		return WModal
 	}
@@ -530,6 +549,8 @@ func (u *UI) Release(w Widget) bool {
 			u.toggleDrop(dropFrom)
 		case WDropTo:
 			u.toggleDrop(dropTo)
+		case WMute:
+			u.muteDraft = !u.muteDraft // commits on SAVE, like the drafts
 		case WOption:
 			switch u.openDrop {
 			case dropAge:
@@ -583,6 +604,11 @@ func (u *UI) Release(w Widget) bool {
 // Collapsed reports whether the conversation history is currently hidden.
 func (u *UI) Collapsed() bool { return u.collapsed }
 
+// Muted reports whether the settings dialog's mute checkbox is committed on,
+// i.e. replies must not be spoken aloud. The main loop checks it right
+// before handing a reply to the TTS engine.
+func (u *UI) Muted() bool { return u.mute }
+
 // WantClose reports whether the header's close button was clicked; the main
 // loop exits when it is set.
 func (u *UI) WantClose() bool { return u.wantClose }
@@ -609,6 +635,7 @@ func (u *UI) openSettings() bool {
 	if u.sleepToDraft < 0 {
 		u.sleepToDraft = defaultSleepTo
 	}
+	u.muteDraft = u.mute
 	u.wasCollapsed = u.collapsed
 	u.hover, u.press = WNone, WNone
 	changed := false
@@ -677,9 +704,11 @@ func (u *UI) ScrollHourList(dy int) bool {
 	return true
 }
 
-// saveSettings commits the modal's drafts: the persona picks them up live
-// and character-age / sleep-time are rewritten in the INI file. Failures are
-// reported in the modal, which then stays open.
+// saveSettings commits the modal's drafts: the persona picks them up live,
+// character-name / character-age / sleep-time / mute are rewritten in the
+// INI file, and the stored system instruction is re-baked with the name and
+// age (see bakeCharacterPrompt). Failures are reported in the modal, which
+// then stays open.
 func (u *UI) saveSettings() {
 	path := u.savePath
 	if path == "" {
@@ -699,10 +728,22 @@ func (u *UI) saveSettings() {
 		u.saveErr = err.Error()
 		return
 	}
+	if err := SetConfigValue(path, "character", "mute", strconv.FormatBool(u.muteDraft)); err != nil {
+		u.saveErr = err.Error()
+		return
+	}
+	// Write the name and age into the stored persona too: the INI's system
+	// instruction has its "your name is ..." sentence rewritten, so the
+	// character definition itself carries these values.
+	if err := bakeCharacterPrompt(path, name, u.ageDraft); err != nil {
+		u.saveErr = err.Error()
+		return
+	}
 	u.saveErr = ""
 	u.name = name
 	u.age = u.ageDraft
 	u.sleepFrom, u.sleepTo = u.sleepFromDraft, u.sleepToDraft
+	u.mute = u.muteDraft
 	if u.Bot != nil {
 		if name != "" {
 			u.Bot.Name = name // bubble sender label
@@ -934,6 +975,8 @@ func (u *UI) drawSettings(frame *image.NRGBA) {
 	u.drawSelectBox(frame, fr, fmt.Sprintf("%02d:00", u.sleepFromDraft), u.openDrop == dropFrom, WDropFrom)
 	u.drawSelectBox(frame, tr, fmt.Sprintf("%02d:00", u.sleepToDraft), u.openDrop == dropTo, WDropTo)
 
+	u.drawMuteRow(frame)
+
 	u.drawModalButtons(frame)
 	if u.openDrop == dropAge {
 		u.drawDropList(frame)
@@ -1054,6 +1097,39 @@ func (u *UI) drawHourList(frame *image.NRGBA) {
 	thumbY := trackY0 + (trackH-thumbH)*u.hourScroll/max(maxScroll, 1)
 	fillRect(frame, l.Max.X-8, trackY0, 3, trackH, colInputBorder)
 	fillRect(frame, l.Max.X-8, thumbY, 3, thumbH, colMuted)
+}
+
+// drawMuteRow paints the MUTE SPEECH checkbox: a rounded square that is
+// white while unchecked and teal with a white tick while checked, next to
+// its label. Hovering tints the border like the other modal controls.
+func (u *UI) drawMuteRow(frame *image.NRGBA) {
+	r := u.muteRect()
+	border := colPlum
+	if u.hover == WMute || u.press == WMute {
+		border = colHeader
+	}
+	fill := colWhite
+	if u.muteDraft {
+		fill = colHeader
+	}
+	drawRoundRect(frame, r.Min.X, r.Min.Y, checkSide, checkSide, 6, border)
+	drawRoundRect(frame, r.Min.X+2, r.Min.Y+2, checkSide-4, checkSide-4, 4, fill)
+	if u.muteDraft {
+		drawCheck(frame, r.Min.X, r.Min.Y, colWhite)
+	}
+	drawText(frame, r.Min.X+checkSide+10, r.Min.Y+(checkSide-glyphH)/2,
+		"MUTE SPEECH", 1, colMuted)
+}
+
+// drawCheck paints a chunky tick inside a checkSide-sized box at (x,y): two
+// 3px-thick diagonal strokes meeting near the box's lower-left of centre.
+func drawCheck(img *image.NRGBA, x, y int, col color.RGBA) {
+	for i := 0; i < 5; i++ { // short arm: down-right to the vertex
+		fillRect(img, x+3+i, y+8+i, 3, 3, col)
+	}
+	for i := 0; i < 8; i++ { // long arm: up-right from the vertex
+		fillRect(img, x+8+i, y+12-i, 3, 3, col)
+	}
 }
 
 // drawModalButtons paints CANCEL (muted) and SAVE (teal, like SEND).

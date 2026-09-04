@@ -9,6 +9,7 @@ url_default_test.go
 
 # Debug frame dumps
 pet_*.png
+*.png
 
 # Other
 .env

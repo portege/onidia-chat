@@ -156,6 +156,16 @@ image-source = pixabay
 # Sleep window "HH:00-HH:00", picked with the FROM/TO dropdowns in the same
 # dialog; the persona is told the schedule.
 # sleep-time = 22:00-07:00
+#
+# Mute checkbox from the same dialog: while checked, replies still show as
+# bubbles but are never spoken aloud (text-to-speech is skipped). Saving the
+# dialog rewrites this key in place.
+# mute = false
+#
+# SAVE also writes the name and age into the stored persona: the "your name
+# is ..." sentence in system-prompt-multi (or system-prompt) is rewritten
+# with the dialog's values on every save. The rest of your persona text is
+# preserved.
 ```
 
 Precedence (highest first):
@@ -294,8 +304,8 @@ Or without make: `go build -trimpath -ldflags="-s -w" -o chat-app .`
 | click **SEND** | submit (only enabled while the textarea has text) |
 | click textarea | focus it (border turns teal, caret blinks) |
 | click **header** | collapse/expand the conversation history (starts collapsed) |
-| click **⚙ gear** (header, left of ✕) | open the settings dialog (character age 7-13, sleep window FROM/TO; SAVE writes `character-age` + `sleep-time` to `chat-app.ini`) |
-| in the dialog | type the character's name into NAME, click a dropdown to drop its list (hour lists scroll with the wheel), pick a value, **SAVE** (or **Enter**); **CANCEL** / **Esc** discards |
+| click **⚙ gear** (header, left of ✕) | open the settings dialog (character age 7-13, sleep window FROM/TO, MUTE SPEECH checkbox; SAVE writes `character-name`, `character-age`, `sleep-time` + `mute` to `chat-app.ini` and rewrites the stored persona's "your name is …" sentence with the name + age) |
+| in the dialog | type the character's name into NAME, click a dropdown to drop its list (hour lists scroll with the wheel), pick a value, tick/untick **MUTE SPEECH** to silence the text-to-speech voice, **SAVE** (or **Enter**); **CANCEL** / **Esc** discards |
 | **drag** the header | move the window (`_NET_WM_MOVERESIZE`; the frame has no titlebar) |
 | click **✕** (header, far right) | quit the app |
 | **Alt+F4** | quit too (the WM delete protocol stays enabled) |

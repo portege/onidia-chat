@@ -665,6 +665,152 @@ func TestSettingsNameField(t *testing.T) {
 	}
 }
 
+// TestSettingsMuteCheckbox verifies the MUTE SPEECH checkbox row: it sits
+// between the sleep dropdowns and the buttons, hit-tests as WMute, toggles
+// the draft on click (committing only on SAVE), re-seeds from the committed
+// value when the dialog reopens, and SAVE persists "mute" to the INI.
+func TestSettingsMuteCheckbox(t *testing.T) {
+	path := writeTempINI(t, "[character]\ncharacter-age = 7\n")
+	u := NewUI(380, 520)
+	u.age = 7
+	u.savePath = path
+	u.collapsed = false
+	u.H = 520
+	u.openSettings()
+
+	// Layout sanity: the row lives below the sleep dropdowns and above the
+	// SAVE/CANCEL buttons.
+	mr := u.muteRect()
+	cancel, _ := u.modalButtons()
+	if mr.Min.Y <= u.sleepToRect().Max.Y || mr.Max.Y >= cancel.Min.Y {
+		t.Fatalf("muteRect %v must sit between the sleep dropdowns and the buttons", mr)
+	}
+	if u.muteDraft || u.mute {
+		t.Fatal("checkbox should start unchecked when speech is on")
+	}
+
+	// Click the checkbox twice: the draft toggles, nothing commits.
+	px, py := (mr.Min.X+mr.Max.X)/2, (mr.Min.Y+mr.Max.Y)/2
+	if w := u.HitTest(px, py); w != WMute {
+		t.Fatalf("mute checkbox hit: got %v want WMute", w)
+	}
+	u.Press(WMute)
+	u.Release(WMute)
+	if !u.muteDraft {
+		t.Fatal("click should check the mute draft")
+	}
+	u.Press(WMute)
+	u.Release(WMute)
+	if u.muteDraft || u.mute {
+		t.Fatal("second click should uncheck; nothing commits before SAVE")
+	}
+
+	// Check it again and SAVE: the INI gains mute = true, the committed
+	// state flips and the modal closes.
+	u.Press(WMute)
+	u.Release(WMute)
+	_, save := u.modalButtons()
+	w := u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if u.settingsOpen {
+		t.Fatal("save should close the modal")
+	}
+	if !u.Muted() {
+		t.Error("Muted() should report true after saving the checked box")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "mute = true") {
+		t.Errorf("INI lacks the saved mute key:\n%s", b)
+	}
+	if !strings.Contains(string(b), "character-age = 7") {
+		t.Errorf("INI lost the age while saving mute:\n%s", b)
+	}
+
+	// Re-open: the draft re-seeds from the committed value. Uncheck and
+	// save again: the key is rewritten in place and speech is back on.
+	u.openSettings()
+	if !u.muteDraft {
+		t.Fatal("reopen should seed the draft from the committed mute")
+	}
+	mr = u.muteRect()
+	px, py = (mr.Min.X+mr.Max.X)/2, (mr.Min.Y+mr.Max.Y)/2
+	u.Press(u.HitTest(px, py))
+	u.Release(u.HitTest(px, py))
+	if u.muteDraft {
+		t.Fatal("click should uncheck the seeded draft")
+	}
+	_, save = u.modalButtons()
+	w = u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if u.Muted() {
+		t.Error("Muted() should report false after unchecking and saving")
+	}
+	b, _ = os.ReadFile(path)
+	if !strings.Contains(string(b), "mute = false") {
+		t.Errorf("INI lacks the rewritten mute key:\n%s", b)
+	}
+}
+
+// TestSettingsSaveBakesNameAge verifies SAVE writes the dialog's name and
+// age into the stored persona's "your name is ..." sentence (a persona
+// without the sentence grows one after the built-in default), and a second
+// save with new values rewrites that same sentence.
+func TestSettingsSaveBakesNameAge(t *testing.T) {
+	path := writeTempINI(t, "[character]\ncharacter-age = 7\n")
+	u := NewUI(380, 520)
+	u.age = 7
+	u.savePath = path
+	u.collapsed = false
+	u.H = 520
+	u.openSettings()
+
+	u.nameFocused = true
+	for _, c := range "Onidia" {
+		u.Key(c, 0)
+	}
+	u.ageDraft = 11
+	_, save := u.modalButtons()
+	w := u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if u.settingsOpen {
+		t.Fatal("save should close the modal")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "Your name is Onidia, 11 years old.") {
+		t.Errorf("INI persona lacks the baked name/age:\n%s", b)
+	}
+	if !strings.Contains(string(b), botPersona) {
+		t.Errorf("first save should grow the default persona:\n%s", b)
+	}
+
+	// A second save with a new age rewrites the same sentence.
+	u.openSettings()
+	if u.ageDraft != 11 || string(u.nameDraft) != "Onidia" {
+		t.Fatalf("drafts not re-seeded: age=%d name=%q", u.ageDraft, string(u.nameDraft))
+	}
+	u.ageDraft = 9
+	_, save = u.modalButtons()
+	w = u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	b, _ = os.ReadFile(path)
+	if strings.Contains(string(b), "11 years old") || !strings.Contains(string(b), "9 years old") {
+		t.Errorf("stale values survived the second save:\n%s", b)
+	}
+	if n := strings.Count(strings.ToLower(string(b)), "your name is"); n != 1 {
+		t.Errorf("identity sentence appears %d times:\n%s", n, b)
+	}
+}
+
 // --- paginated bubbles (multi-paragraph replies) ---
 
 // TestSplitPages verifies paragraph splitting: blank lines are dropped,and
