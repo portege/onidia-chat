@@ -30,18 +30,21 @@ const (
 
 	// Settings modal (see drawSettings): the header's gear button plus the
 	// widgets that live inside the modal.
-	WSettings // gear button in the header
-	WModal    // dim backdrop around the panel (absorbs outside clicks)
-	WName     // character-name text field
-	WDrop     // character-age dropdown box
-	WDropFrom // sleep-time FROM dropdown box
-	WDropTo   // sleep-time TO dropdown box
-	WMute     // mute-speech checkbox row
-	WOption   // one row of an open dropdown list
-	WSave     // modal SAVE button
-	WCancel   // modal CANCEL button
-	WPagePrev // prev page in a paginated chat bubble
-	WPageNext // next page in a paginated chat bubble
+	WSettings  // gear button in the header
+	WModal     // dim backdrop around the panel (absorbs outside clicks)
+	WName      // character-name text field
+	WDrop      // FROM hour dropdown
+	WDropFrom  // FROM hour dropdown (sleep start)
+	WDropTo    // TO hour dropdown (sleep end)
+	WDropFromM // FROM minute dropdown 0/15/30/45
+	WDropToM   // TO minute dropdown 0/15/30/45
+	WDropBad   // dropdown whose selected value is invalid (for validation prompt)
+	WMute      // mute-speech checkbox row
+	WOption    // one row of an open dropdown list
+	WSave      // modal SAVE button
+	WCancel    // modal CANCEL button
+	WPagePrev  // prev page in a paginated chat bubble
+	WPageNext  // next page in a paginated chat bubble
 )
 
 // Msg is one chat entry.
@@ -121,10 +124,14 @@ const (
 	maxCharAge          = 13 // oldest character age in the dropdown
 	defaultCharacterAge = 10 // pre-selected age when none is configured
 
-	numHours         = 24 // entries in a sleep-time dropdown (0:00 .. 23:00)
-	visibleHourRows  = 5  // hour-list rows shown before it scrolls
-	defaultSleepFrom = 22 // pre-selected sleep start when none is configured
-	defaultSleepTo   = 7  // pre-selected sleep end when none is configured
+	// sleep dropdowns: the hour list is 24 entries (0..23), the minute list
+	// offers the four quarter-hour steps (00 / 15 / 30 / 45) next to it.
+	numHours          = 24 // hour entries in a sleep-time dropdown (0..23)
+	numMinutes        = 4  // minute entries (00 / 15 / 30 / 45)
+	visibleHourRows   = 5  // hour-list rows shown before it scrolls
+	visibleMinuteRows = 4  // all four minute rows shown at once
+	defaultSleepFrom  = 22 // pre-selected sleep start when none is configured
+	defaultSleepTo    = 7  // pre-selected sleep end when none is configured
 )
 
 // numAges is how many entries the age dropdown shows.
@@ -136,6 +143,8 @@ const (
 	dropAge
 	dropFrom
 	dropTo
+	dropFromM
+	dropToM
 )
 
 // UI holds all mutable chat-window state.
@@ -165,27 +174,33 @@ type UI struct {
 	// sleepTo / mute are the committed values: unset until the first save,
 	// or loaded from the config (age 0 = unset; sleep uses -1 because hour 0
 	// is valid; name "" = unset; mute false = speech on).
-	settingsOpen   bool
-	nameFocused    bool   // the name field owns the keyboard
-	nameDraft      []rune // name typed in the modal; committed on SAVE
-	openDrop       int    // which dropdown list is expanded (dropNone/dropAge/...)
-	hourScroll     int    // first visible row of the open hour list
-	ageDraft       int    // age picked in the modal; committed on SAVE
-	sleepFromDraft int    // sleep start hour picked in the modal
-	sleepToDraft   int    // sleep end hour picked in the modal
-	muteDraft      bool   // mute-speech checkbox in the modal; committed on SAVE
-	wasCollapsed   bool   // collapse state when the modal opened
-	prevH          int    // window height before the modal forced minSettingsH
-	name           string // committed character name ("" = not set yet)
-	age            int    // committed character age (0 = not set yet)
-	sleepFrom      int    // committed sleep-window start hour (-1 = unset)
-	sleepTo        int    // committed sleep-window end hour (-1 = unset)
-	mute           bool   // committed: replies are not spoken aloud (INI "mute")
-	savePath       string // INI file settings are written to ("" = ./chat-app.ini)
-	saveErr        string // last save error, shown inside the modal
-	optIdx         int    // dropdown row under the pointer (set by HitTest)
-	pagerMsg       int    // msg index under the pointer in a paginated bubble (-1 = none)
-	pagerDir       int    // -1 prev / +1 next, from the last pager hit-test
+	settingsOpen      bool
+	nameFocused       bool   // the name field owns the keyboard
+	nameDraft         []rune // name typed in the modal; committed on SAVE
+	openDrop          int    // which dropdown list is expanded (dropNone/dropAge/...)
+	hourScroll        int    // first visible row of the open hour list
+	minuteScroll      int    // first visible row of the open minute list
+	ageDraft          int    // age picked in the modal; committed on SAVE
+	sleepFromDraft    int    // sleep start hour picked in the modal
+	sleepFromMinDraft int    // sleep start minute picked in the modal (0/15/30/45)
+	sleepToDraft      int    // sleep end hour picked in the modal
+	sleepToMinDraft   int    // sleep end minute picked in the modal (0/15/30/45)
+	muteDraft         bool   // mute-speech checkbox in the modal; committed on SAVE
+	wasCollapsed      bool   // collapse state when the modal opened
+	prevH             int    // window height before the modal forced minSettingsH
+	name              string // committed character name ("" = not set yet)
+	age               int    // committed character age (0 = not set yet)
+	sleepFrom         int    // committed sleep-window start hour (-1 = unset)
+	sleepFromMin      int    // committed sleep-window start minute (0/15/30/45)
+	sleepTo           int    // committed sleep-window end hour (-1 = unset)
+	sleepToMin        int    // committed sleep-window end minute (0/15/30/45)
+	mute              bool   // committed: replies are not spoken aloud (INI "mute")
+	savePath          string // INI file settings are written to ("" = ./chat-app.ini)
+	saveErr           string // last save error, shown inside the modal
+	optIdx            int    // dropdown row under the pointer (set by HitTest)
+	optMIdx           int    // minute-list row under the pointer (set by HitTest)
+	pagerMsg          int    // msg index under the pointer in a paginated bubble (-1 = none)
+	pagerDir          int    // -1 prev / +1 next, from the last pager hit-test
 }
 
 // NewUI creates a UI sized w x h with a welcome message from the bot.
@@ -258,17 +273,39 @@ func (u *UI) dropRect() image.Rectangle {
 	return image.Rect(p.Min.X+modalPad, p.Min.Y+126, p.Max.X-modalPad, p.Min.Y+126+dropH)
 }
 
-// sleepFromRect / sleepToRect are the two half-width sleep-time dropdowns.
+// sleepFromRect / sleepToRect are the hour dropdown boxes (left of the pair).
 func (u *UI) sleepFromRect() image.Rectangle {
 	p := u.modalPanel()
-	w := (p.Dx() - 2*modalPad - 12) / 2
+	rowW := (p.Dx() - 2*modalPad - 12) / 2
 	y := p.Min.Y + 200
-	return image.Rect(p.Min.X+modalPad, y, p.Min.X+modalPad+w, y+dropH)
+	// Hour box takes ~60% of the row width; minute box the rest (after a gap).
+	hw := rowW * 6 / 10
+	return image.Rect(p.Min.X+modalPad, y, p.Min.X+modalPad+hw, y+dropH)
+}
+
+// sleepFromMinRect / sleepToMinRect are the minute dropdown boxes (00/15/30/45),
+// snug to the right of the hour box.
+func (u *UI) sleepFromMinRect() image.Rectangle {
+	p := u.modalPanel()
+	rowW := (p.Dx() - 2*modalPad - 12) / 2
+	y := p.Min.Y + 200
+	hw := rowW * 6 / 10
+	return image.Rect(p.Min.X+modalPad+hw+6, y, p.Min.X+modalPad+rowW, y+dropH)
 }
 
 func (u *UI) sleepToRect() image.Rectangle {
+	p := u.modalPanel()
+	rowW := (p.Dx() - 2*modalPad - 12) / 2
+	dx := rowW + 12
 	f := u.sleepFromRect()
-	dx := f.Dx() + 12
+	return image.Rect(f.Min.X+dx, f.Min.Y, f.Max.X+dx, f.Max.Y)
+}
+
+func (u *UI) sleepToMinRect() image.Rectangle {
+	p := u.modalPanel()
+	rowW := (p.Dx() - 2*modalPad - 12) / 2
+	dx := rowW + 12
+	f := u.sleepFromMinRect()
 	return image.Rect(f.Min.X+dx, f.Min.Y, f.Max.X+dx, f.Max.Y)
 }
 
@@ -290,13 +327,41 @@ func (u *UI) dropListRect() image.Rectangle {
 	return image.Rect(d.Min.X, d.Max.Y+4, d.Max.X, d.Max.Y+4+numAges*optH)
 }
 
-// openHourBox is the FROM/TO box whose list is open; empty when none is.
+// hourLabel is the readable label for one sleep-hour entry: 0..23.
+func hourLabel(i int) string {
+	if i < 0 || i >= numHours {
+		return "00"
+	}
+	return fmt.Sprintf("%02d", i)
+}
+
+// minuteLabel is the readable label for one sleep-minute entry (no colon):
+// 00 / 15 / 30 / 45.
+func minuteLabel(i int) string {
+	if i < 0 || i >= numMinutes {
+		return "00"
+	}
+	return fmt.Sprintf("%02d", sleepMinutes[i])
+}
+
+// openHourBox is the FROM/TO hour box whose list is open; empty when none is.
 func (u *UI) openHourBox() image.Rectangle {
 	switch u.openDrop {
 	case dropFrom:
 		return u.sleepFromRect()
 	case dropTo:
 		return u.sleepToRect()
+	}
+	return image.Rectangle{}
+}
+
+// openMinuteBox is the FROM/TO minute box whose list is open; empty when none.
+func (u *UI) openMinuteBox() image.Rectangle {
+	switch u.openDrop {
+	case dropFromM:
+		return u.sleepFromMinRect()
+	case dropToM:
+		return u.sleepToMinRect()
 	}
 	return image.Rectangle{}
 }
@@ -309,6 +374,16 @@ func (u *UI) hourListRect() image.Rectangle {
 		return image.Rectangle{}
 	}
 	return image.Rect(box.Min.X, box.Max.Y+4, box.Max.X, box.Max.Y+4+visibleHourRows*optH)
+}
+
+// minuteListRect is the expanded minute list: four rows below its box.
+// Empty when no minute list open.
+func (u *UI) minuteListRect() image.Rectangle {
+	box := u.openMinuteBox()
+	if box == (image.Rectangle{}) {
+		return image.Rectangle{}
+	}
+	return image.Rect(box.Min.X, box.Max.Y+4, box.Max.X, box.Max.Y+4+visibleMinuteRows*optH)
 }
 
 // modalButtons returns the CANCEL and SAVE button rectangles.
@@ -345,6 +420,11 @@ func (u *UI) HitTest(x, y int) Widget {
 				u.optIdx = clamp(u.hourScroll+(y-l.Min.Y)/optH, 0, numHours-1)
 				return WOption
 			}
+		case dropFromM, dropToM:
+			if l := u.minuteListRect(); inRect(x, y, l) {
+				u.optMIdx = clamp(u.minuteScroll+(y-l.Min.Y)/optH, 0, numMinutes-1)
+				return WOption
+			}
 		}
 		if cancel, save := u.modalButtons(); inRect(x, y, save) {
 			return WSave
@@ -362,6 +442,12 @@ func (u *UI) HitTest(x, y int) Widget {
 		}
 		if r := u.sleepToRect(); inRect(x, y, r) {
 			return WDropTo
+		}
+		if r := u.sleepFromMinRect(); inRect(x, y, r) {
+			return WDropFromM
+		}
+		if r := u.sleepToMinRect(); inRect(x, y, r) {
+			return WDropToM
 		}
 		if r := u.muteRect(); inRect(x, y, r) {
 			return WMute
@@ -549,6 +635,10 @@ func (u *UI) Release(w Widget) bool {
 			u.toggleDrop(dropFrom)
 		case WDropTo:
 			u.toggleDrop(dropTo)
+		case WDropFromM:
+			u.toggleDrop(dropFromM)
+		case WDropToM:
+			u.toggleDrop(dropToM)
 		case WMute:
 			u.muteDraft = !u.muteDraft // commits on SAVE, like the drafts
 		case WOption:
@@ -564,6 +654,14 @@ func (u *UI) Release(w Widget) bool {
 			case dropTo:
 				if u.optIdx >= 0 && u.optIdx < numHours {
 					u.sleepToDraft = u.optIdx
+				}
+			case dropFromM:
+				if u.optMIdx >= 0 && u.optMIdx < numMinutes {
+					u.sleepFromMinDraft = u.optMIdx
+				}
+			case dropToM:
+				if u.optMIdx >= 0 && u.optMIdx < numMinutes {
+					u.sleepToMinDraft = u.optMIdx
 				}
 			}
 			u.openDrop = dropNone
@@ -631,10 +729,12 @@ func (u *UI) openSettings() bool {
 	if u.sleepFromDraft < 0 {
 		u.sleepFromDraft = defaultSleepFrom
 	}
+	u.sleepFromMinDraft = minuteIndex(u.sleepFromMin)
 	u.sleepToDraft = u.sleepTo
 	if u.sleepToDraft < 0 {
 		u.sleepToDraft = defaultSleepTo
 	}
+	u.sleepToMinDraft = minuteIndex(u.sleepTo)
 	u.muteDraft = u.mute
 	u.wasCollapsed = u.collapsed
 	u.hover, u.press = WNone, WNone
@@ -673,20 +773,42 @@ func (u *UI) closeSettings() bool {
 	return resized
 }
 
-// toggleDrop opens the given dropdown list, closing any other. Opening an
-// hour list scrolls the selection into view.
+// minuteIndex maps a committed minute (0/15/30/45) to its row index 0..3;
+// values outside the step set clamp to the nearest step so legacy / hand-edited
+// values keep working.
+func minuteIndex(m int) int {
+	idx := 0
+	for i, step := range sleepMinutes {
+		if step <= m {
+			idx = i
+		} else {
+			break
+		}
+	}
+	return idx
+}
+
+// toggleDrop opens the given dropdown list, closing any other. Opening a
+// list scrolls the selection into view.
 func (u *UI) toggleDrop(which int) {
 	if u.openDrop == which {
 		u.openDrop = dropNone
 		return
 	}
 	u.openDrop = which
-	if which == dropFrom || which == dropTo {
+	switch which {
+	case dropFrom, dropTo:
 		sel := u.sleepFromDraft
 		if which == dropTo {
 			sel = u.sleepToDraft
 		}
 		u.hourScroll = clamp(sel-2, 0, numHours-visibleHourRows)
+	case dropFromM, dropToM:
+		sel := u.sleepFromMinDraft
+		if which == dropToM {
+			sel = u.sleepToMinDraft
+		}
+		u.minuteScroll = clamp(sel-1, 0, numMinutes-visibleMinuteRows)
 	}
 }
 
@@ -700,6 +822,19 @@ func (u *UI) ScrollHourList(dy int) bool {
 	if u.hover == WOption {
 		// Keep the highlighted row inside the scrolled viewport.
 		u.optIdx = clamp(u.optIdx, u.hourScroll, u.hourScroll+visibleHourRows-1)
+	}
+	return true
+}
+
+// ScrollMinuteList scrolls the open FROM/TO minute list; returns false when no
+// minute list is open, so the caller scrolls the message history instead.
+func (u *UI) ScrollMinuteList(dy int) bool {
+	if !u.settingsOpen || (u.openDrop != dropFromM && u.openDrop != dropToM) {
+		return false
+	}
+	u.minuteScroll = clamp(u.minuteScroll+dy, 0, numMinutes-visibleMinuteRows)
+	if u.hover == WOption {
+		u.optMIdx = clamp(u.optMIdx, u.minuteScroll, u.minuteScroll+visibleMinuteRows-1)
 	}
 	return true
 }
@@ -723,7 +858,7 @@ func (u *UI) saveSettings() {
 		u.saveErr = err.Error()
 		return
 	}
-	sleep := fmt.Sprintf("%02d:00-%02d:00", u.sleepFromDraft, u.sleepToDraft)
+	sleep := fmt.Sprintf("%02d:%02d-%02d:%02d", u.sleepFromDraft, sleepMinutes[u.sleepFromMinDraft], u.sleepToDraft, sleepMinutes[u.sleepToMinDraft])
 	if err := SetConfigValue(path, "character", "sleep-time", sleep); err != nil {
 		u.saveErr = err.Error()
 		return
@@ -743,6 +878,7 @@ func (u *UI) saveSettings() {
 	u.name = name
 	u.age = u.ageDraft
 	u.sleepFrom, u.sleepTo = u.sleepFromDraft, u.sleepToDraft
+	u.sleepFromMin, u.sleepToMin = sleepMinutes[u.sleepFromMinDraft], sleepMinutes[u.sleepToMinDraft]
 	u.mute = u.muteDraft
 	if u.Bot != nil {
 		if name != "" {
@@ -751,6 +887,8 @@ func (u *UI) saveSettings() {
 		u.Bot.CharacterName = name
 		u.Bot.CharacterAge = u.ageDraft
 		u.Bot.SleepSet = true
+		u.Bot.SleepFromH, u.Bot.SleepToH = u.sleepFromDraft, u.sleepToDraft
+		u.Bot.SleepFromM, u.Bot.SleepToM = sleepMinutes[u.sleepFromMinDraft], sleepMinutes[u.sleepToMinDraft]
 		u.Bot.SleepFrom, u.Bot.SleepTo = u.sleepFromDraft, u.sleepToDraft
 	}
 }
@@ -970,10 +1108,13 @@ func (u *UI) drawSettings(frame *image.NRGBA) {
 
 	drawText(frame, p.Min.X+modalPad, p.Min.Y+172, "SLEEP TIME", 1, colMuted)
 	fr, tr := u.sleepFromRect(), u.sleepToRect()
+	fm, tm := u.sleepFromMinRect(), u.sleepToMinRect()
 	drawText(frame, fr.Min.X, p.Min.Y+186, "FROM", 1, colMuted)
 	drawText(frame, tr.Min.X, p.Min.Y+186, "TO", 1, colMuted)
-	u.drawSelectBox(frame, fr, fmt.Sprintf("%02d:00", u.sleepFromDraft), u.openDrop == dropFrom, WDropFrom)
-	u.drawSelectBox(frame, tr, fmt.Sprintf("%02d:00", u.sleepToDraft), u.openDrop == dropTo, WDropTo)
+	u.drawSelectBox(frame, fr, hourLabel(u.sleepFromDraft), u.openDrop == dropFrom, WDropFrom)
+	u.drawSelectBox(frame, fm, minuteLabel(u.sleepFromMinDraft), u.openDrop == dropFromM, WDropFromM)
+	u.drawSelectBox(frame, tr, hourLabel(u.sleepToDraft), u.openDrop == dropTo, WDropTo)
+	u.drawSelectBox(frame, tm, minuteLabel(u.sleepToMinDraft), u.openDrop == dropToM, WDropToM)
 
 	u.drawMuteRow(frame)
 
@@ -983,6 +1124,9 @@ func (u *UI) drawSettings(frame *image.NRGBA) {
 	}
 	if u.openDrop == dropFrom || u.openDrop == dropTo {
 		u.drawHourList(frame)
+	}
+	if u.openDrop == dropFromM || u.openDrop == dropToM {
+		u.drawMinuteList(frame)
 	}
 }
 
@@ -1054,7 +1198,7 @@ func (u *UI) drawDropList(frame *image.NRGBA) {
 	}
 }
 
-// drawHourList paints the expanded 0:00..23:00 list of the FROM/TO dropdowns:
+// drawHourList paints the expanded hour list (0..23) of the FROM/TO dropdowns:
 // five rows visible at a time (wheel-scrolled, see ScrollHourList), the
 // selected hour marked with a dot and a mini scrollbar on the right.
 func (u *UI) drawHourList(frame *image.NRGBA) {
@@ -1083,7 +1227,7 @@ func (u *UI) drawHourList(frame *image.NRGBA) {
 			}
 		}
 		drawText(frame, l.Min.X+26, ry+(optH-glyphH*uiFontScale)/2,
-			fmt.Sprintf("%02d:00", i), uiFontScale, colText)
+			hourLabel(i), uiFontScale, colText)
 		if i == sel {
 			fillDisc(frame, l.Min.X+15, ry+optH/2, 3, colHeader)
 		}
@@ -1097,6 +1241,40 @@ func (u *UI) drawHourList(frame *image.NRGBA) {
 	thumbY := trackY0 + (trackH-thumbH)*u.hourScroll/max(maxScroll, 1)
 	fillRect(frame, l.Max.X-8, trackY0, 3, trackH, colInputBorder)
 	fillRect(frame, l.Max.X-8, thumbY, 3, thumbH, colMuted)
+}
+
+// drawMinuteList paints the expanded minute list (00/15/30/45) of the FROM/TO
+// dropdowns: four rows visible at a time, the selected minute marked with a
+// dot. Empty when no minute list is open.
+func (u *UI) drawMinuteList(frame *image.NRGBA) {
+	box := u.openMinuteBox()
+	if box == (image.Rectangle{}) {
+		return
+	}
+	l := u.minuteListRect()
+	drawRoundRect(frame, l.Min.X, l.Min.Y, l.Dx(), l.Dy(), 8, colPlum)
+	drawRoundRect(frame, l.Min.X+2, l.Min.Y+2, l.Dx()-4, l.Dy()-4, 6, colWhite)
+
+	sel := u.sleepFromMinDraft
+	if u.openDrop == dropToM {
+		sel = u.sleepToMinDraft
+	}
+	for i := u.minuteScroll; i < u.minuteScroll+visibleMinuteRows && i < numMinutes; i++ {
+		ry := l.Min.Y + (i-u.minuteScroll)*optH
+		if u.hover == WOption && u.optMIdx == i {
+			if i == 0 || i == numMinutes-1 || i == u.minuteScroll ||
+				i == u.minuteScroll+visibleMinuteRows-1 {
+				drawRoundRect(frame, l.Min.X+3, ry, l.Dx()-6, optH, 6, colHairLight)
+			} else {
+				fillRect(frame, l.Min.X+3, ry, l.Dx()-6, optH, colHairLight)
+			}
+		}
+		drawText(frame, l.Min.X+26, ry+(optH-glyphH*uiFontScale)/2,
+			minuteLabel(i), uiFontScale, colText)
+		if i == sel {
+			fillDisc(frame, l.Min.X+15, ry+optH/2, 3, colHeader)
+		}
+	}
 }
 
 // drawMuteRow paints the MUTE SPEECH checkbox: a rounded square that is

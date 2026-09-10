@@ -270,7 +270,7 @@ func TestReplyAppliesCharacterName(t *testing.T) {
 func TestReplyAppliesSleepWindow(t *testing.T) {
 	fp := &fakeProvider{}
 	bot := &Bot{Provider: fp, SystemInstruction: "You are Buddy.", ImageSource: "off",
-		SleepSet: true, SleepFrom: 22, SleepTo: 7}
+		SleepSet: true, SleepFromH: 22, SleepToH: 7, SleepFromM: 0, SleepToM: 0}
 	bot.Reply([]Msg{{From: "you", Text: "hi"}}, "hi")
 	if !strings.Contains(fp.system, "sleep from 22:00 until 07:00") {
 		t.Errorf("system prompt lacks the sleep window: %q", fp.system)

@@ -77,7 +77,7 @@ const nameInstructionFmt = " Character setting: your name is %s."
 
 // sleepInstructionFmt is appended when a sleep window is configured in the
 // settings dialog, so the character acts its schedule.
-const sleepInstructionFmt = " Sleep schedule: you sleep from %02d:00 until %02d:00; messages during those hours catch you sleepy and half-asleep."
+const sleepInstructionFmt = " Sleep schedule: you sleep from %02d:%02d until %02d:%02d; messages during those hours catch you sleepy and half-asleep."
 
 // Bot answers user messages via the configured LLM provider.
 type Bot struct {
@@ -92,9 +92,14 @@ type Bot struct {
 	ForceImageKeyword string   // if set, always fetch/generate an image for this keyword
 	CharacterAge      int      // character age from the settings dialog (0 = unset)
 	CharacterName     string   // character name from the settings dialog ("" = unset)
-	SleepSet          bool     // a sleep window is configured (see SleepFrom/SleepTo)
-	SleepFrom         int      // sleep-window start hour (0-23)
-	SleepTo           int      // sleep-window end hour (0-23)
+	SleepSet          bool     // a sleep window is configured (see SleepFromH/SleepToH)
+	SleepFromH        int      // sleep-window start hour (0-23)
+	SleepFromM        int      // sleep-window start minute (0/15/30/45)
+	SleepToH          int      // sleep-window end hour (0-23)
+	SleepToM          int      // sleep-window end minute (0/15/30/45)
+	// Legacy whole-hour aliases kept for existing callers (set from H fields).
+	SleepFrom int
+	SleepTo   int
 	Provider          Provider // the active LLM backend (nil = offline stub)
 	HTTP              *http.Client
 }
@@ -108,10 +113,16 @@ func NewBot() *Bot {
 	}
 }
 
-// ReplyResult is what Bot.Reply returns: text plus an optional image.
+// ReplyResult is what Bot.Reply returns: text plus an optional image. The pet
+// say-pipe line (with mood/image tags) travels with it so the bubble can be
+// shown in sync with text-to-speech playback instead of the moment the text is
+// generated (see main.go).
 type ReplyResult struct {
 	Text  string
 	Image image.Image
+
+	petLine string // assembled say-pipe line ("" = nothing to forward)
+	petPipe string // say-FIFO path it should be written to ("" = disabled)
 }
 
 // resolveSystemPrompt merges a -system-prompt override and a -system-file
@@ -237,7 +248,7 @@ func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 		sys += fmt.Sprintf(ageInstructionFmt, b.CharacterAge)
 	}
 	if b.SleepSet {
-		sys += fmt.Sprintf(sleepInstructionFmt, b.SleepFrom, b.SleepTo)
+		sys += fmt.Sprintf(sleepInstructionFmt, b.SleepFromH, b.SleepFromM, b.SleepToH, b.SleepToM)
 	}
 	rawReply, err := b.Provider.GenerateText(sys, clean, sanitizeUserInput(userText))
 	if err != nil {
@@ -280,8 +291,14 @@ func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 		}
 	}
 
-	petSay(b.PetPipe, mood, text, img)
-	return ReplyResult{Text: text, Image: img}
+	// The say-line is only BUILT here (image -> temp PNG, mood tag); it is
+	// written to the pet's FIFO by main.go, synchronised with TTS playback.
+	return ReplyResult{
+		Text:    text,
+		Image:   img,
+		petLine: buildPetSayLine(b.PetPipe, mood, text, img),
+		petPipe: b.PetPipe,
+	}
 }
 
 // effectiveSystem returns the system prompt to send for a chat reply. When

@@ -2,13 +2,18 @@ package main
 
 // tts.go - text-to-speech for chat replies via the Typecast API.
 //
-// When a reply lands, the bubble is shown immediately (main.go) and the text
-// is handed to Speak(), which queues it. A single worker posts it to
+// When a reply lands, the say-FIFO line and the text are handed to
+// SpeakLine(), which queues a job. A single worker posts the text to
 // https://api.typecast.ai/v1/text-to-speech, saves the returned WAV to a temp
-// file and plays it with the first available system player (aplay -> paplay
-// -> ffplay). Playback is serialised so replies never talk over each other,
-// and a quiet failure (no sound card, no player, API hiccup) never blocks or
-// crashes the UI.
+// file and plays it with the first available system player (aplay -> paplay ->
+// ffplay). The pet bubble is shown ONLY once the audio is ready to play (the
+// job's show hook, called right before playback starts) and is closed as soon
+// as playback ends (the hide hook) - so the bubble tracks the spoken words
+// instead of the reply landing time. Playback is serialised so replies never
+// talk over each other, and a quiet failure (no sound card, no player, API
+// hiccup) never blocks or crashes the UI: speech is skipped and the bubble is
+// shown immediately, the pet then dismisses it by its normal reading-time
+// duration.
 
 import (
 	"bytes"
@@ -60,14 +65,26 @@ func pipewireRunning() bool {
 	return len(matches) > 0
 }
 
-// TTS turns reply text into spoken audio. Speak is non-blocking: text lands
-// in a small queue and a single worker fetches + plays each item in order.
+// TTS turns reply text into spoken audio. Speak/SpeakLine are non-blocking:
+// the text (plus optional show/hide hooks for the pet bubble) lands in a small
+// queue and a single worker fetches + plays each item in order.
 type TTS struct {
 	enabled bool
 	apiKey  string
 	voiceID string
 	player  string // absolute path of the audio player ("" = nothing plays)
-	ch      chan string
+	url     string // Typecast endpoint (overridable in tests)
+	client  *http.Client
+	ch      chan ttsJob
+}
+
+// ttsJob is one queued spoken reply. show fires when the audio is ready to
+// play (the pet bubble appears then); hide fires when playback finishes (the
+// bubble closes). Either may be nil.
+type ttsJob struct {
+	text string
+	show func()
+	hide func()
 }
 
 // NewTTS prepares a TTS engine. The API key and voice fall back to the
@@ -79,7 +96,9 @@ func NewTTS(enabled bool, apiKey, voiceID string) *TTS {
 		enabled: enabled,
 		apiKey:  strings.TrimSpace(apiKey),
 		voiceID: strings.TrimSpace(voiceID),
-		ch:      make(chan string, 32),
+		url:     typecastURL,
+		client:  &http.Client{Timeout: ttsTimeout},
+		ch:      make(chan ttsJob, 32),
 	}
 	if t.apiKey == "" {
 		t.apiKey = defaultTTSKey
@@ -115,43 +134,79 @@ func (t *TTS) Close() {
 	}
 }
 
-// Speak queues reply text for playback. Empty text (e.g. image-only replies)
-// is dropped, and a full queue drops the newest line with a log message - it
-// never blocks the caller.
+// Speak queues reply text for playback without any bubble hooks (used by callers
+// that do not run a pet). Empty text (e.g. image-only replies) is dropped, and
+// a full queue drops the newest line with a log message - it never blocks the
+// caller.
 func (t *TTS) Speak(text string) {
-	if !t.enabled {
-		return
-	}
+	t.SpeakLine(text, nil, nil)
+}
+
+// SpeakLine queues reply text for playback with optional bubble hooks: show
+// fires when the audio is ready to play (the pet bubble appears then) and hide
+// fires after playback ends (the bubble closes). Empty text is dropped, and a
+// full queue skips speech but still shows the bubble immediately (fallback) so
+// a reply is never lost silently.
+func (t *TTS) SpeakLine(text string, show, hide func()) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
 	}
+	if !t.enabled {
+		if show != nil {
+			show() // no engine: bubble appears immediately, duration-based close
+		}
+		return
+	}
 	select {
-	case t.ch <- text:
+	case t.ch <- ttsJob{text: text, show: show, hide: hide}:
 	default:
 		log.Printf("tts: queue full, skipping speech for %q", truncate(text, 40))
+		if show != nil {
+			show() // still show the bubble; the pet closes it by duration
+		}
 	}
 }
 
 func (t *TTS) worker() {
-	for text := range t.ch {
-		data, err := fetchTTSAudio(&http.Client{Timeout: ttsTimeout}, typecastURL, t.apiKey, t.voiceID, text)
-		if err != nil {
-			log.Printf("tts: %v", err)
-			continue
+	for job := range t.ch {
+		t.process(job)
+	}
+}
+
+// process performs one queued job: fetch the audio, then play it. The pet
+// bubble is shown right before playback starts (audio is ready) and closed
+// right after it ends. If the audio can never be produced, the bubble is shown
+// anyway as a fallback and left to close by its normal reading-time duration.
+func (t *TTS) process(job ttsJob) {
+	data, err := fetchTTSAudio(t.client, t.url, t.apiKey, t.voiceID, job.text)
+	if err != nil {
+		log.Printf("tts: %v", err)
+		if job.show != nil {
+			job.show()
 		}
-		path, err := writeWav(data)
-		if err != nil {
-			log.Printf("tts: cannot save audio: %v", err)
-			continue
+		return
+	}
+	path, err := writeWav(data)
+	if err != nil {
+		log.Printf("tts: cannot save audio: %v", err)
+		if job.show != nil {
+			job.show()
 		}
-		start := time.Now()
-		if err := playAudio(t.player, path); err != nil {
-			log.Printf("tts: play failed for %q: %v", truncate(text, 40), err)
-		} else {
-			log.Printf("tts: spoke %q (%.2fs, %d bytes)", truncate(text, 40), time.Since(start).Seconds(), len(data))
-		}
-		os.Remove(path)
+		return
+	}
+	if job.show != nil {
+		job.show() // audio ready: the bubble appears as playback starts
+	}
+	start := time.Now()
+	if err := playAudio(t.player, path); err != nil {
+		log.Printf("tts: play failed for %q: %v", truncate(job.text, 40), err)
+	} else {
+		log.Printf("tts: spoke %q (%.2fs, %d bytes)", truncate(job.text, 40), time.Since(start).Seconds(), len(data))
+	}
+	os.Remove(path)
+	if job.hide != nil {
+		job.hide() // playback finished (or failed): close the bubble
 	}
 }
 

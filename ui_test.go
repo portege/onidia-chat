@@ -459,7 +459,7 @@ func TestSettingsMinHeightRestore(t *testing.T) {
 // TestSettingsRenderSmoke verifies the modal renders over the conversation
 // without changing the frame size, with every dropdown state.
 func TestSettingsRenderSmoke(t *testing.T) {
-	for _, open := range []int{dropNone, dropAge, dropFrom, dropTo} {
+	for _, open := range []int{dropNone, dropAge, dropFrom, dropTo, dropFromM, dropToM} {
 		u := NewUI(380, 520)
 		u.collapsed = false
 		u.openSettings()
@@ -467,6 +467,11 @@ func TestSettingsRenderSmoke(t *testing.T) {
 		if open == dropFrom || open == dropTo {
 			u.hourScroll = 10
 			u.optIdx = 12
+			u.hover = WOption
+		}
+		if open == dropFromM || open == dropToM {
+			u.minuteScroll = 0
+			u.optMIdx = 1
 			u.hover = WOption
 		}
 		frame := u.Render()
@@ -556,7 +561,43 @@ func TestSleepDropdowns(t *testing.T) {
 		t.Errorf("sleepToDraft: got %d want 9", u.sleepToDraft)
 	}
 
-	// SAVE persists one combined sleep-time key next to the age.
+	// Open the FROM minute list and pick :15 (index 1 of 00/15/30/45).
+	fm := u.sleepFromMinRect()
+	fmx := (fm.Min.X + fm.Max.X) / 2
+	u.Press(u.HitTest(fmx, (fm.Min.Y+fm.Max.Y)/2))
+	u.Release(u.HitTest(fmx, (fm.Min.Y+fm.Max.Y)/2))
+	if u.openDrop != dropFromM {
+		t.Fatalf("FROM minute box click: openDrop=%d, want dropFromM", u.openDrop)
+	}
+	fl := u.minuteListRect()
+	if u.HitTest((fl.Min.X+fl.Max.X)/2, fl.Min.Y+1*optH+1) != WOption {
+		t.Fatal(":15 row should hit WOption in the FROM minute list")
+	}
+	u.Press(WOption)
+	u.Release(WOption)
+	if u.sleepFromMinDraft != 1 {
+		t.Errorf("sleepFromMinDraft: got %d want 1 (:15)", u.sleepFromMinDraft)
+	}
+
+	// Open the TO minute list and pick :30 (index 2).
+	tm := u.sleepToMinRect()
+	tmx := (tm.Min.X + tm.Max.X) / 2
+	u.Press(u.HitTest(tmx, (tm.Min.Y+tm.Max.Y)/2))
+	u.Release(u.HitTest(tmx, (tm.Min.Y+tm.Max.Y)/2))
+	if u.openDrop != dropToM {
+		t.Fatalf("TO minute box click: openDrop=%d, want dropToM", u.openDrop)
+	}
+	tl := u.minuteListRect()
+	if u.HitTest((tl.Min.X+tl.Max.X)/2, tl.Min.Y+2*optH+1) != WOption {
+		t.Fatal(":30 row should hit WOption in the TO minute list")
+	}
+	u.Press(WOption)
+	u.Release(WOption)
+	if u.sleepToMinDraft != 2 {
+		t.Errorf("sleepToMinDraft: got %d want 2 (:30)", u.sleepToMinDraft)
+	}
+
+	// SAVE persists one combined sleep-time key with minutes next to the age.
 	_, saveRect := u.modalButtons()
 	w := u.HitTest((saveRect.Min.X+saveRect.Max.X)/2, (saveRect.Min.Y+saveRect.Max.Y)/2)
 	u.Press(w)
@@ -564,16 +605,18 @@ func TestSleepDropdowns(t *testing.T) {
 	if u.settingsOpen {
 		t.Fatal("save should close the modal")
 	}
-	if u.sleepFrom != 6 || u.sleepTo != 9 || !u.Bot.SleepSet ||
-		u.Bot.SleepFrom != 6 || u.Bot.SleepTo != 9 {
-		t.Errorf("committed sleep: ui=%d/%d bot=%v %d/%d, want 6/9 true 6/9",
-			u.sleepFrom, u.sleepTo, u.Bot.SleepSet, u.Bot.SleepFrom, u.Bot.SleepTo)
+	if u.sleepFrom != 6 || u.sleepTo != 9 || u.sleepFromMin != 15 || u.sleepToMin != 30 ||
+		!u.Bot.SleepSet || u.Bot.SleepFromH != 6 || u.Bot.SleepToH != 9 ||
+		u.Bot.SleepFromM != 15 || u.Bot.SleepToM != 30 {
+		t.Errorf("committed sleep: ui=%d:%02d/%d:%02d bot=%v %d:%02d/%d:%02d, want 6:15/9:30",
+			u.sleepFrom, u.sleepFromMin, u.sleepTo, u.sleepToMin, u.Bot.SleepSet,
+			u.Bot.SleepFromH, u.Bot.SleepFromM, u.Bot.SleepToH, u.Bot.SleepToM)
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "sleep-time = 06:00-09:00") {
+	if !strings.Contains(string(b), "sleep-time = 06:15-09:30") {
 		t.Errorf("INI lacks the saved sleep window:\n%s", b)
 	}
 	if !strings.Contains(string(b), "character-age = 7") {

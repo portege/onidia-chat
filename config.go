@@ -40,9 +40,14 @@ type Config struct {
 	AWSRegion        string `ini:"aws-region"`          // AWS region for Bedrock
 	CharacterAge     int    `ini:"character-age"`       // chat character's age (settings dialog, 7-13)
 	CharacterName    string `ini:"character-name"`      // chat character's name (settings dialog)
-	SleepFrom        int    // sleep-window start hour (0-23), from sleep-time
-	SleepTo          int    // sleep-window end hour (0-23), from sleep-time
-	SleepSet         bool   // sleep-time was present in the config
+	SleepSet   bool // sleep-time was present in the config
+	SleepFromH int  // sleep-window start hour (0-23), from sleep-time
+	SleepFromM int  // sleep-window start minute (0/15/30/45), from sleep-time
+	SleepToH   int  // sleep-window end hour (0-23), from sleep-time
+	SleepToM   int  // sleep-window end minute (0/15/30/45), from sleep-time
+	// Legacy whole-hour aliases kept for existing callers (set from H fields).
+	SleepFrom int
+	SleepTo   int
 }
 
 // LoadConfig reads a simple INI file and returns populated Config.
@@ -158,8 +163,11 @@ func applyConfigField(cfg *Config, key, val string) {
 	case "character-name":
 		cfg.CharacterName = val
 	case "sleep-time":
-		if from, to, ok := parseSleepTime(val); ok {
-			cfg.SleepFrom, cfg.SleepTo, cfg.SleepSet = from, to, true
+		if fh, fm, th, tm, ok := parseSleepTime(val); ok {
+			cfg.SleepFromH, cfg.SleepFromM = fh, fm
+			cfg.SleepToH, cfg.SleepToM = th, tm
+			cfg.SleepFrom, cfg.SleepTo = fh, th
+			cfg.SleepSet = true
 		}
 	}
 }
@@ -170,32 +178,58 @@ func parseIntVal(s string) int {
 	return n
 }
 
-// parseSleepTime parses a sleep window "22:00-07:00" (the settings dialog's
-// format; bare hours like "22-7" are accepted too) into start/end hours.
-func parseSleepTime(s string) (from, to int, ok bool) {
+// sleepMinutes are the only quarter-hour steps the settings dialog offers
+// next to the hour (00 / 15 / 30 / 45).
+var sleepMinutes = [4]int{0, 15, 30, 45}
+
+// parseSleepTime parses a sleep window "22:15-07:30" (the settings dialog's
+// format; bare hours like "22-7" and any "HH:MM" are accepted too) into
+// start/end hour+minute. Minutes outside the quarter-hour steps snap down to
+// the nearest step (e.g. :50 -> :45), so legacy hand-edited values keep
+// working.
+func parseSleepTime(s string) (fromH, fromM, toH, toM int, ok bool) {
 	parts := strings.SplitN(s, "-", 2)
 	if len(parts) != 2 {
-		return 0, 0, false
+		return 0, 0, 0, 0, false
 	}
-	from, ok1 := parseHour(parts[0])
-	to, ok2 := parseHour(parts[1])
+	fromH, fromM, ok1 := parseHourMin(parts[0])
+	toH, toM, ok2 := parseHourMin(parts[1])
 	if !ok1 || !ok2 {
+		return 0, 0, 0, 0, false
+	}
+	return fromH, fromM, toH, toM, true
+}
+
+// parseHourMin parses one "HH", "H" or "HH:MM" value into hour 0..23 plus a
+// quarter-hour minute (00/15/30/45).
+func parseHourMin(s string) (h, m int, ok bool) {
+	s = strings.TrimSpace(s)
+	m = 0
+	if i := strings.Index(s, ":"); i >= 0 {
+		mm, err := strconv.Atoi(strings.TrimSpace(s[i+1:]))
+		if err != nil || mm < 0 || mm > 59 {
+			return 0, 0, false
+		}
+		if mm >= 45 {
+			m = 45
+		} else if mm >= 30 {
+			m = 30
+		} else if mm >= 15 {
+			m = 15
+		}
+		s = s[:i]
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 || n > 23 {
 		return 0, 0, false
 	}
-	return from, to, true
+	return n, m, true
 }
 
 // parseHour parses one "HH", "H" or "HH:MM" value into the hour 0..23.
 func parseHour(s string) (int, bool) {
-	s = strings.TrimSpace(s)
-	if i := strings.Index(s, ":"); i >= 0 {
-		s = s[:i] // drop the minutes: the dropdown steps by whole hours
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil || n < 0 || n > 23 {
-		return 0, false
-	}
-	return n, true
+	h, _, ok := parseHourMin(s)
+	return h, ok
 }
 
 func parseBool(s string) bool {

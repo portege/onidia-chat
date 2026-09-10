@@ -10,7 +10,6 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -174,5 +173,94 @@ func TestPetSayFailureCleansTempImage(t *testing.T) {
 	}
 }
 
-// sayImagePath extracts the path from an "[image <path>]" say-tag.
-var sayImagePath = regexp.MustCompile(`\[image ([^\]]+)\]`)
+// TestPetClearWritesToken checks that petClear pushes the reserved token line
+// so the pet can dismiss its bubble exactly when audio playback ends.
+func TestPetClearWritesToken(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "clear.say")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unsupported: %v", err)
+	}
+
+	lines := make(chan string, 1)
+	go func() {
+		f, err := os.OpenFile(fifo, os.O_RDONLY, 0)
+		if err != nil {
+			lines <- ""
+			return
+		}
+		defer f.Close()
+		l, err := bufio.NewReader(f).ReadString('\n')
+		if err != nil {
+			lines <- ""
+			return
+		}
+		lines <- l
+	}()
+	time.Sleep(50 * time.Millisecond) // let the reader open first
+
+	petClear(fifo)
+
+	select {
+	case line := <-lines:
+		if strings.TrimSpace(line) != petSayClearToken {
+			t.Errorf("petClear wrote %q, want the clear token %q", line, petSayClearToken)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the clear token")
+	}
+}
+
+// TestBuildPetSayLineEmpty verifies nothing is built when forwarding is off or
+// there is no content to show ("" text without an image).
+func TestBuildPetSayLineEmpty(t *testing.T) {
+	if got := buildPetSayLine("", "happy", "hi", image.NewRGBA(image.Rect(0, 0, 2, 2))); got != "" {
+		t.Errorf("buildPetSayLine with empty pipe returned %q, want \"\"", got)
+	}
+	if got := buildPetSayLine("/tmp/x.say", "happy", "", nil); got != "" {
+		t.Errorf("buildPetSayLine with empty text returned %q, want \"\"", got)
+	}
+	// Whitespace-only text is still a mood-only line (the pet shows the face
+	// without a bubble) - kept for compatibility with petSay.
+	if got := buildPetSayLine("/tmp/x.say", "happy", "  ", nil); got != "[happy]   " {
+		t.Errorf("buildPetSayLine with blank text returned %q, want a mood-only line", got)
+	}
+}
+
+// TestPetSayLineKeepsSayImage checks the raw-line writer delivers its content
+// unchanged, so the TTS-synchronised path can push pre-built bubble lines.
+func TestPetSayLineKeepsSayImage(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "raw.say")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unsupported: %v", err)
+	}
+
+	lines := make(chan string, 1)
+	go func() {
+		f, err := os.OpenFile(fifo, os.O_RDONLY, 0)
+		if err != nil {
+			lines <- ""
+			return
+		}
+		defer f.Close()
+		l, err := bufio.NewReader(f).ReadString('\n')
+		if err != nil {
+			lines <- ""
+			return
+		}
+		lines <- l
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	petSayLine(fifo, "[wink] [image /tmp/p.png] look at this")
+
+	select {
+	case line := <-lines:
+		if strings.TrimSpace(line) != "[wink] [image /tmp/p.png] look at this" {
+			t.Errorf("petSayLine delivered %q, want the raw line untouched", line)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the say-line")
+	}
+}

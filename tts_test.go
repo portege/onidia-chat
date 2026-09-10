@@ -174,6 +174,72 @@ func TestPlayAudioMissingPlayer(t *testing.T) {
 	}
 }
 
+// TestTTSSpeakLineDisabledShowsImmediately verifies the no-audio path: a
+// disabled engine shows the bubble right away (so a reply is never lost) and
+// never enqueues a job.
+func TestTTSSpeakLineDisabledShowsImmediately(t *testing.T) {
+	tr := NewTTS(false, "k", "v")
+	called := 0
+	tr.SpeakLine("hello", func() { called++ }, func() { called++ })
+	if called != 1 {
+		t.Fatalf("disabled engine should show the bubble via show(), got %d calls", called)
+	}
+	if len(tr.ch) != 0 {
+		t.Fatal("disabled engine must not enqueue a job")
+	}
+}
+
+// TestTTSProcessShowBeforeHide drives one job through process() against a fake
+// Typecast server and checks the sync contract: the bubble is shown when the
+// audio is ready (before playback) and closed after playback ends. The player
+// is deliberately bogus so playback fails fast instead of touching a device.
+func TestTTSProcessShowBeforeHide(t *testing.T) {
+	fakeWav := []byte{0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(fakeWav)
+	}))
+	defer srv.Close()
+
+	tr := NewTTS(true, "k", "v")
+	tr.url = srv.URL
+	tr.client = srv.Client()
+	tr.player = "/nonexistent/player-xyz" // playback attempt fails fast
+
+	var order []string
+	tr.process(ttsJob{
+		text: "hi",
+		show: func() { order = append(order, "show") },
+		hide: func() { order = append(order, "hide") },
+	})
+	if len(order) != 2 || order[0] != "show" || order[1] != "hide" {
+		t.Fatalf("expected show then hide, got %v", order)
+	}
+}
+
+// TestTTSProcessFetchFailureShowsOnly checks the fallback: when the audio can
+// never be produced the bubble is still shown (immediately), but no hide hook
+// fires - the pet closes it by its normal reading-time duration.
+func TestTTSProcessFetchFailureShowsOnly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no credits", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	tr := NewTTS(true, "k", "v")
+	tr.url = srv.URL
+	tr.client = srv.Client()
+
+	called := 0
+	tr.process(ttsJob{
+		text: "hi",
+		show: func() { called++ },
+		hide: func() { called++ },
+	})
+	if called != 1 {
+		t.Fatalf("fetch failure should show the bubble once, got %d calls", called)
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	if got := truncate("abcdef", 3); got != "abc..." {
 		t.Errorf("truncate: got %q", got)

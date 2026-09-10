@@ -32,8 +32,10 @@ reply is shown inside her speech bubble as well.
   turns as context, and parses an optional `[mood]` tag out of each answer.
 - ✅ **The pet bridge**: `pet.go` writes `[mood] [image pic.png] text` to the pet's
   say-FIFO — best-effort and non-blocking; no pet running? It just skips.
-- ✅ **Text-to-speech**: each reply is spoken aloud via the Typecast API while
-  its bubble is showing (`tts.go` → `aplay`/`paplay`/`ffplay`; async + queued).
+- ✅ **Text-to-speech**: each reply is spoken aloud via the Typecast API
+  (`tts.go` → `aplay`/`paplay`/`ffplay`; async + queued). The pet bubble is
+  shown only once the audio is ready to play and closes the moment playback
+  ends, so the words and the bubble stay in sync.
 
 ## Wire in your Gemini key
 

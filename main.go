@@ -391,7 +391,10 @@ func main() {
 	}
 	if cfg != nil && cfg.SleepSet {
 		ui.sleepFrom, ui.sleepTo = cfg.SleepFrom, cfg.SleepTo
+		ui.sleepFromMin, ui.sleepToMin = cfg.SleepFromM, cfg.SleepToM
 		ui.Bot.SleepSet = true
+		ui.Bot.SleepFromH, ui.Bot.SleepToH = cfg.SleepFromH, cfg.SleepToH
+		ui.Bot.SleepFromM, ui.Bot.SleepToM = cfg.SleepFromM, cfg.SleepToM
 		ui.Bot.SleepFrom, ui.Bot.SleepTo = cfg.SleepFrom, cfg.SleepTo
 	}
 	if cfg != nil && cfg.Mute {
@@ -534,7 +537,7 @@ func main() {
 					dirty = true
 				}
 			case EvScroll:
-				if !ui.ScrollHourList(ev.N) {
+				if !ui.ScrollHourList(ev.N) && !ui.ScrollMinuteList(ev.N) {
 					ui.ScrollBy(ev.N * 40)
 				}
 				dirty = true
@@ -554,10 +557,22 @@ func main() {
 			} else {
 				ui.AddMsg(ui.Bot.Name, reply.Text)
 			}
-			// Speak the reply at the same time the bubble appears -
-			// unless the settings dialog's mute checkbox is on.
-			if !ui.Muted() {
-				tts.Speak(reply.Text)
+			// Pet bubble + TTS, kept in sync: the bubble appears only once the
+			// audio is ready to play and closes as soon as playback ends. With
+			// no audio (muted, no engine, or no pet running) the bubble shows
+			// immediately and the pet dismisses it by its normal reading-time
+			// duration.
+			audioOn := !ui.Muted() && tts.Enabled()
+			if reply.petPipe != "" && reply.petLine != "" {
+				if audioOn {
+					tts.SpeakLine(reply.Text,
+						func() { petSayLine(reply.petPipe, reply.petLine) },
+						func() { petClear(reply.petPipe) })
+				} else {
+					petSayLine(reply.petPipe, reply.petLine)
+				}
+			} else if audioOn {
+				tts.SpeakLine(reply.Text, nil, nil) // speak aloud even without a pet
 			}
 			dirty = true
 		case <-caret.C:
