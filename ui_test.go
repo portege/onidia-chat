@@ -624,6 +624,43 @@ func TestSleepDropdowns(t *testing.T) {
 	}
 }
 
+// TestSleepMinuteBoxesFitContent pins the dropdown geometry: the minute
+// select box's "00" label must clear the chevron, and the expanded list's
+// selection dot + text must stay inside the box. The old 44px-wide boxes
+// (300px panel, 60/40 split) clipped both.
+func TestSleepMinuteBoxesFitContent(t *testing.T) {
+	u := NewUI(380, 520)
+	u.collapsed = false
+	u.openSettings()
+	lblW := textWidth("00", uiFontScale)
+	for name, r := range map[string]image.Rectangle{
+		"from": u.sleepFromMinRect(),
+		"to":   u.sleepToMinRect(),
+	} {
+		// Select box: text starts at +12 and must end before the chevron
+		// (7px wide, centred at Max-16).
+		if end := r.Min.X + 12 + lblW; end > r.Max.X-16-4 {
+			t.Errorf("%s minute box %v: label ends at %d, chevron starts at %d",
+				name, r, end, r.Max.X-20)
+		}
+		// Expanded list: dot centred at +15, text at +26; keep a margin.
+		if end := r.Min.X + 26 + lblW; end > r.Max.X-4 {
+			t.Errorf("%s minute list %v: label ends at %d, box edge %d",
+				name, r, end, r.Max.X)
+		}
+		// The neighbouring hour box must not overlap the minute box.
+		var hour image.Rectangle
+		if name == "from" {
+			hour = u.sleepFromRect()
+		} else {
+			hour = u.sleepToRect()
+		}
+		if r.Min.X-hour.Max.X < 6 {
+			t.Errorf("%s minute box %v overlaps hour box %v", name, r, hour)
+		}
+	}
+}
+
 // TestSettingsNameField verifies the NAME input on the first row of the
 // dialog: it hit-tests as WName, edits via the keyboard when focused, and
 // SAVE persists character-name to the INI plus renames the bot.

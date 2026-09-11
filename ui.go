@@ -108,8 +108,10 @@ const (
 	// Settings modal layout (drawSettings).
 	modalPad  = 20  // panel inner padding
 	modalBtnW = 90  // SAVE / CANCEL button width
-	panelW    = 300 // modal panel width (clamped to the window)
-	panelH    = 360 // modal panel height (name + age + sleep rows +
+	panelW    = 340 // modal panel width (clamped to the window; wide enough
+	// that the four sleep-time dropdowns fit their labels, chevrons and
+	// the expanded lists' dot + text)
+	panelH = 360 // modal panel height (name + age + sleep rows +
 	// mute checkbox + buttons)
 	dropH        = 32  // dropdown box height
 	optH         = 24  // dropdown list row height
@@ -278,18 +280,21 @@ func (u *UI) sleepFromRect() image.Rectangle {
 	p := u.modalPanel()
 	rowW := (p.Dx() - 2*modalPad - 12) / 2
 	y := p.Min.Y + 200
-	// Hour box takes ~60% of the row width; minute box the rest (after a gap).
-	hw := rowW * 6 / 10
+	// The boxes split the row ~50/50 (6px gap): the minute box needs the
+	// room for its two-digit label, chevron and the expanded list's dot +
+	// text — at the old 60/40 split both overlapped / spilled out.
+	hw := rowW * 5 / 10
 	return image.Rect(p.Min.X+modalPad, y, p.Min.X+modalPad+hw, y+dropH)
 }
 
 // sleepFromMinRect / sleepToMinRect are the minute dropdown boxes (00/15/30/45),
-// snug to the right of the hour box.
+// snug to the right of the hour box. The 5/10 split must mirror
+// sleepFromRect's hour width exactly or the two boxes drift apart/overlap.
 func (u *UI) sleepFromMinRect() image.Rectangle {
 	p := u.modalPanel()
 	rowW := (p.Dx() - 2*modalPad - 12) / 2
 	y := p.Min.Y + 200
-	hw := rowW * 6 / 10
+	hw := rowW * 5 / 10
 	return image.Rect(p.Min.X+modalPad+hw+6, y, p.Min.X+modalPad+rowW, y+dropH)
 }
 
