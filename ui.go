@@ -15,6 +15,7 @@ import (
 	"image/draw"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Widget identifies which UI region a pointer event landed on.
@@ -30,21 +31,25 @@ const (
 
 	// Settings modal (see drawSettings): the header's gear button plus the
 	// widgets that live inside the modal.
-	WSettings  // gear button in the header
-	WModal     // dim backdrop around the panel (absorbs outside clicks)
-	WName      // character-name text field
-	WDrop      // FROM hour dropdown
-	WDropFrom  // FROM hour dropdown (sleep start)
-	WDropTo    // TO hour dropdown (sleep end)
-	WDropFromM // FROM minute dropdown 0/15/30/45
-	WDropToM   // TO minute dropdown 0/15/30/45
-	WDropBad   // dropdown whose selected value is invalid (for validation prompt)
-	WMute      // mute-speech checkbox row
-	WOption    // one row of an open dropdown list
-	WSave      // modal SAVE button
-	WCancel    // modal CANCEL button
-	WPagePrev  // prev page in a paginated chat bubble
-	WPageNext  // next page in a paginated chat bubble
+	WSettings   // gear button in the header
+	WModal      // dim backdrop around the panel (absorbs outside clicks)
+	WName       // character-name text field
+	WDrop       // FROM hour dropdown
+	WDropFrom   // FROM hour dropdown (sleep start)
+	WDropTo     // TO hour dropdown (sleep end)
+	WDropFromM  // FROM minute dropdown 0/15/30/45
+	WDropToM    // TO minute dropdown 0/15/30/45
+	WDropFromB  // BUSY FROM hour dropdown
+	WDropToB    // BUSY TO hour dropdown
+	WDropFromBM // BUSY FROM minute dropdown 0/15/30/45
+	WDropToBM   // BUSY TO minute dropdown 0/15/30/45
+	WDropBad    // dropdown whose selected value is invalid (for validation prompt)
+	WMute       // mute-speech checkbox row
+	WOption     // one row of an open dropdown list
+	WSave       // modal SAVE button
+	WCancel     // modal CANCEL button
+	WPagePrev   // prev page in a paginated chat bubble
+	WPageNext   // next page in a paginated chat bubble
 )
 
 // Msg is one chat entry.
@@ -111,14 +116,14 @@ const (
 	panelW    = 340 // modal panel width (clamped to the window; wide enough
 	// that the four sleep-time dropdowns fit their labels, chevrons and
 	// the expanded lists' dot + text)
-	panelH = 360 // modal panel height (name + age + sleep rows +
+	panelH = 410 // modal panel height (name + age + sleep rows + busy rows +
 	// mute checkbox + buttons)
 	dropH        = 32  // dropdown box height
 	optH         = 24  // dropdown list row height
-	minSettingsH = 440 // window height forced while the modal is open
+	minSettingsH = 480 // window height forced while the modal is open
 
 	checkSide = 20  // mute-checkbox square side
-	muteRowY  = 258 // mute-checkbox row top inside the panel
+	muteRowY  = 312 // mute-checkbox row top inside the panel (below busy time)
 
 	maxNameChars = 16 // character-name field rune cap
 
@@ -134,6 +139,8 @@ const (
 	visibleMinuteRows = 4  // all four minute rows shown at once
 	defaultSleepFrom  = 22 // pre-selected sleep start when none is configured
 	defaultSleepTo    = 7  // pre-selected sleep end when none is configured
+	defaultBusyFrom   = 9  // pre-selected busy start when none is configured
+	defaultBusyTo     = 17 // pre-selected busy end when none is configured
 )
 
 // numAges is how many entries the age dropdown shows.
@@ -147,6 +154,10 @@ const (
 	dropTo
 	dropFromM
 	dropToM
+	dropBusyFrom
+	dropBusyTo
+	dropBusyFromM
+	dropBusyToM
 )
 
 // UI holds all mutable chat-window state.
@@ -187,6 +198,10 @@ type UI struct {
 	sleepFromMinDraft int    // sleep start minute picked in the modal (0/15/30/45)
 	sleepToDraft      int    // sleep end hour picked in the modal
 	sleepToMinDraft   int    // sleep end minute picked in the modal (0/15/30/45)
+	busyFromDraft     int    // busy start hour picked in the modal
+	busyToDraft       int    // busy end hour picked in the modal
+	busyFromMinDraft  int    // busy start minute picked in the modal (0/15/30/45)
+	busyToMinDraft    int    // busy end minute picked in the modal (0/15/30/45)
 	muteDraft         bool   // mute-speech checkbox in the modal; committed on SAVE
 	wasCollapsed      bool   // collapse state when the modal opened
 	prevH             int    // window height before the modal forced minSettingsH
@@ -196,6 +211,10 @@ type UI struct {
 	sleepFromMin      int    // committed sleep-window start minute (0/15/30/45)
 	sleepTo           int    // committed sleep-window end hour (-1 = unset)
 	sleepToMin        int    // committed sleep-window end minute (0/15/30/45)
+	busyFrom          int    // committed busy-window start hour (-1 = unset)
+	busyFromMin       int    // committed busy-window start minute (0/15/30/45)
+	busyTo            int    // committed busy-window end hour (-1 = unset)
+	busyToMin         int    // committed busy-window end minute (0/15/30/45)
 	mute              bool   // committed: replies are not spoken aloud (INI "mute")
 	savePath          string // INI file settings are written to ("" = ./chat-app.ini)
 	saveErr           string // last save error, shown inside the modal
@@ -314,6 +333,41 @@ func (u *UI) sleepToMinRect() image.Rectangle {
 	return image.Rect(f.Min.X+dx, f.Min.Y, f.Max.X+dx, f.Max.Y)
 }
 
+// busyFromRect / busyToRect are the busy-time hour dropdowns, one row below
+// the sleep boxes; the minute boxes share the same 5/10 split as sleep so
+// labels stay fully inside the boxes.
+func (u *UI) busyFromRect() image.Rectangle {
+	p := u.modalPanel()
+	rowW := (p.Dx() - 2*modalPad - 12) / 2
+	y := p.Min.Y + 270
+	hw := rowW * 5 / 10
+	return image.Rect(p.Min.X+modalPad, y, p.Min.X+modalPad+hw, y+dropH)
+}
+
+func (u *UI) busyFromMinRect() image.Rectangle {
+	p := u.modalPanel()
+	rowW := (p.Dx() - 2*modalPad - 12) / 2
+	y := p.Min.Y + 270
+	hw := rowW * 5 / 10
+	return image.Rect(p.Min.X+modalPad+hw+6, y, p.Min.X+modalPad+rowW, y+dropH)
+}
+
+func (u *UI) busyToRect() image.Rectangle {
+	p := u.modalPanel()
+	rowW := (p.Dx() - 2*modalPad - 12) / 2
+	dx := rowW + 12
+	f := u.busyFromRect()
+	return image.Rect(f.Min.X+dx, f.Min.Y, f.Max.X+dx, f.Max.Y)
+}
+
+func (u *UI) busyToMinRect() image.Rectangle {
+	p := u.modalPanel()
+	rowW := (p.Dx() - 2*modalPad - 12) / 2
+	dx := rowW + 12
+	f := u.busyFromMinRect()
+	return image.Rect(f.Min.X+dx, f.Min.Y, f.Max.X+dx, f.Max.Y)
+}
+
 // muteRect is the mute-speech checkbox row: the box plus its label, so
 // clicking either toggles the draft.
 func (u *UI) muteRect() image.Rectangle {
@@ -356,6 +410,10 @@ func (u *UI) openHourBox() image.Rectangle {
 		return u.sleepFromRect()
 	case dropTo:
 		return u.sleepToRect()
+	case dropBusyFrom:
+		return u.busyFromRect()
+	case dropBusyTo:
+		return u.busyToRect()
 	}
 	return image.Rectangle{}
 }
@@ -367,6 +425,10 @@ func (u *UI) openMinuteBox() image.Rectangle {
 		return u.sleepFromMinRect()
 	case dropToM:
 		return u.sleepToMinRect()
+	case dropBusyFromM:
+		return u.busyFromMinRect()
+	case dropBusyToM:
+		return u.busyToMinRect()
 	}
 	return image.Rectangle{}
 }
@@ -420,12 +482,12 @@ func (u *UI) HitTest(x, y int) Widget {
 				u.optIdx = clamp((y-l.Min.Y)/optH, 0, numAges-1)
 				return WOption
 			}
-		case dropFrom, dropTo:
+		case dropFrom, dropTo, dropBusyFrom, dropBusyTo:
 			if l := u.hourListRect(); inRect(x, y, l) {
 				u.optIdx = clamp(u.hourScroll+(y-l.Min.Y)/optH, 0, numHours-1)
 				return WOption
 			}
-		case dropFromM, dropToM:
+		case dropFromM, dropToM, dropBusyFromM, dropBusyToM:
 			if l := u.minuteListRect(); inRect(x, y, l) {
 				u.optMIdx = clamp(u.minuteScroll+(y-l.Min.Y)/optH, 0, numMinutes-1)
 				return WOption
@@ -453,6 +515,18 @@ func (u *UI) HitTest(x, y int) Widget {
 		}
 		if r := u.sleepToMinRect(); inRect(x, y, r) {
 			return WDropToM
+		}
+		if r := u.busyFromRect(); inRect(x, y, r) {
+			return WDropFromB
+		}
+		if r := u.busyFromMinRect(); inRect(x, y, r) {
+			return WDropFromBM
+		}
+		if r := u.busyToRect(); inRect(x, y, r) {
+			return WDropToB
+		}
+		if r := u.busyToMinRect(); inRect(x, y, r) {
+			return WDropToBM
 		}
 		if r := u.muteRect(); inRect(x, y, r) {
 			return WMute
@@ -644,6 +718,14 @@ func (u *UI) Release(w Widget) bool {
 			u.toggleDrop(dropFromM)
 		case WDropToM:
 			u.toggleDrop(dropToM)
+		case WDropFromB:
+			u.toggleDrop(dropBusyFrom)
+		case WDropToB:
+			u.toggleDrop(dropBusyTo)
+		case WDropFromBM:
+			u.toggleDrop(dropBusyFromM)
+		case WDropToBM:
+			u.toggleDrop(dropBusyToM)
 		case WMute:
 			u.muteDraft = !u.muteDraft // commits on SAVE, like the drafts
 		case WOption:
@@ -667,6 +749,22 @@ func (u *UI) Release(w Widget) bool {
 			case dropToM:
 				if u.optMIdx >= 0 && u.optMIdx < numMinutes {
 					u.sleepToMinDraft = u.optMIdx
+				}
+			case dropBusyFrom:
+				if u.optIdx >= 0 && u.optIdx < numHours {
+					u.busyFromDraft = u.optIdx
+				}
+			case dropBusyTo:
+				if u.optIdx >= 0 && u.optIdx < numHours {
+					u.busyToDraft = u.optIdx
+				}
+			case dropBusyFromM:
+				if u.optMIdx >= 0 && u.optMIdx < numMinutes {
+					u.busyFromMinDraft = u.optMIdx
+				}
+			case dropBusyToM:
+				if u.optMIdx >= 0 && u.optMIdx < numMinutes {
+					u.busyToMinDraft = u.optMIdx
 				}
 			}
 			u.openDrop = dropNone
@@ -739,7 +837,17 @@ func (u *UI) openSettings() bool {
 	if u.sleepToDraft < 0 {
 		u.sleepToDraft = defaultSleepTo
 	}
-	u.sleepToMinDraft = minuteIndex(u.sleepTo)
+	u.sleepToMinDraft = minuteIndex(u.sleepToMin)
+	u.busyFromDraft = u.busyFrom
+	if u.busyFromDraft < 0 {
+		u.busyFromDraft = defaultBusyFrom
+	}
+	u.busyFromMinDraft = minuteIndex(u.busyFromMin)
+	u.busyToDraft = u.busyTo
+	if u.busyToDraft < 0 {
+		u.busyToDraft = defaultBusyTo
+	}
+	u.busyToMinDraft = minuteIndex(u.busyToMin)
 	u.muteDraft = u.mute
 	u.wasCollapsed = u.collapsed
 	u.hover, u.press = WNone, WNone
@@ -814,13 +922,25 @@ func (u *UI) toggleDrop(which int) {
 			sel = u.sleepToMinDraft
 		}
 		u.minuteScroll = clamp(sel-1, 0, numMinutes-visibleMinuteRows)
+	case dropBusyFrom, dropBusyTo:
+		sel := u.busyFromDraft
+		if which == dropBusyTo {
+			sel = u.busyToDraft
+		}
+		u.hourScroll = clamp(sel-2, 0, numHours-visibleHourRows)
+	case dropBusyFromM, dropBusyToM:
+		sel := u.busyFromMinDraft
+		if which == dropBusyToM {
+			sel = u.busyToMinDraft
+		}
+		u.minuteScroll = clamp(sel-1, 0, numMinutes-visibleMinuteRows)
 	}
 }
 
 // ScrollHourList scrolls the open FROM/TO hour list; returns false when no
 // hour list is open, so the caller scrolls the message history instead.
 func (u *UI) ScrollHourList(dy int) bool {
-	if !u.settingsOpen || (u.openDrop != dropFrom && u.openDrop != dropTo) {
+	if !u.settingsOpen || (u.openDrop != dropFrom && u.openDrop != dropTo && u.openDrop != dropBusyFrom && u.openDrop != dropBusyTo) {
 		return false
 	}
 	u.hourScroll = clamp(u.hourScroll+dy, 0, numHours-visibleHourRows)
@@ -834,7 +954,7 @@ func (u *UI) ScrollHourList(dy int) bool {
 // ScrollMinuteList scrolls the open FROM/TO minute list; returns false when no
 // minute list is open, so the caller scrolls the message history instead.
 func (u *UI) ScrollMinuteList(dy int) bool {
-	if !u.settingsOpen || (u.openDrop != dropFromM && u.openDrop != dropToM) {
+	if !u.settingsOpen || (u.openDrop != dropFromM && u.openDrop != dropToM && u.openDrop != dropBusyFromM && u.openDrop != dropBusyToM) {
 		return false
 	}
 	u.minuteScroll = clamp(u.minuteScroll+dy, 0, numMinutes-visibleMinuteRows)
@@ -872,6 +992,11 @@ func (u *UI) saveSettings() {
 		u.saveErr = err.Error()
 		return
 	}
+	busy := fmt.Sprintf("%02d:%02d-%02d:%02d", u.busyFromDraft, sleepMinutes[u.busyFromMinDraft], u.busyToDraft, sleepMinutes[u.busyToMinDraft])
+	if err := SetConfigValue(path, "character", "busy-time", busy); err != nil {
+		u.saveErr = err.Error()
+		return
+	}
 	// Write the name and age into the stored persona too: the INI's system
 	// instruction has its "your name is ..." sentence rewritten, so the
 	// character definition itself carries these values.
@@ -884,6 +1009,8 @@ func (u *UI) saveSettings() {
 	u.age = u.ageDraft
 	u.sleepFrom, u.sleepTo = u.sleepFromDraft, u.sleepToDraft
 	u.sleepFromMin, u.sleepToMin = sleepMinutes[u.sleepFromMinDraft], sleepMinutes[u.sleepToMinDraft]
+	u.busyFrom, u.busyTo = u.busyFromDraft, u.busyToDraft
+	u.busyFromMin, u.busyToMin = sleepMinutes[u.busyFromMinDraft], sleepMinutes[u.busyToMinDraft]
 	u.mute = u.muteDraft
 	if u.Bot != nil {
 		if name != "" {
@@ -895,7 +1022,40 @@ func (u *UI) saveSettings() {
 		u.Bot.SleepFromH, u.Bot.SleepToH = u.sleepFromDraft, u.sleepToDraft
 		u.Bot.SleepFromM, u.Bot.SleepToM = sleepMinutes[u.sleepFromMinDraft], sleepMinutes[u.sleepToMinDraft]
 		u.Bot.SleepFrom, u.Bot.SleepTo = u.sleepFromDraft, u.sleepToDraft
+		u.Bot.BusySet = true
+		u.Bot.BusyFromH, u.Bot.BusyToH = u.busyFromDraft, u.busyToDraft
+		u.Bot.BusyFromM, u.Bot.BusyToM = sleepMinutes[u.busyFromMinDraft], sleepMinutes[u.busyToMinDraft]
 	}
+	u.updateBusyState()
+}
+
+// updateBusyState checks if the current time falls within the busy window and
+// updates the bot's display name accordingly: "Busy/Work" while busy, the
+// configured character name otherwise. Returns true when the name changed.
+func (u *UI) updateBusyState() bool {
+	if u.Bot == nil || !u.Bot.BusySet {
+		return false
+	}
+	now := time.Now()
+	cur := now.Hour()*60 + now.Minute()
+	from := u.busyFrom*60 + u.busyFromMin
+	to := u.busyTo*60 + u.busyToMin
+	busy := false
+	if from <= to {
+		busy = cur >= from && cur < to
+	} else {
+		// Window wraps past midnight (e.g. 22:00-07:00).
+		busy = cur >= from || cur < to
+	}
+	want := u.name
+	if busy {
+		want = "Busy/Work"
+	}
+	if u.Bot.Name != want {
+		u.Bot.Name = want
+		return true
+	}
+	return false
 }
 
 // SetHover updates the hovered widget (drives cursor shape + button tint).
@@ -1121,16 +1281,28 @@ func (u *UI) drawSettings(frame *image.NRGBA) {
 	u.drawSelectBox(frame, tr, hourLabel(u.sleepToDraft), u.openDrop == dropTo, WDropTo)
 	u.drawSelectBox(frame, tm, minuteLabel(u.sleepToMinDraft), u.openDrop == dropToM, WDropToM)
 
+	drawText(frame, p.Min.X+modalPad, p.Min.Y+240, "BUSY TIME", 1, colMuted)
+	busyF, busyT := u.busyFromRect(), u.busyToRect()
+	busyFM, busyTM := u.busyFromMinRect(), u.busyToMinRect()
+	drawText(frame, busyF.Min.X, p.Min.Y+254, "FROM", 1, colMuted)
+	drawText(frame, busyT.Min.X, p.Min.Y+254, "TO", 1, colMuted)
+	u.drawSelectBox(frame, busyF, hourLabel(u.busyFromDraft), u.openDrop == dropBusyFrom, WDropFromB)
+	u.drawSelectBox(frame, busyFM, minuteLabel(u.busyFromMinDraft), u.openDrop == dropBusyFromM, WDropFromBM)
+	u.drawSelectBox(frame, busyT, hourLabel(u.busyToDraft), u.openDrop == dropBusyTo, WDropToB)
+	u.drawSelectBox(frame, busyTM, minuteLabel(u.busyToMinDraft), u.openDrop == dropBusyToM, WDropToBM)
+
 	u.drawMuteRow(frame)
 
 	u.drawModalButtons(frame)
 	if u.openDrop == dropAge {
 		u.drawDropList(frame)
 	}
-	if u.openDrop == dropFrom || u.openDrop == dropTo {
+	if u.openDrop == dropFrom || u.openDrop == dropTo ||
+		u.openDrop == dropBusyFrom || u.openDrop == dropBusyTo {
 		u.drawHourList(frame)
 	}
-	if u.openDrop == dropFromM || u.openDrop == dropToM {
+	if u.openDrop == dropFromM || u.openDrop == dropToM ||
+		u.openDrop == dropBusyFromM || u.openDrop == dropBusyToM {
 		u.drawMinuteList(frame)
 	}
 }
@@ -1219,6 +1391,12 @@ func (u *UI) drawHourList(frame *image.NRGBA) {
 	if u.openDrop == dropTo {
 		sel = u.sleepToDraft
 	}
+	if u.openDrop == dropBusyFrom {
+		sel = u.busyFromDraft
+	}
+	if u.openDrop == dropBusyTo {
+		sel = u.busyToDraft
+	}
 	for i := u.hourScroll; i < u.hourScroll+visibleHourRows && i < numHours; i++ {
 		ry := l.Min.Y + (i-u.hourScroll)*optH
 		if u.hover == WOption && u.optIdx == i {
@@ -1263,6 +1441,12 @@ func (u *UI) drawMinuteList(frame *image.NRGBA) {
 	sel := u.sleepFromMinDraft
 	if u.openDrop == dropToM {
 		sel = u.sleepToMinDraft
+	}
+	if u.openDrop == dropBusyFromM {
+		sel = u.busyFromMinDraft
+	}
+	if u.openDrop == dropBusyToM {
+		sel = u.busyToMinDraft
 	}
 	for i := u.minuteScroll; i < u.minuteScroll+visibleMinuteRows && i < numMinutes; i++ {
 		ry := l.Min.Y + (i-u.minuteScroll)*optH

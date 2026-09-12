@@ -397,6 +397,14 @@ func main() {
 		ui.Bot.SleepFromM, ui.Bot.SleepToM = cfg.SleepFromM, cfg.SleepToM
 		ui.Bot.SleepFrom, ui.Bot.SleepTo = cfg.SleepFrom, cfg.SleepTo
 	}
+	if cfg != nil && cfg.BusySet {
+		ui.busyFrom, ui.busyTo = cfg.BusyFrom, cfg.BusyTo
+		ui.busyFromMin, ui.busyToMin = cfg.BusyFromM, cfg.BusyToM
+		ui.Bot.BusySet = true
+		ui.Bot.BusyFromH, ui.Bot.BusyToH = cfg.BusyFromH, cfg.BusyToH
+		ui.Bot.BusyFromM, ui.Bot.BusyToM = cfg.BusyFromM, cfg.BusyToM
+		ui.Bot.BusyFrom, ui.Bot.BusyTo = cfg.BusyFrom, cfg.BusyTo
+	}
 	if cfg != nil && cfg.Mute {
 		ui.mute = true // the dialog's MUTE SPEECH checkbox starts checked
 	}
@@ -458,9 +466,18 @@ func main() {
 		log.Printf("tts: off")
 	}
 
+	// Apply the busy window to the bubble label right away so the name is
+	// correct from the first frame.
+	ui.updateBusyState()
+
 	dirty := true
 	caret := time.NewTicker(530 * time.Millisecond)
 	defer caret.Stop()
+
+	// busyTicker re-checks the busy window once a minute so the bubble
+	// sender label flips to "Busy/Work" (and back) without a manual refresh.
+	busyTicker := time.NewTicker(1 * time.Minute)
+	defer busyTicker.Stop()
 
 	// Header-drag state: pressing the frameless header and moving beyond a
 	// small threshold hands the drag to the WM via _NET_WM_MOVERESIZE; a
@@ -578,6 +595,10 @@ func main() {
 		case <-caret.C:
 			ui.caret = !ui.caret
 			if ui.focused || (ui.settingsOpen && ui.nameFocused) {
+				dirty = true
+			}
+		case <-busyTicker.C:
+			if ui.updateBusyState() {
 				dirty = true
 			}
 		}

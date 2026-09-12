@@ -82,26 +82,34 @@ const sleepInstructionFmt = " Sleep schedule: you sleep from %02d:%02d until %02
 // Bot answers user messages via the configured LLM provider.
 type Bot struct {
 	Name              string
-	APIKey            string   // Gemini API key (used for Gemini text + image generation)
-	PixabayKey        string   // Pixabay API key (used when ImageSource is "pixabay")
-	Model             string   // provider-specific model ID
-	APIURL            string   // Gemini endpoint base
-	PetPipe           string   // desktop-pet say FIFO; empty disables forwarding
-	SystemInstruction string   // system prompt sent to every model
-	ImageSource       string   // "pixabay" | "wiki" | "gemini" | "off"
-	ForceImageKeyword string   // if set, always fetch/generate an image for this keyword
-	CharacterAge      int      // character age from the settings dialog (0 = unset)
-	CharacterName     string   // character name from the settings dialog ("" = unset)
-	SleepSet          bool     // a sleep window is configured (see SleepFromH/SleepToH)
-	SleepFromH        int      // sleep-window start hour (0-23)
-	SleepFromM        int      // sleep-window start minute (0/15/30/45)
-	SleepToH          int      // sleep-window end hour (0-23)
-	SleepToM          int      // sleep-window end minute (0/15/30/45)
+	APIKey            string // Gemini API key (used for Gemini text + image generation)
+	PixabayKey        string // Pixabay API key (used when ImageSource is "pixabay")
+	Model             string // provider-specific model ID
+	APIURL            string // Gemini endpoint base
+	PetPipe           string // desktop-pet say FIFO; empty disables forwarding
+	SystemInstruction string // system prompt sent to every model
+	ImageSource       string // "pixabay" | "wiki" | "gemini" | "off"
+	ForceImageKeyword string // if set, always fetch/generate an image for this keyword
+	CharacterAge      int    // character age from the settings dialog (0 = unset)
+	CharacterName     string // character name from the settings dialog ("" = unset)
+	SleepSet          bool   // a sleep window is configured (see SleepFromH/SleepToH)
+	SleepFromH        int    // sleep-window start hour (0-23)
+	SleepFromM        int    // sleep-window start minute (0/15/30/45)
+	SleepToH          int    // sleep-window end hour (0-23)
+	SleepToM          int    // sleep-window end minute (0/15/30/45)
 	// Legacy whole-hour aliases kept for existing callers (set from H fields).
 	SleepFrom int
 	SleepTo   int
-	Provider          Provider // the active LLM backend (nil = offline stub)
-	HTTP              *http.Client
+	BusySet   bool     // a busy window is configured (see BusyFromH/BusyToH)
+	BusyFromH int      // busy-window start hour (0-23)
+	BusyFromM int      // busy-window start minute (0/15/30/45)
+	BusyToH   int      // busy-window end hour (0-23)
+	BusyToM   int      // busy-window end minute (0/15/30/45)
+	// Legacy whole-hour aliases kept for existing callers (set from H fields).
+	BusyFrom  int
+	BusyTo    int
+	Provider  Provider // the active LLM backend (nil = offline stub)
+	HTTP      *http.Client
 }
 
 func NewBot() *Bot {

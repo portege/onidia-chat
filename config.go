@@ -40,14 +40,20 @@ type Config struct {
 	AWSRegion        string `ini:"aws-region"`          // AWS region for Bedrock
 	CharacterAge     int    `ini:"character-age"`       // chat character's age (settings dialog, 7-13)
 	CharacterName    string `ini:"character-name"`      // chat character's name (settings dialog)
-	SleepSet   bool // sleep-time was present in the config
-	SleepFromH int  // sleep-window start hour (0-23), from sleep-time
-	SleepFromM int  // sleep-window start minute (0/15/30/45), from sleep-time
-	SleepToH   int  // sleep-window end hour (0-23), from sleep-time
-	SleepToM   int  // sleep-window end minute (0/15/30/45), from sleep-time
-	// Legacy whole-hour aliases kept for existing callers (set from H fields).
-	SleepFrom int
-	SleepTo   int
+	SleepSet         bool   // sleep-time was present in the config
+	SleepFromH       int    // sleep-window start hour (0-23), from sleep-time
+	SleepFromM       int    // sleep-window start minute (0/15/30/45), from sleep-time
+	SleepToH         int    // sleep-window end hour (0-23), from sleep-time
+	SleepToM         int    // sleep-window end minute (0/15/30/45), from sleep-time
+	BusySet          bool   // busy-time was present in the config
+	BusyFromH        int    // busy-window start hour (0-23), from busy-time
+	BusyFromM        int    // busy-window start minute (0/15/30/45), from busy-time
+	BusyToH          int    // busy-window end hour (0-23), from busy-time
+	BusyToM          int    // busy-window end minute (0/15/30/45), from busy-time
+	BusyFrom         int    // legacy whole-hour alias kept for existing callers (set from H fields)
+	BusyTo           int    // legacy whole-hour alias kept for existing callers (set from H fields)
+	SleepFrom        int    // legacy whole-hour aliases kept for existing callers (set from H fields)
+	SleepTo          int    // legacy whole-hour aliases kept for existing callers (set from H fields)
 }
 
 // LoadConfig reads a simple INI file and returns populated Config.
@@ -168,6 +174,13 @@ func applyConfigField(cfg *Config, key, val string) {
 			cfg.SleepToH, cfg.SleepToM = th, tm
 			cfg.SleepFrom, cfg.SleepTo = fh, th
 			cfg.SleepSet = true
+		}
+	case "busy-time":
+		if fh, fm, th, tm, ok := parseSleepTime(val); ok {
+			cfg.BusyFromH, cfg.BusyFromM = fh, fm
+			cfg.BusyToH, cfg.BusyToM = th, tm
+			cfg.BusyFrom, cfg.BusyTo = fh, th
+			cfg.BusySet = true
 		}
 	}
 }
