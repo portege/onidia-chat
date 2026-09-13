@@ -478,10 +478,10 @@ func TestBakeCharacterPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(c.SystemPrompt, "your name is Onidia, 12 years old") {
+	if !strings.Contains(strings.ToLower(c.SystemPrompt), "your name is onidia, 12 years old") {
 		t.Errorf("persona lacks the baked name/age:\n%s", c.SystemPrompt)
 	}
-	if !strings.Contains(c.SystemPrompt, "a tiny cheerful chat companion") {
+	if !strings.Contains(c.SystemPrompt, before.SystemPrompt) {
 		t.Errorf("original persona lost:\n%s", c.SystemPrompt)
 	}
 	if c.APIKey == "" || c.CharacterAge != before.CharacterAge {
@@ -504,11 +504,12 @@ func TestBakeCharacterPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(c.SystemPrompt, "Onidia") ||
-		!strings.Contains(c.SystemPrompt, "your name is Buddy, 9 years old") {
+	low := strings.ToLower(c.SystemPrompt)
+	if strings.Contains(low, "onidia") ||
+		!strings.Contains(low, "your name is buddy, 9 years old") {
 		t.Errorf("second bake did not replace the values:\n%s", c.SystemPrompt)
 	}
-	if n := strings.Count(strings.ToLower(c.SystemPrompt), "your name is"); n != 1 {
+	if n := strings.Count(low, "your name is"); n != 1 {
 		t.Errorf("identity sentence stacked:\n%s", c.SystemPrompt)
 	}
 }

@@ -591,6 +591,11 @@ func main() {
 			} else if audioOn {
 				tts.SpeakLine(reply.Text, nil, nil) // speak aloud even without a pet
 			}
+			// Pet action/event command from [ACTION: ...] / [EVENT: ...]: acted
+			// out on the sibling cmd-FIFO, independent of TTS/bubble timing.
+			if reply.petCmdPipe != "" && reply.petCmdLine != "" {
+				petCmd(reply.petCmdPipe, reply.petCmdLine)
+			}
 			dirty = true
 		case <-caret.C:
 			ui.caret = !ui.caret

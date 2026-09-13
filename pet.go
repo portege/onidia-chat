@@ -44,6 +44,18 @@ func petPipePath() string {
 	return "/tmp/desktop-pet-" + tag + ".say"
 }
 
+// petCmdPathFor derives the pet's command-FIFO path from its say-FIFO path.
+// The pet names the two pipes identically apart from the extension (.say for
+// speech, .cmd for action/event commands), so replacing the suffix yields the
+// exact sibling pipe even for user-customized paths. Returns "" when the say
+// pipe is disabled.
+func petCmdPathFor(sayPath string) string {
+	if sayPath == "" {
+		return ""
+	}
+	return strings.TrimSuffix(sayPath, ".say") + ".cmd"
+}
+
 // petSay writes one reply to the pet say-FIFO: the image (if any) is encoded
 // to a temp PNG and the assembled line is pushed via petSayLine. Best-effort -
 // the FIFO write never hangs the chat: with no pet listening, the open fails
@@ -117,6 +129,31 @@ func petClear(path string) {
 		return
 	}
 	petSayLine(path, petSayClearToken)
+}
+
+// petCmd sends one command line (e.g. "action dance" or "event love") to the
+// pet's command FIFO so the LLM's [ACTION: ...] / [EVENT: ...] reply tags
+// translate into the pet acting out the reply. Best-effort and identical to
+// petSayLine in spirit: O_NONBLOCK, no hang when no pet is listening, retry
+// once to cover a pipe reopen.
+func petCmd(path, line string) {
+	if path == "" || line == "" {
+		return
+	}
+	for tries := 0; tries < 3; tries++ {
+		f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+		if err == nil {
+			if _, werr := fmt.Fprintln(f, line); werr != nil {
+				log.Printf("pet: cmd write failed: %v", werr)
+			}
+			f.Close()
+			return
+		}
+		if !errors.Is(err, syscall.ENXIO) {
+			return // no cmd pipe at all -> pet not running
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // petTryRemoveSayImage removes the temp image referenced by a say-line whose

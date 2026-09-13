@@ -9,13 +9,15 @@ func TestEffectiveSystem(t *testing.T) {
 	cases := []struct {
 		base, source string
 		wantIMG      bool // should the result mention [IMG: ...] ?
+		wantVisual   bool // should the pet visual-language block be appended?
 	}{
-		{"", "wiki", true},
-		{"", "pixabay", true},
-		{"", "gemini", true},
-		{"", "off", false},
-		{"I already use [IMG: foo] tags.", "wiki", true},
-		{"Custom persona.", "off", false},
+		{"", "wiki", true, true},
+		{"", "pixabay", true, true},
+		{"", "gemini", true, true},
+		{"", "off", false, true},
+		{"I already use [IMG: foo] tags.", "wiki", true, true},           // image instruction skipped (custom), visual still appended
+		{"I already define [ACTION: snowball].", "pixabay", true, false}, // visual skipped (custom), image still appended
+		{"Custom persona.", "off", false, true},
 	}
 	for _, tc := range cases {
 		got := effectiveSystem(tc.base, tc.source)
@@ -23,33 +25,121 @@ func TestEffectiveSystem(t *testing.T) {
 		if hasIMG != tc.wantIMG {
 			t.Errorf("effectiveSystem(%q, %q) = %q, hasIMG=%v want %v", tc.base, tc.source, got, hasIMG, tc.wantIMG)
 		}
-		if tc.base != "" && !hasIMG && got != tc.base+inputGuard {
-			t.Errorf("effectiveSystem(%q, %q) = %q, want base with input guard appended", tc.base, tc.source, got)
+		hasVisual := contains(got, "[EVENT:")
+		if hasVisual != tc.wantVisual {
+			t.Errorf("effectiveSystem(%q, %q) hasVisual=%v want %v", tc.base, tc.source, hasVisual, tc.wantVisual)
 		}
 	}
 }
 
 func TestStripTags(t *testing.T) {
 	cases := []struct {
-		raw, wantMood, wantImg, wantText string
+		raw, wantMood, wantImg, wantAction, wantEvent, wantText string
 	}{
-		{"hello", "", "", "hello"},
-		{"[happy] hello", "happy", "", "hello"},
-		{"[IMG: Bali] hello", "", "Bali", "hello"},
-		{"[IMG: Bali] [happy] hello", "happy", "Bali", "hello"},
-		{"[happy] [IMG: Bali] hello", "happy", "Bali", "hello"},
-		{"[IMG: a big dog] wow", "", "a big dog", "wow"},
-		{"[unknown] text", "", "", "text"},
-		{"hello [happy] world", "", "", "hello world"},
-		{"hello [IMG: Bali] world", "", "", "hello world"},
-		{"p1.\n[IMG: an image] [happy] p2.", "happy", "an image", "p1.\np2."},
+		{"hello", "", "", "", "", "hello"},
+		{"[happy] hello", "happy", "", "", "", "hello"},
+		{"[IMG: Bali] hello", "", "Bali", "", "", "hello"},
+		{"[IMG: Bali] [happy] hello", "happy", "Bali", "", "", "hello"},
+		{"[happy] [IMG: Bali] hello", "happy", "Bali", "", "", "hello"},
+		{"[IMG: a big dog] wow", "", "a big dog", "", "", "wow"},
+		{"[unknown] text", "", "", "", "", "text"}, // unknown tag: stripped but ignored
+		{"hello [happy] world", "", "", "", "", "hello world"},
+		{"hello [IMG: Bali] world", "", "", "", "", "hello world"},
+		{"p1.\n[IMG: an image] [happy] p2.", "happy", "an image", "", "", "p1.\np2."},
+		// Action / event tags on their own header lines.
+		{"[ACTION: dance] party time", "", "", "dance", "", "party time"},
+		{"[EVENT: love] you're the best", "", "", "", "love", "you're the best"},
+		{"[ACTION: dance]\n[happy] let's go!", "happy", "", "dance", "", "let's go!"},
+		{"[EVENT: love] [IMG: Bali] [happy] trip!", "happy", "Bali", "", "love", "trip!"},
+		{"[ACTION: unknown] text", "", "", "", "", "text"},
+		{"[ACTION: DANCE] case-insensitive", "", "", "dance", "", "case-insensitive"},
 	}
 	for _, tc := range cases {
-		mood, img, text := stripTags(tc.raw)
-		if mood != tc.wantMood || img != tc.wantImg || text != tc.wantText {
-			t.Errorf("stripTags(%q) = (%q, %q, %q), want (%q, %q, %q)",
-				tc.raw, mood, img, text, tc.wantMood, tc.wantImg, tc.wantText)
+		mood, img, action, event, text := stripTags(tc.raw)
+		if mood != tc.wantMood || img != tc.wantImg || action != tc.wantAction || event != tc.wantEvent || text != tc.wantText {
+			t.Errorf("stripTags(%q) = (%q, %q, %q, %q, %q), want (%q, %q, %q, %q, %q)",
+				tc.raw, mood, img, action, event, text, tc.wantMood, tc.wantImg, tc.wantAction, tc.wantEvent, tc.wantText)
 		}
+	}
+}
+
+// TestReplyForwardsPetActionEvent verifies that [ACTION: ...] / [EVENT: ...]
+// reply tags are stripped from the displayed text and turned into a command
+// line ready for the pet's cmd-FIFO (with the mood still heading the say-line).
+func TestReplyForwardsPetActionEvent(t *testing.T) {
+	fp := &fakeProvider{canned: "[ACTION: dance]\n[happy] let's party!"}
+	bot := &Bot{Provider: fp, SystemInstruction: "You are Buddy.", ImageSource: "off", PetPipe: "/tmp/desktop-pet--0.say"}
+	res := bot.Reply([]Msg{{From: "you", Text: "party?"}}, "party?")
+
+	wantText := "let's party!"
+	if res.Text != wantText {
+		t.Errorf("reply text = %q, want %q", res.Text, wantText)
+	}
+	if res.petCmdPipe != "/tmp/desktop-pet--0.cmd" {
+		t.Errorf("petCmdPipe = %q, want /tmp/desktop-pet--0.cmd", res.petCmdPipe)
+	}
+	if res.petCmdLine != "action dance" {
+		t.Errorf("petCmdLine = %q, want %q", res.petCmdLine, "action dance")
+	}
+	if !strings.HasPrefix(res.petLine, "[happy]") {
+		t.Errorf("petLine = %q, want a [happy] say-line", res.petLine)
+	}
+
+	// Now an event with the pet pipe disabled -> no cmd forwarding.
+	fp2 := &fakeProvider{canned: "[EVENT: love] you rule"}
+	bot2 := &Bot{Provider: fp2, SystemInstruction: "You are Buddy.", ImageSource: "off", PetPipe: ""}
+	res2 := bot2.Reply([]Msg{{From: "you", Text: "thanks"}}, "thanks")
+	if res2.petCmdPipe != "" || res2.petCmdLine != "" {
+		t.Errorf("disabled pet pipe should produce no cmd line, got pipe=%q line=%q", res2.petCmdPipe, res2.petCmdLine)
+	}
+}
+
+// TestInferMoodFallback verifies the keyword classifier that fills in a pet
+// mood when the model forgets the [mood] tag - the replies must never land on
+// a blank neutral face for an emotionally-charged answer.
+func TestInferMoodFallback(t *testing.T) {
+	cases := []struct {
+		text, want string
+	}{
+		{"Your secret is safe with me! I promise not to tell anyone.", "wink"},
+		{"I'm really sorry to hear that your pet passed away.", "sad"},
+		{"Thinking about tough choices can be really tricky, maybe weigh the pros and cons.", "thinking"},
+		{"I am so nervous about this exam.", "anxious"},
+		{"That noise was creepy, I'm scared.", "fear"},
+		{"That is completely unfair and I'm mad.", "angry"},
+		{"Wow, I can't believe you won!", "surprised"},
+		{"Eww, that is so gross.", "disgust"},
+		{"A kitten followed me home, it's adorable!", "adore"},
+		{"I doubt that story, it seems suspicious.", "skeptical"},
+		{"That paradox is confusing, it doesn't make sense.", "confused"},
+		{"I tripped in front of my crush, so embarrassing.", "embarrassed"},
+		{"I'm so tired, going to bed now.", "sleepy"},
+		{"Yay, awesome news, we're celebrating!", "happy"},
+		{"The sky is blue and grass is green.", "neutral"},
+	}
+	for _, tc := range cases {
+		if got := inferMood(tc.text); got != tc.want {
+			t.Errorf("inferMood(%q) = %q, want %q", tc.text, got, tc.want)
+		}
+	}
+}
+
+// TestReplyInfersMoodWhenTagMissing verifies that a model reply with no [mood]
+// tag still carries an inferred mood into the pet say-line, while an explicit
+// tag always wins.
+func TestReplyInfersMoodWhenTagMissing(t *testing.T) {
+	fp := &fakeProvider{canned: "I'm really sorry, that sounds so sad."}
+	bot := &Bot{Provider: fp, SystemInstruction: "You are Buddy.", ImageSource: "off", PetPipe: "/tmp/desktop-pet--0.say"}
+	res := bot.Reply([]Msg{{From: "you", Text: "my cat died"}}, "my cat died")
+	if !strings.HasPrefix(res.petLine, "[sad]") {
+		t.Errorf("petLine = %q, want a [sad] say-line inferred from the reply", res.petLine)
+	}
+
+	fp2 := &fakeProvider{canned: "[wink] don't tell anyone!"}
+	bot2 := &Bot{Provider: fp2, SystemInstruction: "You are Buddy.", ImageSource: "off", PetPipe: "/tmp/desktop-pet--0.say"}
+	res2 := bot2.Reply([]Msg{{From: "you", Text: "secret?"}}, "secret?")
+	if !strings.HasPrefix(res2.petLine, "[wink]") {
+		t.Errorf("petLine = %q, want the model's [wink] tag preserved", res2.petLine)
 	}
 }
 

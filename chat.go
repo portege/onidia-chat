@@ -47,7 +47,7 @@ const botPersona = `You are Buddy, a tiny cheerful chat companion living in a ch
 	`(the app draws text with a tiny bitmap font). ` +
 	`If an emotion fits the answer, START it with exactly one mood tag from ` +
 	`[happy] [wink] [sad] [thinking] [anxious] [angry] [surprised] [sleepy] ` +
-	`[fear] [disgust] [contempt] [confused] [skeptical] [embarrassed]; ` +
+	`[fear] [disgust] [contempt] [confused] [skeptical] [embarrassed] [adore]; ` +
 	`the tag is stripped before display.` +
 	` When a longer answer has multiple paragraphs, separate each paragraph with a newline character; the app renders every newline as a page break, one paragraph per page, with a pager strip to flip through them.`
 
@@ -66,6 +66,15 @@ const imageTagInstruction = ` When your answer would benefit from an image (plac
 // concise Wikipedia article title that survives URL encoding and is likely to
 // match a real page. Descriptive phrases ("sunny beach with palm trees") 404.
 const wikiImageTagInstruction = ` When your answer would benefit from an image (place, landmark, animal, famous person, object, food, etc.), start your reply with "[IMG: <concise Wikipedia article title>]" on its own line. Pick a single, well-known article name (e.g. "Bali", "Eiffel Tower", "Capybara"), not a descriptive sentence. If you also want to express an emotion, put the image tag first, then the mood tag. All tags are stripped before display.`
+
+// visualLanguageInstruction teaches the model the pet's action/event tags so a
+// reply can also make the pet pose (action) or overlay FX (event), not just
+// change her expression. The app parses these out of the reply header and
+// forwards them to the pet's command FIFO; the tags are stripped before the
+// text is shown. The INI's system-prompt-multi typically carries a fuller
+// version (see docs/llm-visual-language.md); this default keeps the built-in
+// persona consistent when no config overrides it.
+const visualLanguageInstruction = ` Beyond the mood tag, you may also start the reply with ONE action tag on its own line - "[ACTION: <name>]" - and/or ONE event tag on its own line - "[EVENT: <name>]" - so the desktop-pet girl acts out the reply (pose or FX overlay). Actions: skip (jump rope), juggle, dance, eat, work, guitar, sneeze, sixseven, basketball, drive, ride (skateboard), kitten (something cute arrives). Events: love (hearts), idea (light bulb), celebration (confetti), sleep (Zzz), peace (V sign), disappear (poof out), appear (sparkle in), halloween, matrix (hacker rain). Pick what matches the content, at most one action and one event per reply, never mid-sentence (a tag only counts at the very start of the reply or of a line). The image tag, when used, comes first on its own line, then the action/event/mood tags; every tag is stripped before display and never shown to the user.`
 
 // ageInstructionFmt is appended to the system prompt when a character age is
 // set in the settings dialog (7-13), so answers stay age-appropriate.
@@ -100,16 +109,16 @@ type Bot struct {
 	// Legacy whole-hour aliases kept for existing callers (set from H fields).
 	SleepFrom int
 	SleepTo   int
-	BusySet   bool     // a busy window is configured (see BusyFromH/BusyToH)
-	BusyFromH int      // busy-window start hour (0-23)
-	BusyFromM int      // busy-window start minute (0/15/30/45)
-	BusyToH   int      // busy-window end hour (0-23)
-	BusyToM   int      // busy-window end minute (0/15/30/45)
+	BusySet   bool // a busy window is configured (see BusyFromH/BusyToH)
+	BusyFromH int  // busy-window start hour (0-23)
+	BusyFromM int  // busy-window start minute (0/15/30/45)
+	BusyToH   int  // busy-window end hour (0-23)
+	BusyToM   int  // busy-window end minute (0/15/30/45)
 	// Legacy whole-hour aliases kept for existing callers (set from H fields).
-	BusyFrom  int
-	BusyTo    int
-	Provider  Provider // the active LLM backend (nil = offline stub)
-	HTTP      *http.Client
+	BusyFrom int
+	BusyTo   int
+	Provider Provider // the active LLM backend (nil = offline stub)
+	HTTP     *http.Client
 }
 
 func NewBot() *Bot {
@@ -124,13 +133,17 @@ func NewBot() *Bot {
 // ReplyResult is what Bot.Reply returns: text plus an optional image. The pet
 // say-pipe line (with mood/image tags) travels with it so the bubble can be
 // shown in sync with text-to-speech playback instead of the moment the text is
-// generated (see main.go).
+// generated (see main.go). An optional pet command (action/event from the
+// LLM's [ACTION: ...] / [EVENT: ...] reply tags) travels alongside it so the
+// pet can act out the reply.
 type ReplyResult struct {
 	Text  string
 	Image image.Image
 
-	petLine string // assembled say-pipe line ("" = nothing to forward)
-	petPipe string // say-FIFO path it should be written to ("" = disabled)
+	petLine    string // assembled say-pipe line ("" = nothing to forward)
+	petPipe    string // say-FIFO path it should be written to ("" = disabled)
+	petCmdLine string // command line for the cmd-FIFO ("action dance", "event love")
+	petCmdPipe string // cmd-FIFO path to write it to ("" = disabled)
 }
 
 // resolveSystemPrompt merges a -system-prompt override and a -system-file
@@ -206,16 +219,75 @@ type geminiResponse struct {
 	} `json:"error,omitempty"`
 }
 
-// replyTag matches one [IMG: ...] or [mood] tag plus any blanks after it.
-// Group 2 holds the image description, group 3 the mood word.
-var replyTag = regexp.MustCompile(`(\[IMG:\s*([^\]]*)\]|\[([a-z]+)\])[ \t]*`)
+// replyTag matches one [IMG: ...], [action]/[event] or [mood] tag plus any
+// blanks after it. Group 2 holds the image description, group 3 the action
+// name, group 4 the event name, group 5 the mood word.
+var replyTag = regexp.MustCompile(`(\[IMG:\s*([^\]]*)\]|\[ACTION:\s*([a-zA-Z]+)\]|\[EVENT:\s*([a-zA-Z]+)\]|\[([a-zA-Z]+)\])[ \t]*`)
 
 // petMoods are the tags the pet understands (see desktop-pet docs).
 var petMoods = map[string]bool{
 	"happy": true, "wink": true, "sad": true, "thinking": true,
 	"anxious": true, "angry": true, "surprised": true, "sleepy": true,
 	"fear": true, "disgust": true, "contempt": true, "confused": true,
-	"skeptical": true, "embarrassed": true,
+	"skeptical": true, "embarrassed": true, "neutral": true, "adore": true,
+}
+
+// petActions are the pose animations the pet knows (desktop-pet actions.go).
+var petActions = map[string]bool{
+	"skip": true, "juggle": true, "dance": true, "eat": true, "work": true,
+	"guitar": true, "sneeze": true, "sixseven": true, "basketball": true,
+	"drive": true, "ride": true, "kitten": true,
+}
+
+// petEvents are the overlay FX the pet knows (desktop-pet events.go).
+var petEvents = map[string]bool{
+	"love": true, "idea": true, "celebration": true, "sleep": true,
+	"peace": true, "disappear": true, "appear": true, "halloween": true,
+	"matrix": true,
+}
+
+// moodHint pairs one pet mood with the lowercase phrases that suggest it.
+type moodHint struct {
+	mood  string
+	words []string
+}
+
+// moodHints are checked in order: longer, more specific emotions (wink, sad,
+// thinking) come before the generic happy fallback, and each phrase is a
+// substring match so "sad" also catches "saddest", "mad" catches "madness"
+// etc. - close enough for a heuristic that only fires when the model skips
+// the [mood] tag.
+var moodHints = []moodHint{
+	{"wink", []string{"secret", "don't tell", "dont tell", "shh", "sneaky", "wink", "just kidding", "inside joke", "pinky promise"}},
+	{"sad", []string{"passed away", "died", "so sorry", "very sorry", "i'm sorry", "i am sorry", "heartbroken", "sad", "cry", "tears", "grief", "sympathy", "condolence"}},
+	{"thinking", []string{"thinking", "think about", "tricky choice", "tricky choices", "tough choice", "tough choices", "decide", "decision", "pros and cons", "options", "weigh the", "choose", "figure out", "consider"}},
+	{"fear", []string{"terrified", "afraid", "scared", "creepy", "ghost", "weird noise", "dark house", "spooky", "frighten", "horror"}},
+	{"anxious", []string{"nervous", "anxious", "worried", "panic", "stressed", "deadline", "sweating"}},
+	{"angry", []string{"angry", "mad", "furious", "rage", "annoyed", "frustrated", "hate", "unfair", "cut me off"}},
+	{"surprised", []string{"surprised", "surprise", "unbelievable", "can't believe", "cant believe", "whoa", "no way", "shocked", "mind blown", "unexpected"}},
+	{"disgust", []string{"disgust", "gross", "eww", "nasty", "yuck", "stink", "rotten", "slime", "worm"}},
+	{"skeptical", []string{"skeptic", "doubt", "not buying", "suspicious", "conspiracy", "really suspicious"}},
+	{"confused", []string{"confused", "puzzled", "bewildered", "huh", "paradox", "chicken or the egg", "which came first", "doesn't make sense", "doesnt make sense"}},
+	{"embarrassed", []string{"embarrass", "blush", "tripped", "awkward", "flustered", "shy", "in front of my crush"}},
+	{"adore", []string{"adorable", "aww", "awww", "so cute", "too cute", "kitten", "puppy", "baby panda", "squee"}},
+	{"sleepy", []string{"sleepy", "tired", "exhausted", "sleep", "going to bed", "yawn", "nap", "3 am", "3am", "late night", "can't sleep", "cant sleep"}},
+	{"contempt", []string{"obviously", "of course", "already knew", "smug", "pfft", "don't you know", "dont you know"}},
+	{"happy", []string{"yay", "awesome", "amazing", "congrats", "congratulations", "woohoo", "party", "celebrate", "celebration", "happy", "glad", "excited", "good news", "great job", "you're the best", "love you", "love it", "birthday"}},
+}
+
+// inferMood guesses a pet mood from the reply text when the model skips the
+// [mood] tag. Returns "neutral" when nothing matches. Used only as a fallback,
+// so a real tag the model emits always wins.
+func inferMood(text string) string {
+	s := strings.ToLower(text)
+	for _, hint := range moodHints {
+		for _, p := range hint.words {
+			if strings.Contains(s, p) {
+				return hint.mood
+			}
+		}
+	}
+	return "neutral"
 }
 
 // Reply produces the assistant answer for one user message. history holds
@@ -263,9 +335,18 @@ func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 		return ReplyResult{Text: fmt.Sprintf("ouch - %s call failed: %v", b.Provider.Name(), err)}
 	}
 
-	// Split off the mood and image tags: chat shows bare text, the pet gets
-	// the mood, and the image tag drives the picture (if enabled).
-	mood, imgDesc, text := stripTags(rawReply)
+	// Split off the mood, image, action and event tags: chat shows bare text,
+	// the pet gets the mood plus an optional action/event command, and the
+	// image tag drives the picture (if enabled).
+	mood, imgDesc, action, event, text := stripTags(rawReply)
+	// The model sometimes skips the [mood] tag entirely (the replies come back
+	// as plain text), leaving the pet with a blank neutral face. Fall back to
+	// a keyword guess so the pet's expression still matches the reply.
+	if mood == "" {
+		mood = inferMood(text)
+	}
+	log.Printf("reply: mood=%q (tag=%t) action=%q event=%q text=%q",
+		mood, strings.HasPrefix(rawReply, "["), action, event, truncate(rawReply, 60))
 	// The LLM uses newlines as page breaks; convert them to \f for the chat
 	// bubble pager (see newlineToPageBreak).
 	text = newlineToPageBreak(text)
@@ -301,22 +382,39 @@ func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 
 	// The say-line is only BUILT here (image -> temp PNG, mood tag); it is
 	// written to the pet's FIFO by main.go, synchronised with TTS playback.
+	// The action/event command (if any) rides along on the sibling cmd-FIFO,
+	// and only exists when pet forwarding is enabled (mirroring buildPetSayLine).
+	cmdLine := ""
+	if b.PetPipe != "" {
+		switch {
+		case action != "":
+			cmdLine = "action " + action
+		case event != "":
+			cmdLine = "event " + event
+		}
+	}
 	return ReplyResult{
-		Text:    text,
-		Image:   img,
-		petLine: buildPetSayLine(b.PetPipe, mood, text, img),
-		petPipe: b.PetPipe,
+		Text:       text,
+		Image:      img,
+		petLine:    buildPetSayLine(b.PetPipe, mood, text, img),
+		petPipe:    b.PetPipe,
+		petCmdLine: cmdLine,
+		petCmdPipe: petCmdPathFor(b.PetPipe),
 	}
 }
 
-// effectiveSystem returns the system prompt to send for a chat reply. When
-// images are enabled it appends the image-tag instruction, unless the prompt
-// already contains one (custom prompts may define their own convention).
+// effectiveSystem returns the system prompt to send for a chat reply. The
+// visual-language instruction (pet action/event tags) is always included; when
+// images are enabled it also appends the image-tag instruction, unless the
+// prompt already contains one (custom prompts may define their own convention).
 func effectiveSystem(base, imageSource string) string {
 	if base == "" {
 		base = botPersona
 	}
 	base += inputGuard // the security rule applies to custom personas too
+	if !strings.Contains(base, "[ACTION:") && !strings.Contains(base, "[EVENT:") {
+		base += visualLanguageInstruction
+	}
 	if imageSource == "off" || strings.Contains(base, "[IMG:") {
 		return base
 	}
@@ -382,15 +480,16 @@ func userDataBlock(text string) string {
 	return "<<<USER>>>\n" + text + "\n<<<END USER>>>"
 }
 
-// stripTags extracts the reply's mood and image description and returns the
-// bare text. The model is asked to lead with its [mood] / [IMG: ...] tags
-// (and to put the mood right after the image tag), so a tag only counts as
-// the reply's mood/image in that "header" position: at the very start of the
-// reply, at the start of a line, or directly after another header tag. The
-// same tags buried mid-sentence are prose - they are stripped from the text
-// but ignored. Removal keeps the newlines around the tags intact so the
-// paragraph -> page-break conversion downstream still sees them.
-func stripTags(raw string) (mood, imgDesc, text string) {
+// stripTags extracts the reply's mood, image description, action and event
+// and returns the bare text. The model is asked to lead with its [mood] /
+// [IMG: ...] / [ACTION: ...] / [EVENT: ...] tags (and to put the mood right
+// after the image tag), so a tag only counts as the reply's header in that
+// "header" position: at the very start of the reply, at the start of a line,
+// or directly after another header tag. The same tags buried mid-sentence are
+// prose - they are stripped from the text but ignored. Removal keeps the
+// newlines around the tags intact so the paragraph -> page-break conversion
+// downstream still sees them.
+func stripTags(raw string) (mood, imgDesc, action, event, text string) {
 	text = strings.TrimSpace(raw)
 	prevEnd, prevCounted := -1, false
 	for _, loc := range replyTag.FindAllStringSubmatchIndex(text, -1) {
@@ -401,14 +500,28 @@ func stripTags(raw string) (mood, imgDesc, text string) {
 			if counted && imgDesc == "" {
 				imgDesc = strings.TrimSpace(text[loc[4]:loc[5]])
 			}
-		case loc[6] >= 0: // [mood]
-			if counted && mood == "" && petMoods[text[loc[6]:loc[7]]] {
-				mood = text[loc[6]:loc[7]]
+		case loc[6] >= 0: // [ACTION: name]
+			if counted && action == "" {
+				if a := strings.ToLower(text[loc[6]:loc[7]]); petActions[a] {
+					action = a
+				}
+			}
+		case loc[8] >= 0: // [EVENT: name]
+			if counted && event == "" {
+				if e := strings.ToLower(text[loc[8]:loc[9]]); petEvents[e] {
+					event = e
+				}
+			}
+		case loc[10] >= 0: // [mood]
+			if counted && mood == "" {
+				if m := strings.ToLower(text[loc[10]:loc[11]]); petMoods[m] {
+					mood = m
+				}
 			}
 		}
 		prevEnd, prevCounted = loc[1], counted
 	}
-	return mood, imgDesc, strings.TrimSpace(replyTag.ReplaceAllString(text, ""))
+	return mood, imgDesc, action, event, strings.TrimSpace(replyTag.ReplaceAllString(text, ""))
 }
 
 // newlineToPageBreak turns every newline form a model reply might use - an

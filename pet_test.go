@@ -59,6 +59,58 @@ func TestPetPipePath(t *testing.T) {
 	}
 }
 
+func TestPetCmdPathFor(t *testing.T) {
+	cases := []struct{ sayPath, want string }{
+		{"/tmp/desktop-pet--0.say", "/tmp/desktop-pet--0.cmd"},
+		{"/tmp/custom.say", "/tmp/custom.cmd"},
+		{"/tmp/custom.say/something.say", "/tmp/custom.say/something.cmd"},
+		{"", ""}, // no say pipe -> no cmd pipe
+	}
+	for _, tc := range cases {
+		if got := petCmdPathFor(tc.sayPath); got != tc.want {
+			t.Errorf("petCmdPathFor(%q) = %q, want %q", tc.sayPath, got, tc.want)
+		}
+	}
+}
+
+// TestPetCmdDeliversCommand checks that petCmd writes the exact command line to
+// the pet's cmd FIFO (action/event forward from the LLM reply tags).
+func TestPetCmdDeliversCommand(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "test.cmd")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unsupported: %v", err)
+	}
+
+	lines := make(chan string, 1)
+	go func() {
+		f, err := os.OpenFile(fifo, os.O_RDONLY, 0)
+		if err != nil {
+			lines <- ""
+			return
+		}
+		defer f.Close()
+		l, err := bufio.NewReader(f).ReadString('\n')
+		if err != nil {
+			lines <- ""
+			return
+		}
+		lines <- l
+	}()
+	time.Sleep(50 * time.Millisecond) // let the reader open first
+
+	petCmd(fifo, "action dance")
+
+	select {
+	case line := <-lines:
+		if strings.TrimSpace(line) != "action dance" {
+			t.Errorf("petCmd delivered %q, want %q", line, "action dance")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the cmd line")
+	}
+}
+
 func TestBuildSayLine(t *testing.T) {
 	cases := []struct {
 		name, mood, text, imgPath, want string
