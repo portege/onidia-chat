@@ -491,6 +491,38 @@ func main() {
 	)
 
 	log.Printf("ui ready - type in the textarea, press enter or SEND")
+
+	// Startup greeting: once the pet's entrance animation (skate / parachute /
+	// poof-in, a few seconds) has finished, have the LLM open the day with a
+	// warm hello plus one short did-you-know fact. The result arrives on the
+	// regular Replies channel, so it gets the same bubble/TTS/pet pipeline as
+	// a user-prompted answer. Skipped when the character should be asleep or
+	// busy right now (checked again inside Bot.Greeting).
+	//
+	// It also waits for the pet's say-FIFO to actually be listening before
+	// firing: a fixed timer can fire before the desktop-pet has even created
+	// its pipe (or before its reader is ready), which would silently drop the
+	// greeting's bubble. The grace period then covers the entrance animation.
+	go func() {
+		const (
+			entranceGrace = 7 * time.Second // leave the entrance room to play
+			petWait       = 90 * time.Second
+			pollEvery     = 250 * time.Millisecond
+		)
+		if pipe != "" {
+			deadline := time.Now().Add(petWait)
+			for !petPipeReady(pipe) && time.Now().Before(deadline) {
+				time.Sleep(pollEvery)
+			}
+		}
+		time.Sleep(entranceGrace)
+		ui.Thinking = true
+		go func() {
+			result := ui.Bot.Greeting()
+			ui.Replies <- result
+		}()
+	}()
+
 	for {
 		select {
 		case ev, ok := <-win.Events():
@@ -569,10 +601,12 @@ func main() {
 			}
 		case reply := <-ui.Replies:
 			ui.Thinking = false
-			if reply.Image != nil {
-				ui.AddMsgWithImage(ui.Bot.Name, reply.Text, reply.Image)
-			} else {
-				ui.AddMsg(ui.Bot.Name, reply.Text)
+			if reply.Text != "" { // empty = skipped greeting (quiet hours)
+				if reply.Image != nil {
+					ui.AddMsgWithImage(ui.Bot.Name, reply.Text, reply.Image)
+				} else {
+					ui.AddMsg(ui.Bot.Name, reply.Text)
+				}
 			}
 			// Pet bubble + TTS, kept in sync: the bubble appears only once the
 			// audio is ready to play and closes as soon as playback ends. With

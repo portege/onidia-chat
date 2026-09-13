@@ -334,7 +334,58 @@ func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 	if err != nil {
 		return ReplyResult{Text: fmt.Sprintf("ouch - %s call failed: %v", b.Provider.Name(), err)}
 	}
+	return b.finishReply(rawReply)
+}
 
+// Greeting produces the unprompted welcome message shown once the character
+// application has started and finished its entrance animation: a warm, short
+// hello plus one surprising "did you know" fact. It is skipped (empty
+// ReplyResult) when the character would be asleep or busy at that moment.
+func (b *Bot) Greeting() ReplyResult {
+	if b.Provider == nil || b.quietNow() {
+		return ReplyResult{}
+	}
+	sys := effectiveSystem(b.SystemInstruction, b.ImageSource)
+	if b.CharacterName != "" {
+		sys += fmt.Sprintf(nameInstructionFmt, b.CharacterName)
+	}
+	if b.CharacterAge > 0 {
+		sys += fmt.Sprintf(ageInstructionFmt, b.CharacterAge)
+	}
+	prompt := ("You just appeared on screen after your entrance animation. " +
+		"Send the FIRST message of the day: greet the user warmly by mood, " +
+		"then share ONE short surprising did-you-know fun fact. " +
+		"Keep it under 40 words total, no questions, no lists.")
+	rawReply, err := b.Provider.GenerateText(sys, nil, prompt)
+	if err != nil {
+		log.Printf("greeting: %v", err)
+		return ReplyResult{}
+	}
+	return b.finishReply(rawReply)
+}
+
+// quietNow reports whether the current time falls inside the sleep or busy
+// window (used to keep unprompted messages from interrupting them).
+func (b *Bot) quietNow() bool {
+	now := time.Now()
+	cur := now.Hour()*60 + now.Minute()
+	in := func(fromH, fromM, toH, toM int) bool {
+		from, to := fromH*60+fromM, toH*60+toM
+		if from <= to {
+			return cur >= from && cur < to
+		}
+		return cur >= from || cur < to // wraps past midnight
+	}
+	if b.SleepSet && in(b.SleepFromH, b.SleepFromM, b.SleepToH, b.SleepToM) {
+		return true
+	}
+	return b.BusySet && in(b.BusyFromH, b.BusyFromM, b.BusyToH, b.BusyToM)
+}
+
+// finishReply post-processes a raw model answer: splits off the mood, image,
+// action and event tags, fetches the picture, builds the pet say/cmd lines,
+// and packages everything into a ReplyResult. Shared by Reply and Greeting.
+func (b *Bot) finishReply(rawReply string) ReplyResult {
 	// Split off the mood, image, action and event tags: chat shows bare text,
 	// the pet gets the mood plus an optional action/event command, and the
 	// image tag drives the picture (if enabled).

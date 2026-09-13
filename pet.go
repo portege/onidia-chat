@@ -56,6 +56,23 @@ func petCmdPathFor(sayPath string) string {
 	return strings.TrimSuffix(sayPath, ".say") + ".cmd"
 }
 
+// petPipeReady reports whether the pet's say-FIFO currently has a reader
+// attached, i.e. the desktop-pet process is running and listening. It probes
+// with a non-blocking write-open and closes immediately without writing a
+// line. False for an empty path, a pipe that does not exist yet (ENOENT), or
+// one with no reader attached (ENXIO).
+func petPipeReady(path string) bool {
+	if path == "" {
+		return false
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
+}
+
 // petSay writes one reply to the pet say-FIFO: the image (if any) is encoded
 // to a temp PNG and the assembled line is pushed via petSayLine. Best-effort -
 // the FIFO write never hangs the chat: with no pet listening, the open fails
