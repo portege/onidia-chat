@@ -111,6 +111,52 @@ func TestPetCmdDeliversCommand(t *testing.T) {
 	}
 }
 
+// TestQuitPet checks that QuitPet delivers the bare "quit" line to the pet's
+// cmd FIFO - the command the pet answers with its poof-out animation - and
+// reports `gone` once the FIFO's reader disappears (i.e. the pet exited).
+func TestQuitPet(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "test.cmd")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unsupported: %v", err)
+	}
+
+	lines := make(chan string, 1)
+	go func() {
+		f, err := os.OpenFile(fifo, os.O_RDONLY, 0)
+		if err != nil {
+			lines <- ""
+			return
+		}
+		defer f.Close() // after this, petPipeReady reports no listener
+		l, err := bufio.NewReader(f).ReadString('\n')
+		if err != nil {
+			lines <- ""
+			return
+		}
+		lines <- l
+	}()
+	time.Sleep(50 * time.Millisecond) // let the reader open first
+
+	gone := make(chan struct{}, 1)
+	QuitPet(fifo, gone)
+
+	select {
+	case line := <-lines:
+		if strings.TrimSpace(line) != "quit" {
+			t.Errorf("QuitPet delivered %q, want %q", line, "quit")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the quit line")
+	}
+	select {
+	case <-gone:
+		// exit confirmed by the watcher (readerless FIFO)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the gone signal")
+	}
+}
+
 func TestBuildSayLine(t *testing.T) {
 	cases := []struct {
 		name, mood, text, imgPath, want string

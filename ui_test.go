@@ -128,6 +128,68 @@ func TestCloseButton(t *testing.T) {
 	}
 }
 
+// TestHaiyaButton verifies the header's "Haiya!" pet-toggle button: it hit-
+// tests as WHaiya (not the collapse toggle), is bigger than the other header
+// buttons, clicking it flags WantPet, the running state flips its meaning
+// (launch vs quit), and neighbouring header clicks keep toggling as before.
+func TestHaiyaButton(t *testing.T) {
+	u := NewUI(380, 520)
+	hr := u.haiyaRect()
+	if hr.Min.X <= 0 || hr.Max.X > u.W || hr.Min.Y < 0 || hr.Max.Y > headerH {
+		t.Fatalf("haiyaRect %v does not fit inside the header", hr)
+	}
+	// Bigger than the close/gear squares (hdrBtn) so it is easy to hit.
+	if hr.Dy() <= hdrBtn || hr.Dx() <= textWidth(haiyaLabel, 1) {
+		t.Fatalf("haiyaRect %v is not bigger than the hdrBtn squares (Dy=%d, w=%d)",
+			hr, hr.Dy(), hr.Dx())
+	}
+	// The button sits right after the CHAT label, left of the right-side
+	// close/gear buttons, so all four corners of its rect hit-test as the
+	// button itself.
+	for _, pt := range [][2]int{{hr.Min.X, hr.Min.Y}, {hr.Max.X - 1, hr.Max.Y - 1}, {hr.Min.X + 2, headerH / 2}} {
+		if got := u.HitTest(pt[0], pt[1]); got != WHaiya {
+			t.Errorf("Haiya button corner (%d,%d): got %v want WHaiya", pt[0], pt[1], got)
+		}
+	}
+	// Press+release on the button flags WantPet but never toggles collapse.
+	wasCollapsed := u.Collapsed()
+	if u.PetRunning() {
+		t.Fatal("a fresh UI should not report the pet as running")
+	}
+	u.Press(WHaiya)
+	if u.Release(WHaiya) {
+		t.Fatal("Release(WHaiya) should not collapse/expand the window")
+	}
+	if !u.WantPet() {
+		t.Fatal("Release(WHaiya) should set the pet-launch request")
+	}
+	if u.Collapsed() != wasCollapsed {
+		t.Fatalf("Haiya click should not change the collapse state (was %v, now %v)",
+			wasCollapsed, u.Collapsed())
+	}
+
+	// SetPetRunning drives the button state main() uses to decide launch vs
+	// quit; it must round-trip.
+	u.SetPetRunning(true)
+	if !u.PetRunning() {
+		t.Fatal("SetPetRunning(true) did not stick")
+	}
+	u.SetPetRunning(false)
+	if u.PetRunning() {
+		t.Fatal("SetPetRunning(false) did not stick")
+	}
+
+	// The header area immediately around the button still toggles collapse.
+	u2 := NewUI(380, 520)
+	if u2.HitTest(u2.haiyaRect().Min.X-8, headerH/2) != WHeader {
+		t.Error("left of the Haiya button should fall through to WHeader (toggle)")
+	}
+	u2.Press(WHeader)
+	if !u2.Release(WHeader) || u2.WantPet() {
+		t.Fatal("plain header toggle should resize but not request a pet launch")
+	}
+}
+
 // TestRenderRoundedCorners verifies the window shell is not a hard rectangle:
 // the four corner pixels of a rendered frame are fully transparent (the
 // compositor rounds the window) while edge midpoints and the centre stay

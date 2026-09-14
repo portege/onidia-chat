@@ -28,6 +28,7 @@ const (
 	WInput
 	WButton
 	WClose
+	WHaiya // header "Haiya!" button: launches the onidia pet application
 
 	// Settings modal (see drawSettings): the header's gear button plus the
 	// widgets that live inside the modal.
@@ -76,6 +77,12 @@ var (
 	colInputBorder = color.RGBA{216, 210, 226, 255}
 	colWhite       = color.RGBA{255, 255, 255, 255}
 	colError       = color.RGBA{196, 60, 74, 255} // save-failure text in the modal
+
+	// Haiya! button while the onidia pet is running: bubblegum pink so the
+	// state change is obvious at a glance (teal = launch, pink = click quits).
+	colHaiyaPink   = color.RGBA{236, 96, 156, 255}  // base fill
+	colHaiyaPinkHi = color.RGBA{252, 150, 194, 255} // hover (lighter)
+	colHaiyaPinkLo = color.RGBA{186, 52, 116, 255}  // press / border (deeper)
 )
 
 const (
@@ -181,7 +188,9 @@ type UI struct {
 	hover Widget
 	press Widget
 
-	wantClose bool // set by a click on the header's close button
+	wantClose  bool // set by a click on the header's close button
+	wantPet    bool // set by a click on the header's "Haiya!" button
+	petRunning bool // onidia pet is running: the button is pink and quits it
 
 	// Settings modal state (see drawSettings). name / age / sleepFrom /
 	// sleepTo / mute are the committed values: unset until the first save,
@@ -274,6 +283,21 @@ func (u *UI) settingsRect() image.Rectangle {
 	x1 := u.closeRect().Min.X - btnGap
 	y := (headerH - hdrBtn) / 2
 	return image.Rect(x1-hdrBtn, y, x1, y+hdrBtn)
+}
+
+// haiyaLabel is the text on the header button that launches the onidia pet.
+const haiyaLabel = "Haiya!"
+
+// haiyaRect is the "Haiya!" button: a rounded pill right after the CHAT
+// label in the header, deliberately larger than the close/gear squares so the
+// pet toggle is easy to hit. Clicking it runs the pet application, or - when
+// the pet is already running (PetRunning) - quits it with a poof-out.
+func (u *UI) haiyaRect() image.Rectangle {
+	x1 := padX + textWidth("ONIDIA", uiFontScale) + btnGap
+	h := hdrBtn + 8 // taller than the close/gear squares
+	y := (headerH - h) / 2
+	w := textWidth(haiyaLabel, uiFontScale) + 28 // bigger label + side padding
+	return image.Rect(x1, y, x1+w, y+h)
 }
 
 // modalPanel is the centred settings dialog rectangle.
@@ -540,6 +564,9 @@ func (u *UI) HitTest(x, y int) Widget {
 		if inRect(x, y, u.settingsRect()) {
 			return WSettings
 		}
+		if inRect(x, y, u.haiyaRect()) {
+			return WHaiya
+		}
 		return WHeader
 	}
 	if y >= u.H-inputH {
@@ -702,6 +729,11 @@ func (u *UI) Release(w Widget) bool {
 			// The app is frameless, so this button is the way out besides
 			// Alt+F4; main() polls WantClose and exits.
 			u.wantClose = true
+		case WHaiya:
+			// Header "Haiya!" button: launches the onidia pet application,
+			// or quits it with a poof-out when it is already running.
+			// main() polls WantPet and decides from PetRunning.
+			u.wantPet = true
 		case WSettings:
 			if u.openSettings() {
 				return true // the window grew to fit the modal
@@ -813,6 +845,18 @@ func (u *UI) Muted() bool { return u.mute }
 // WantClose reports whether the header's close button was clicked; the main
 // loop exits when it is set.
 func (u *UI) WantClose() bool { return u.wantClose }
+
+// WantPet reports whether the header's "Haiya!" button was clicked. The main
+// loop decides what a click means from PetRunning: launch the onidia pet
+// (button teal) or quit it with a poof-out (button pink).
+func (u *UI) WantPet() bool { return u.wantPet }
+
+// SetPetRunning records whether the onidia pet application is running; the
+// header button turns pink while it is, signalling that a click now quits it.
+func (u *UI) SetPetRunning(running bool) { u.petRunning = running }
+
+// PetRunning reports whether the onidia pet application is running.
+func (u *UI) PetRunning() bool { return u.petRunning }
 
 // openSettings shows the settings modal. The conversation window is expanded
 // (and grown if needed) so the panel and its dropdown fit; returns true when
@@ -1198,7 +1242,33 @@ func roundWindowCorners(img *image.NRGBA, r int) {
 func (u *UI) drawHeader(frame *image.NRGBA) {
 	fillRect(frame, 0, 0, u.W, headerH, colHeader)
 	fillRect(frame, 0, headerH-2, u.W, 2, colTealShade)
-	drawText(frame, padX, (headerH-glyphH*uiFontScale)/2, "CHAT", uiFontScale, colWhite)
+	// "ONIDIA" label is followed by the "Haiya!" launch button.
+	drawText(frame, padX, (headerH-glyphH*uiFontScale)/2, "ONIDIA", uiFontScale, colWhite)
+
+	// "Haiya!" button: runs the onidia pet application, or quits it (pink)
+	// while the pet is running. Painted like the other header buttons.
+	if hr := u.haiyaRect(); hr.Max.X < u.W { // keep it on-screen on tiny windows
+		fill, glyphCol := colTealShade, colWhite
+		border := colTealShade
+		if u.petRunning {
+			border = colHaiyaPinkLo
+			fill, glyphCol = colHaiyaPink, colWhite
+		}
+		switch {
+		case u.press == WHaiya:
+			fill, glyphCol = colPlum, colWhite // press stays plum in both states
+		case u.hover == WHaiya:
+			if u.petRunning {
+				fill, glyphCol = colHaiyaPinkHi, colWhite
+			} else {
+				fill, glyphCol = colHairLight, colPlum
+			}
+		}
+		drawRoundRect(frame, hr.Min.X, hr.Min.Y, hr.Dx(), hr.Dy(), 8, border)
+		drawRoundRect(frame, hr.Min.X+2, hr.Min.Y+2, hr.Dx()-4, hr.Dy()-4, 6, fill)
+		drawText(frame, hr.Min.X+(hr.Dx()-textWidth(haiyaLabel, uiFontScale))/2,
+			hr.Min.Y+(hr.Dy()-glyphH*uiFontScale)/2, haiyaLabel, uiFontScale, glyphCol)
+	}
 
 	// Close button: a small square in the far right corner (hover/press
 	// tint it like the SEND button).

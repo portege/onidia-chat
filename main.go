@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -242,6 +243,9 @@ func main() {
 	if pipe != "" && !filepath.IsAbs(pipe) {
 		log.Printf("warning: pet-pipe %q is not an absolute path - say writes will fail silently; use auto, off, or an absolute FIFO path", pipe)
 	}
+	// The pet's command FIFO (actions/events, and "quit" for the Haiya!
+	// button) sits next to the say-FIFO with a .cmd suffix.
+	petCmdPath := petCmdPathFor(pipe)
 
 	// System instruction: -system-prompt flag > -system-file flag > config file
 	sysPrompt := *systemPrompt
@@ -370,6 +374,35 @@ func main() {
 	ui.Bot.APIURL = urlVal
 	ui.Bot.PetPipe = pipe
 	ui.Bot.SystemInstruction = resolveSystemPrompt(sysPrompt, sysFile)
+	// Haiya! button lifecycle: pink whenever a pet is listening on the cmd
+	// FIFO (launched by us or adopted), teal when none is. The click launches
+	// (teal) or gracefully quits with the poof-out animation (pink).
+	petRunning := func(path string) bool { return path != "" && petPipeReady(path) }
+	if petRunning(petCmdPath) {
+		log.Printf("pet: onidia already running - Haiya! button will quit it")
+		ui.SetPetRunning(true)
+	}
+	petGoneCh := make(chan struct{}, 1)
+	var petQuitting atomic.Bool
+	petTick := time.NewTicker(2 * time.Second)
+	defer petTick.Stop()
+	// Haiya! click: launch when teal, gracefully quit (poof-out) when pink.
+	onHaiya := func() {
+		if ui.PetRunning() {
+			if !petQuitting.CompareAndSwap(false, true) {
+				return // a quit is already in flight
+			}
+			log.Printf("pet: quit requested via Haiya! button")
+			QuitPet(petCmdPath, petGoneCh)
+			return
+		}
+		if err := LaunchPet(); err != nil {
+			log.Printf("pet: %v", err)
+			return
+		}
+		petQuitting.Store(false)
+		ui.SetPetRunning(true)
+	}
 	ui.Bot.ImageSource = imgSource
 	ui.Bot.PixabayKey = pxKey
 	ui.Bot.ForceImageKeyword = forceImg
@@ -562,6 +595,9 @@ func main() {
 					if ui.WantClose() { // header close button clicked
 						return
 					}
+					if ui.WantPet() { // header "Haiya!" button clicked
+						onHaiya() // launch when teal, poof-out quit when pink
+					}
 				}
 				dirty = true
 			case EvMotion:
@@ -577,7 +613,7 @@ func main() {
 					switch wd {
 					case WInput, WName:
 						win.SetCursor(win.cursorText)
-					case WButton, WHeader, WClose, WSettings,
+					case WButton, WHeader, WClose, WHaiya, WSettings,
 						WDrop, WDropFrom, WDropTo, WMute, WOption, WSave, WCancel:
 						win.SetCursor(win.cursorHand)
 					default:
@@ -640,6 +676,24 @@ func main() {
 			if ui.updateBusyState() {
 				dirty = true
 			}
+		case <-petTick.C:
+			// Keep the Haiya! button honest: pink only while a pet is really
+			// listening, so a pet that died on its own flips the button back
+			// to teal (click relaunches) instead of sending quit into the void.
+			if r := petRunning(petCmdPath); r != ui.PetRunning() {
+				ui.SetPetRunning(r)
+				if !r {
+					petQuitting.Store(false)
+				}
+				dirty = true
+			}
+		case petGone := <-petGoneCh:
+			// The graceful quit was confirmed (or escalated): drop the
+			// running state so the button turns teal for the next launch.
+			_ = petGone
+			petQuitting.Store(false)
+			ui.SetPetRunning(false)
+			dirty = true
 		}
 
 		if dirty {

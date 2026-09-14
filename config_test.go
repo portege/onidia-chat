@@ -481,7 +481,16 @@ func TestBakeCharacterPrompt(t *testing.T) {
 	if !strings.Contains(strings.ToLower(c.SystemPrompt), "your name is onidia, 12 years old") {
 		t.Errorf("persona lacks the baked name/age:\n%s", c.SystemPrompt)
 	}
-	if !strings.Contains(c.SystemPrompt, before.SystemPrompt) {
+	// The identity sentence itself is what the bake rewrites (that is its
+	// point), so compare everything BEFORE it: the rest of the persona must
+	// survive the bake byte-for-byte.
+	cutIdentity := func(s string) string {
+		if i := strings.Index(strings.ToLower(s), "your name is"); i >= 0 {
+			return s[:i]
+		}
+		return s
+	}
+	if !strings.Contains(cutIdentity(c.SystemPrompt), cutIdentity(before.SystemPrompt)) {
 		t.Errorf("original persona lost:\n%s", c.SystemPrompt)
 	}
 	if c.APIKey == "" || c.CharacterAge != before.CharacterAge {
