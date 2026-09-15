@@ -105,6 +105,14 @@ func (w *Win) pumpEvents() {
 		case xproto.ExposeEvent:
 			send(Event{Type: EvExpose})
 
+		case xproto.SelectionRequestEvent:
+			// Another app wants the text we offered on the clipboard.
+			w.answerSelection(e)
+
+		case xproto.SelectionClearEvent:
+			// We lost ownership (another app claimed the selection).
+			w.clipClear(e.Selection)
+
 		case xproto.ClientMessageEvent:
 			if e.Type == w.atomDeleteWindow && len(e.Data.Data32) > 0 &&
 				e.Data.Data32[0] == uint32(w.atomDeleteWindow) {

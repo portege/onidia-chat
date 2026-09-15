@@ -8,6 +8,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"sync"
 
 	"github.com/jezek/xgb"
 	"github.com/jezek/xgb/xproto"
@@ -34,6 +35,14 @@ type Win struct {
 
 	atomDeleteWindow xproto.Atom
 	atomMoveResize   xproto.Atom // _NET_WM_MOVERESIZE (frameless header drag)
+
+	// Clipboard (selection-ownership) atoms + the text we currently own.
+	atomClipboard xproto.Atom
+	atomUTF8      xproto.Atom
+	atomTargets   xproto.Atom
+	atomText      xproto.Atom
+	clipMu        sync.Mutex
+	clipText      string
 
 	// Logical window size (tracks the WM's ConfigureNotify requests).
 	winW, winH int
@@ -150,6 +159,7 @@ func (w *Win) setupHints() {
 	utf8 := mustInternAtom(w.conn, "UTF8_STRING")
 	w.atomDeleteWindow = mustInternAtom(w.conn, "WM_DELETE_WINDOW")
 	w.atomMoveResize = mustInternAtom(w.conn, "_NET_WM_MOVERESIZE")
+	w.initClipAtoms()
 	w.setStrProp(mustInternAtom(w.conn, "WM_NAME"), utf8, "chat - ai-helper")
 	w.setStrProp(mustInternAtom(w.conn, "_NET_WM_NAME"), utf8, "chat - ai-helper")
 	w.setStrProp(mustInternAtom(w.conn, "WM_CLASS"), xproto.AtomString, "chat-app\x00ChatApp\x00")

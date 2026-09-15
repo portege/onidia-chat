@@ -598,6 +598,11 @@ func main() {
 					if ui.WantPet() { // header "Haiya!" button clicked
 						onHaiya() // launch when teal, poof-out quit when pink
 					}
+					if ui.WantCopy() { // a message's COPY pill was clicked
+						if err := win.SetClipboard(ui.TakeCopiedText()); err != nil {
+							log.Printf("clipboard: %v", err)
+						}
+					}
 				}
 				dirty = true
 			case EvMotion:
@@ -613,7 +618,7 @@ func main() {
 					switch wd {
 					case WInput, WName:
 						win.SetCursor(win.cursorText)
-					case WButton, WHeader, WClose, WHaiya, WSettings,
+					case WButton, WHeader, WClose, WHaiya, WSettings, WCopy,
 						WDrop, WDropFrom, WDropTo, WMute, WOption, WSave, WCancel:
 						win.SetCursor(win.cursorHand)
 					default:

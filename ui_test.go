@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jezek/xgb/xproto"
 )
 
 // TestCollapseDefault verifies the conversation history starts collapsed so
@@ -177,6 +179,15 @@ func TestHaiyaButton(t *testing.T) {
 	u.SetPetRunning(false)
 	if u.PetRunning() {
 		t.Fatal("SetPetRunning(false) did not stick")
+	}
+
+	// One-shot: the flag was consumed by the WantPet() read above. A later
+	// plain title-bar click must not re-fire the launch/quit action - the
+	// stale flag used to poof the running pet whenever the header was
+	// clicked to collapse/expand.
+	u.Press(WHeader)
+	if !u.Release(WHeader) || u.WantPet() {
+		t.Fatal("header toggle after a consumed Haiya click must not re-fire the pet action")
 	}
 
 	// The header area immediately around the button still toggles collapse.
@@ -995,6 +1006,120 @@ func TestAddMsgPaginates(t *testing.T) {
 
 // TestPagerFlip verifies the < > buttons on a paginated bubble flip its page,
 // clamping at the firstand last page.
+
+// blockPoint returns window coordinates of the centre of a rectangle computed
+// in the message layer (layer-relative Y like copyBtnRect/pagerRects output):
+// the message area starts right below the header.
+func blockPoint(u *UI, r image.Rectangle) (int, int) {
+	return (r.Min.X + r.Max.X) / 2, headerH + (r.Min.Y+r.Max.Y)/2
+}
+
+func TestCopyButton(t *testing.T) {
+	u := NewUI(380, 520)
+	u.collapsed = false
+	u.msgs = nil
+	u.AddMsg("bot", "hello from the bot")  // block 0: bot, pill on the right
+	u.AddMsg("you", "hello from the user") // block 1: user, pill on the left
+	hitPill := func(mi int) Widget {
+		b := u.blocks()[mi]
+		bx := padX
+		if b.m.From == "you" {
+			bx = u.W - padX - b.bubW
+		}
+		ty := msgTopPad
+		for i := 0; i < mi; i++ {
+			ty += u.blocks()[i].h + bubGap
+		}
+		x, y := blockPoint(u, copyBtnRect(b, bx, ty))
+		return u.HitTest(x, y)
+	}
+	if w := hitPill(0); w != WCopy {
+		t.Fatalf("bot pill: HitTest = %v, want WCopy", w)
+	}
+	if u.copyMsg != 0 {
+		t.Fatalf("copyMsg = %d, want 0", u.copyMsg)
+	}
+	if w := hitPill(1); w != WCopy {
+		t.Fatalf("user pill: HitTest = %v, want WCopy", w)
+	}
+	if u.copyMsg != 1 {
+		t.Fatalf("copyMsg = %d, want 1", u.copyMsg)
+	}
+	// Click through: press + release on the user pill stages its text.
+	u.Press(WCopy)
+	if u.Release(WCopy) {
+		t.Error("Release reported a header toggle for WCopy")
+	}
+	if !u.WantCopy() {
+		t.Fatal("WantCopy = false after the pill click")
+	}
+	if got, want := u.TakeCopiedText(), "hello from the user"; got != want {
+		t.Errorf("copied %q, want %q", got, want)
+	}
+	if u.WantCopy() { // the flag must clear so the click is not copied twice
+		t.Error("WantCopy still set after TakeCopiedText")
+	}
+	// Clicking elsewhere in the message area is not a copy.
+	if w := u.HitTest(u.W/2, headerH+40); w == WCopy {
+		t.Error("middle of the message area hit WCopy")
+	}
+	// The synthetic "..." thinking bubble gets no pill: the block after the
+	// last real message must not answer WCopy.
+	u.Thinking = true
+	b := u.blocks()[len(u.msgs)] // the "..." block
+	ty := msgTopPad
+	for _, pb := range u.blocks()[:len(u.msgs)] {
+		ty += pb.h + bubGap
+	}
+	x, y := blockPoint(u, copyBtnRect(b, padX, ty))
+	if w := u.HitTest(x, y); w == WCopy {
+		t.Error("thinking bubble answered WCopy")
+	}
+	u.Thinking = false
+}
+
+func TestSelNotifyBytes(t *testing.T) {
+	// answerSelection builds a SelectionNotifyEvent and sends its Bytes().
+	// Round-trip those bytes through xgb's own parser: whatever a paste
+	// client parses out must be exactly what we put in (this is layout-
+	// agnostic, unlike the old hand-packed offsets which enshrined a bug).
+	e := xproto.SelectionRequestEvent{
+		Time: 1234, Owner: 0x0B0B0B0B, Requestor: 0x11111111,
+		Selection: 0x22222222, Target: 0x33333333, Property: 0x44444444,
+	}
+	notify := xproto.SelectionNotifyEvent{
+		Time:      e.Time,
+		Requestor: e.Requestor,
+		Selection: e.Selection,
+		Target:    e.Target,
+		Property:  0x55555555,
+	}
+	b := notify.Bytes()
+	if len(b) != 32 {
+		t.Fatalf("len = %d, want 32", len(b))
+	}
+	if b[0] != 31 {
+		t.Errorf("type = %d, want 31 (SelectionNotify)", b[0])
+	}
+	p, ok := xproto.SelectionNotifyEventNew(b).(xproto.SelectionNotifyEvent)
+	if !ok {
+		t.Fatal("parser did not return a SelectionNotifyEvent")
+	}
+	if p.Time != notify.Time || p.Requestor != notify.Requestor ||
+		p.Selection != notify.Selection || p.Target != notify.Target ||
+		p.Property != notify.Property {
+		t.Errorf("parser round-trip mismatch: got %+v, want %+v", p, notify)
+	}
+}
+
+func TestLatin1(t *testing.T) {
+	got := latin1("h\u00e9llo \u2603") // "héllo ☃"
+	// STRING is ISO-8859-1: é is the single raw byte 0xE9, ☃ becomes '?'.
+	want := []byte{'h', 0xe9, 'l', 'l', 'o', ' ', '?'}
+	if string(got) != string(want) {
+		t.Errorf("latin1 = %#v, want %#v", got, want)
+	}
+}
 
 func TestPagerFlip(t *testing.T) {
 	u := NewUI(380, 520)

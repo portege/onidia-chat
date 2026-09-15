@@ -51,6 +51,7 @@ const (
 	WCancel     // modal CANCEL button
 	WPagePrev   // prev page in a paginated chat bubble
 	WPageNext   // next page in a paginated chat bubble
+	WCopy       // "Copy" pill on a chat bubble's sender-label row
 )
 
 // Msg is one chat entry.
@@ -113,6 +114,11 @@ const (
 	// Pagination: a reply with 2+ paragraphs becomes a paged bubble.
 	pagStrip = 20 // height of the pager strip at the bubble's foot
 	pagBtn   = 14 // prev/next page button side
+
+	// "Copy" pill on a bubble's sender-label row.
+	copyBtnPad   = 4 // padding around the Copy label inside its pill
+	copyLbl      = "Copy"
+	copyFlashDur = 1200 * time.Millisecond // lit after a successful copy
 
 	maxInput  = 280 // textarea rune cap
 	winRadius = 12  // window shell corner rounding (transparent corners)
@@ -197,40 +203,44 @@ type UI struct {
 	// or loaded from the config (age 0 = unset; sleep uses -1 because hour 0
 	// is valid; name "" = unset; mute false = speech on).
 	settingsOpen      bool
-	nameFocused       bool   // the name field owns the keyboard
-	nameDraft         []rune // name typed in the modal; committed on SAVE
-	openDrop          int    // which dropdown list is expanded (dropNone/dropAge/...)
-	hourScroll        int    // first visible row of the open hour list
-	minuteScroll      int    // first visible row of the open minute list
-	ageDraft          int    // age picked in the modal; committed on SAVE
-	sleepFromDraft    int    // sleep start hour picked in the modal
-	sleepFromMinDraft int    // sleep start minute picked in the modal (0/15/30/45)
-	sleepToDraft      int    // sleep end hour picked in the modal
-	sleepToMinDraft   int    // sleep end minute picked in the modal (0/15/30/45)
-	busyFromDraft     int    // busy start hour picked in the modal
-	busyToDraft       int    // busy end hour picked in the modal
-	busyFromMinDraft  int    // busy start minute picked in the modal (0/15/30/45)
-	busyToMinDraft    int    // busy end minute picked in the modal (0/15/30/45)
-	muteDraft         bool   // mute-speech checkbox in the modal; committed on SAVE
-	wasCollapsed      bool   // collapse state when the modal opened
-	prevH             int    // window height before the modal forced minSettingsH
-	name              string // committed character name ("" = not set yet)
-	age               int    // committed character age (0 = not set yet)
-	sleepFrom         int    // committed sleep-window start hour (-1 = unset)
-	sleepFromMin      int    // committed sleep-window start minute (0/15/30/45)
-	sleepTo           int    // committed sleep-window end hour (-1 = unset)
-	sleepToMin        int    // committed sleep-window end minute (0/15/30/45)
-	busyFrom          int    // committed busy-window start hour (-1 = unset)
-	busyFromMin       int    // committed busy-window start minute (0/15/30/45)
-	busyTo            int    // committed busy-window end hour (-1 = unset)
-	busyToMin         int    // committed busy-window end minute (0/15/30/45)
-	mute              bool   // committed: replies are not spoken aloud (INI "mute")
-	savePath          string // INI file settings are written to ("" = ./chat-app.ini)
-	saveErr           string // last save error, shown inside the modal
-	optIdx            int    // dropdown row under the pointer (set by HitTest)
-	optMIdx           int    // minute-list row under the pointer (set by HitTest)
-	pagerMsg          int    // msg index under the pointer in a paginated bubble (-1 = none)
-	pagerDir          int    // -1 prev / +1 next, from the last pager hit-test
+	nameFocused       bool      // the name field owns the keyboard
+	nameDraft         []rune    // name typed in the modal; committed on SAVE
+	openDrop          int       // which dropdown list is expanded (dropNone/dropAge/...)
+	hourScroll        int       // first visible row of the open hour list
+	minuteScroll      int       // first visible row of the open minute list
+	ageDraft          int       // age picked in the modal; committed on SAVE
+	sleepFromDraft    int       // sleep start hour picked in the modal
+	sleepFromMinDraft int       // sleep start minute picked in the modal (0/15/30/45)
+	sleepToDraft      int       // sleep end hour picked in the modal
+	sleepToMinDraft   int       // sleep end minute picked in the modal (0/15/30/45)
+	busyFromDraft     int       // busy start hour picked in the modal
+	busyToDraft       int       // busy end hour picked in the modal
+	busyFromMinDraft  int       // busy start minute picked in the modal (0/15/30/45)
+	busyToMinDraft    int       // busy end minute picked in the modal (0/15/30/45)
+	muteDraft         bool      // mute-speech checkbox in the modal; committed on SAVE
+	wasCollapsed      bool      // collapse state when the modal opened
+	prevH             int       // window height before the modal forced minSettingsH
+	name              string    // committed character name ("" = not set yet)
+	age               int       // committed character age (0 = not set yet)
+	sleepFrom         int       // committed sleep-window start hour (-1 = unset)
+	sleepFromMin      int       // committed sleep-window start minute (0/15/30/45)
+	sleepTo           int       // committed sleep-window end hour (-1 = unset)
+	sleepToMin        int       // committed sleep-window end minute (0/15/30/45)
+	busyFrom          int       // committed busy-window start hour (-1 = unset)
+	busyFromMin       int       // committed busy-window start minute (0/15/30/45)
+	busyTo            int       // committed busy-window end hour (-1 = unset)
+	busyToMin         int       // committed busy-window end minute (0/15/30/45)
+	mute              bool      // committed: replies are not spoken aloud (INI "mute")
+	savePath          string    // INI file settings are written to ("" = ./chat-app.ini)
+	saveErr           string    // last save error, shown inside the modal
+	optIdx            int       // dropdown row under the pointer (set by HitTest)
+	optMIdx           int       // minute-list row under the pointer (set by HitTest)
+	pagerMsg          int       // msg index under the pointer in a paginated bubble (-1 = none)
+	pagerDir          int       // -1 prev / +1 next, from the last pager hit-test
+	copyMsg           int       // msg index whose Copy pill is under the pointer (-1 = none)
+	wantCopy          bool      // a Copy pill was clicked; main() pushes the text onto the clipboard
+	copiedText        string    // the message text to copy
+	copyFlash         time.Time // when the copy happened (pill lights up briefly)
 }
 
 // NewUI creates a UI sized w x h with a welcome message from the bot.
@@ -247,6 +257,7 @@ func NewUI(w, h int) *UI {
 		sleepFrom: -1, // -1 = no sleep window configured yet
 		sleepTo:   -1,
 		pagerMsg:  -1, // no pager under the pointer yet
+		copyMsg:   -1, // no COPY pill under the pointer yet
 	}
 	u.AddMsg(u.Bot.Name,
 		"hi! i am buddy. ask me anything - my answers come from google gemini, and onidia the desktop-pet says them out loud!")
@@ -577,6 +588,9 @@ func (u *UI) HitTest(x, y int) Widget {
 		return WInput
 	}
 	if !u.collapsed {
+		if w := u.copyAt(x, y); w != WNone {
+			return w
+		}
 		if w := u.pagerAt(x, y); w != WNone {
 			return w
 		}
@@ -613,6 +627,53 @@ func (u *UI) AddMsg(from, text string) {
 func (u *UI) AddMsgWithImage(from, text string, img image.Image) {
 	u.msgs = append(u.msgs, newMsg(from, text, img))
 	u.scroll = u.maxScroll()
+}
+
+// copyBtnRect returns the little "Copy" pill on a bubble's sender-label row,
+// placed on the free end of the row (right end for bot bubbles, left end for
+// user ones - the sender name sits on the other side).
+func copyBtnRect(b msgBlock, bx, y int) image.Rectangle {
+	w := textWidth(copyLbl, 1) + 2*copyBtnPad
+	if b.m.From != "you" {
+		return image.Rect(bx+b.bubW-w, y, bx+b.bubW, y+labelH)
+	}
+	return image.Rect(bx, y, bx+w, y+labelH)
+}
+
+// copyAt checks whether (x,y) window coordinates fall on a chat bubble's COPY
+// pill. When they do it records the target message index (u.copyMsg) and
+// returns WCopy; textless and synthetic ("...") bubbles have no pill.
+func (u *UI) copyAt(x, y int) Widget {
+	areaY, areaH := u.msgArea()
+	if areaH <= 0 {
+		return WNone
+	}
+	bs := u.blocks()
+	contentH := msgTopPad
+	for i, b := range bs {
+		if i > 0 {
+			contentH += bubGap
+		}
+		contentH += b.h
+	}
+	scroll := clamp(u.scroll, 0, max(0, contentH-areaH))
+	ly := y - areaY // layer-relative Y (the pill rects live in the msg layer)
+	ty := msgTopPad - scroll
+	for mi, b := range bs {
+		if mi < len(u.msgs) && strings.TrimSpace(b.m.Text) != "" &&
+			ty+labelH > 0 && ty < areaH {
+			bx := padX
+			if b.m.From == "you" {
+				bx = u.W - padX - b.bubW
+			}
+			if inRect(x, ly, copyBtnRect(b, bx, ty)) {
+				u.copyMsg = mi
+				return WCopy
+			}
+		}
+		ty += b.h + bubGap
+	}
+	return WNone
 }
 
 // pagerAt checks whether (x,y) window coordinates fall on a paginated
@@ -732,7 +793,8 @@ func (u *UI) Release(w Widget) bool {
 		case WHaiya:
 			// Header "Haiya!" button: launches the onidia pet application,
 			// or quits it with a poof-out when it is already running.
-			// main() polls WantPet and decides from PetRunning.
+			// main() consumes the request via WantPet (one-shot), which
+			// decides from PetRunning; later header clicks must not re-fire.
 			u.wantPet = true
 		case WSettings:
 			if u.openSettings() {
@@ -812,6 +874,14 @@ func (u *UI) Release(w Widget) bool {
 			return u.closeSettings()
 		case WPagePrev, WPageNext:
 			u.flipPage()
+		case WCopy:
+			// COPY pill on a bubble's label row: stage the message text for
+			// main() to put on the X11 clipboard, and light the pill briefly.
+			if u.copyMsg >= 0 && u.copyMsg < len(u.msgs) {
+				u.copiedText = u.msgs[u.copyMsg].Text
+				u.wantCopy = true
+				u.copyFlash = time.Now()
+			}
 		case WModal:
 			u.openDrop = dropNone // a click outside the widgets closes the list
 		case WHeader:
@@ -846,10 +916,20 @@ func (u *UI) Muted() bool { return u.mute }
 // loop exits when it is set.
 func (u *UI) WantClose() bool { return u.wantClose }
 
-// WantPet reports whether the header's "Haiya!" button was clicked. The main
-// loop decides what a click means from PetRunning: launch the onidia pet
-// (button teal) or quit it with a poof-out (button pink).
-func (u *UI) WantPet() bool { return u.wantPet }
+// WantPet reports whether the header's "Haiya!" button was clicked, and
+// consumes the flag (one-shot): a single click fires exactly one launch/quit
+// action. Without the consume, the stale flag would re-fire on every later
+// title-bar click - quitting the pet with a poof whenever the header was
+// clicked to collapse/expand. The main loop decides what the click means
+// from PetRunning: launch the onidia pet (button teal) or quit it with a
+// poof-out (button pink).
+func (u *UI) WantPet() bool {
+	if !u.wantPet {
+		return false
+	}
+	u.wantPet = false
+	return true
+}
 
 // SetPetRunning records whether the onidia pet application is running; the
 // header button turns pink while it is, signalling that a click now quits it.
@@ -857,6 +937,17 @@ func (u *UI) SetPetRunning(running bool) { u.petRunning = running }
 
 // PetRunning reports whether the onidia pet application is running.
 func (u *UI) PetRunning() bool { return u.petRunning }
+
+// WantCopy reports whether a message's COPY pill was clicked; main() then
+// pushes the staged text onto the X11 clipboard.
+func (u *UI) WantCopy() bool { return u.wantCopy }
+
+// TakeCopiedText returns the copied message text and clears the want flag so
+// the same click is not copied twice.
+func (u *UI) TakeCopiedText() string {
+	u.wantCopy = false
+	return u.copiedText
+}
 
 // openSettings shows the settings modal. The conversation window is expanded
 // (and grown if needed) so the panel and its dropdown fit; returns true when
@@ -1641,9 +1732,13 @@ func (u *UI) drawMessages(frame *image.NRGBA) {
 	layer := image.NewNRGBA(image.Rect(0, 0, u.W, areaH))
 	fillRect(layer, 0, 0, u.W, areaH, colBg) // opaque, or Src would punch holes
 	y := msgTopPad - scroll                  // layer-relative top of the current block
-	for _, b := range bs {
+	for i, b := range bs {
 		if y+b.h > 0 && y < areaH {
-			u.drawMsgBlock(layer, b, y)
+			flash := i == u.copyMsg && time.Since(u.copyFlash) < copyFlashDur
+			hover := u.hover == WCopy && i == u.copyMsg
+			press := u.press == WCopy && i == u.copyMsg
+			pill := i < len(u.msgs) && b.m.Text != "" // none on the synthetic "..." bubble
+			u.drawMsgBlock(layer, b, y, pill, flash, hover, press)
 		}
 		y += b.h + bubGap
 	}
@@ -1743,7 +1838,7 @@ func (u *UI) maxScroll() int {
 	return max(0, u.contentHeight()-areaH)
 }
 
-func (u *UI) drawMsgBlock(layer *image.NRGBA, b msgBlock, y int) {
+func (u *UI) drawMsgBlock(layer *image.NRGBA, b msgBlock, y int, copyPill, copyFlash, copyHover, copyPress bool) {
 	isBot := b.m.From != "you"
 	imgH := 0
 	if b.img != nil {
@@ -1762,6 +1857,9 @@ func (u *UI) drawMsgBlock(layer *image.NRGBA, b msgBlock, y int) {
 		bx = u.W - padX - b.bubW
 		lw := textWidth(strings.ToUpper(b.m.From), 1)
 		drawText(layer, bx+b.bubW-lw, y, strings.ToUpper(b.m.From), 1, colMuted)
+	}
+	if copyPill { // textless and synthetic bubbles get no COPY pill
+		u.drawCopyBtn(layer, copyBtnRect(b, bx, y), copyFlash, copyHover, copyPress)
 	}
 
 	iy := y + labelH + imgGapTop
@@ -1825,6 +1923,24 @@ func pagerRects(b msgBlock, bx, by int) (prev, next image.Rectangle, lblX int, l
 	x = lblX - 3    // now: prev button right edge
 	prev = image.Rect(x-pagBtn, y, x, y+pagBtn)
 	return prev, next, lblX, lbl
+}
+
+// drawCopyBtn paints the COPY pill in a bubble's sender-label strip: muted
+// while idle, teal on hover, plum while pressed, and it lights up teal for
+// a moment after the click to confirm the text went to the clipboard.
+func (u *UI) drawCopyBtn(layer *image.NRGBA, r image.Rectangle, flash, hover, press bool) {
+	outline, col := colMuted, colMuted
+	switch {
+	case flash:
+		outline, col = colHeader, colHeader
+	case press:
+		outline, col = colPlum, colPlum
+	case hover:
+		outline, col = colHeader, colHeader
+	}
+	drawRoundRect(layer, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), 4, outline)
+	lw := textWidth(copyLbl, 1)
+	drawText(layer, r.Min.X+(r.Dx()-lw)/2, r.Min.Y+(r.Dy()-glyphH)/2, copyLbl, 1, col)
 }
 
 // drawPagBtn paints one square pager chevron button ("<" or ">").
