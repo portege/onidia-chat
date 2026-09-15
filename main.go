@@ -102,8 +102,8 @@ func resolvePetPipe(flagVal, cfgVal string) string {
 func main() {
 	log.SetPrefix("[chat] ")
 	var (
-		w       = flag.Int("w", 380, "initial window width")
-		h       = flag.Int("h", 520, "initial window height")
+		w       = flag.Int("w", defaultWinW, "initial window width")
+		h       = flag.Int("h", defaultWinH, "initial window height")
 		preview = flag.Bool("preview", false,
 			"render chat_ui_*.png previews and exit (no display needed)")
 		apiKey = flag.String("api-key", "",

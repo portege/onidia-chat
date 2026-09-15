@@ -92,6 +92,13 @@ const (
 	lineH       = (glyphH + 3) * uiFontScale // text line pitch (24): generous
 	// enough that descender tails (g, y, p, q) never touch the next line
 
+	// Default window size. The width is 20% wider than the original 380 so
+	// chat bubbles and the wrapping textarea have room; every rect (and the
+	// bubble wrap width) derives from u.W, so widening this scales the whole
+	// layout, text area included.
+	defaultWinW = 456
+	defaultWinH = 520
+
 	headerH = 44  // header strip height
 	inputH  = 108 // input bar height: 3 lineH rows of text plus headroom so
 	// descender tails (g, y, p, q) stay well clear of the textarea bottom

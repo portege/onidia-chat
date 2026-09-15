@@ -29,18 +29,18 @@ func testImage(w, h int) image.Image {
 
 func dumpPreviews() {
 	// Collapsed: just the header + prompt box (default startup state).
-	u0 := NewUI(380, headerH+inputH)
+	u0 := NewUI(defaultWinW, headerH+inputH)
 	writePNG("chat_ui_collapsed.png", u0.Render())
 
 	// Fresh window: welcome bubble, empty textarea with placeholder,
 	// disabled SEND.
-	u := NewUI(380, 520)
+	u := NewUI(defaultWinW, defaultWinH)
 	u.collapsed = false
 	writePNG("chat_ui_empty.png", u.Render())
 
 	// Mid-conversation: bubbles on both sides, typed text, focused caret,
 	// hovered SEND.
-	u2 := NewUI(380, 520)
+	u2 := NewUI(defaultWinW, defaultWinH)
 	u2.collapsed = false
 	seedConvo(u2)
 	u2.input = []rune("tell me a joke")
@@ -51,7 +51,7 @@ func dumpPreviews() {
 
 	// After submit: the user's message and the bot's reply appended, input
 	// cleared. Drain the reply channel so the render is deterministic.
-	u3 := NewUI(380, 520)
+	u3 := NewUI(defaultWinW, defaultWinH)
 	u3.collapsed = false
 	seedConvo(u3)
 	u3.input = []rune("tell me a joke")
@@ -62,7 +62,7 @@ func dumpPreviews() {
 	writePNG("chat_ui_sent.png", u3.Render())
 
 	// Reply with an image: a bot bubble that includes a thumbnail.
-	u6 := NewUI(380, 520)
+	u6 := NewUI(defaultWinW, defaultWinH)
 	u6.collapsed = false
 	seedConvo(u6)
 	u6.AddMsgWithImage(u6.Bot.Name,
@@ -71,7 +71,7 @@ func dumpPreviews() {
 	writePNG("chat_ui_image.png", u6.Render())
 
 	// Waiting for Gemini: the "..." thinking bubble below the user's entry.
-	u5 := NewUI(380, 520)
+	u5 := NewUI(defaultWinW, defaultWinH)
 	u5.collapsed = false
 	seedConvo(u5)
 	u5.input = []rune("tell me a joke")
@@ -80,7 +80,7 @@ func dumpPreviews() {
 
 	// Settings modal over an expanded conversation: opened via the gear,
 	// dropdowns closed, SAVE/CANCEL at the bottom.
-	u7 := NewUI(380, 520)
+	u7 := NewUI(defaultWinW, defaultWinH)
 	u7.collapsed = false
 	seedConvo(u7)
 	u7.name = "Onidia"
@@ -92,7 +92,7 @@ func dumpPreviews() {
 
 	// Same modal with the age dropdown expanded (7-13); the option list
 	// overlays the buttons and the pointer rests on the selected row.
-	u8 := NewUI(380, 520)
+	u8 := NewUI(defaultWinW, defaultWinH)
 	u8.collapsed = false
 	seedConvo(u8)
 	u8.name = "Onidia"
@@ -106,7 +106,7 @@ func dumpPreviews() {
 
 	// Sleep-time dropdowns: the FROM list is expanded. Only five of the 24
 	// hours fit, so the list is scrolled to the selection with a scrollbar.
-	u9 := NewUI(380, 520)
+	u9 := NewUI(defaultWinW, defaultWinH)
 	u9.collapsed = false
 	seedConvo(u9)
 	u9.name = "Onidia"
@@ -121,7 +121,7 @@ func dumpPreviews() {
 
 	// A paginated bot reply: an answer with 3 paragraphs becomes one
 	// bubble per page, with < 1/3 > pager controls in its foot strip.
-	u10 := NewUI(380, 520)
+	u10 := NewUI(defaultWinW, defaultWinH)
 	u10.collapsed = false
 	seedConvo(u10)
 	u10.AddMsg(u10.Bot.Name,
