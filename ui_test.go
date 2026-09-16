@@ -2,6 +2,7 @@ package main
 
 import (
 	"image"
+	"image/color"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,49 @@ import (
 
 	"github.com/jezek/xgb/xproto"
 )
+
+// frameHasString reports whether the frame contains s rendered in the bitmap
+// font at the given scale in the given color: it paints s onto a scratch
+// layer with drawText, then slides that template over the frame looking for
+// an exact match of the inked pixels. Font color is exclusive - only one
+// color is painted per call - so callers check each color of interest
+// separately (e.g. a title in plum and a link in teal).
+func frameHasString(frame *image.NRGBA, s string, scale int, col color.RGBA) bool {
+	w, h := textWidth(s, scale), glyphH*scale
+	if w <= 0 || w > frame.Bounds().Dx() || h > frame.Bounds().Dy() {
+		return false
+	}
+	tmpl := image.NewNRGBA(image.Rect(0, 0, w, h))
+	drawText(tmpl, 0, 0, s, scale, col)
+	var ink [][2]int
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if tmpl.NRGBAAt(x, y).A != 0 {
+				ink = append(ink, [2]int{x, y})
+			}
+		}
+	}
+	if len(ink) == 0 {
+		return false
+	}
+	fw, fh := frame.Bounds().Dx(), frame.Bounds().Dy()
+	cr, cg, cb, ca := col.RGBA()
+	for oy := 0; oy+h <= fh; oy++ {
+		for ox := 0; ox+w <= fw; ox++ {
+			hit := true
+			for _, p := range ink {
+				if r, g, b, a := frame.NRGBAAt(ox+p[0], oy+p[1]).RGBA(); r != cr || g != cg || b != cb || a != ca {
+					hit = false
+					break
+				}
+			}
+			if hit {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // TestCollapseDefault verifies the conversation history starts collapsed so
 // only the prompt box is visible. NewUI keeps the passed window height (main
@@ -198,6 +242,81 @@ func TestHaiyaButton(t *testing.T) {
 	u2.Press(WHeader)
 	if !u2.Release(WHeader) || u2.WantPet() {
 		t.Fatal("plain header toggle should resize but not request a pet launch")
+	}
+}
+
+// TestAboutModal verifies the header's About button and its popup: the
+// button sits between the settings gear and the close button, clicking it
+// opens the About panel (aboutOpen) without toggling collapse, the OK
+// button/backdrop/Escape dismiss it, and the modal owns hit-testing while
+// it is open.
+func TestAboutModal(t *testing.T) {
+	u := NewUI(380, 520)
+	ar := u.aboutRect()
+	sr := u.settingsRect()
+	cr := u.closeRect()
+	// Button order: gear ... About ... close.
+	if !(sr.Max.X <= ar.Min.X && ar.Max.X <= cr.Min.X) {
+		t.Fatalf("About button %v not between gear %v and close %v", ar, sr, cr)
+	}
+	for _, pt := range [][2]int{{ar.Min.X, ar.Min.Y}, {ar.Max.X - 1, ar.Max.Y - 1}, {(ar.Min.X + ar.Max.X) / 2, headerH / 2}} {
+		if got := u.HitTest(pt[0], pt[1]); got != WAbout {
+			t.Errorf("About button (%d,%d): got %v want WAbout", pt[0], pt[1], got)
+		}
+	}
+	// Press+release opens the modal; like Settings it expands the window to
+	// fit the panel, so start from an expanded UI to assert collapse state
+	// is untouched.
+	u.Press(WHeader)
+	u.Release(WHeader)
+	wasCollapsed := u.Collapsed()
+	if wasCollapsed {
+		t.Fatal("header click should expand the fresh UI")
+	}
+	u.Press(WAbout)
+	u.Release(WAbout)
+	if !u.aboutOpen {
+		t.Fatal("Release(WAbout) should open the About modal")
+	}
+	if u.Collapsed() != wasCollapsed {
+		t.Fatal("About click should not change the collapse state")
+	}
+	// While open the modal owns the window: OK hits, header spots fall to
+	// the backdrop (dismiss, never the header's own actions).
+	if got := u.HitTest(u.aboutOKRect().Min.X+2, u.aboutOKRect().Min.Y+2); got != WAboutOK {
+		t.Errorf("About OK: got %v want WAboutOK", got)
+	}
+	if got := u.HitTest(10, headerH/2); got != WModal {
+		t.Errorf("header spot while About open: got %v want WModal", got)
+	}
+	// The modal draws the exact credit text.
+	frame := u.Render()
+	if !frameHasString(frame, "ONIDIA", uiFontScale, colPlum) ||
+		!frameHasString(frame, "mas-mas.it", 1, colHeader) {
+		t.Error("About modal should render the ONIDIA name and mas-mas.it credit")
+	}
+	// OK button dismisses.
+	u.Press(WAboutOK)
+	u.Release(WAboutOK)
+	if u.aboutOpen {
+		t.Fatal("Release(WAboutOK) should dismiss the About modal")
+	}
+	// Backdrop click dismisses.
+	u.Press(WAbout)
+	u.Release(WAbout)
+	if !u.aboutOpen {
+		t.Fatal("Release(WAbout) should reopen the About modal")
+	}
+	u.Press(WModal)
+	u.Release(WModal)
+	if u.aboutOpen {
+		t.Fatal("backdrop click should dismiss the About modal")
+	}
+	// Escape dismisses.
+	u.Press(WAbout)
+	u.Release(WAbout)
+	if !u.Key(0, ksEscape) || u.aboutOpen {
+		t.Fatal("Escape should dismiss the About modal")
 	}
 }
 

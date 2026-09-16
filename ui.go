@@ -29,6 +29,7 @@ const (
 	WButton
 	WClose
 	WHaiya // header "Haiya!" button: launches the onidia pet application
+	WAbout // header "About" button: opens the About modal
 
 	// Settings modal (see drawSettings): the header's gear button plus the
 	// widgets that live inside the modal.
@@ -52,6 +53,9 @@ const (
 	WPagePrev   // prev page in a paginated chat bubble
 	WPageNext   // next page in a paginated chat bubble
 	WCopy       // "Copy" pill on a chat bubble's sender-label row
+
+	// About modal (see drawAbout): a small informational panel.
+	WAboutOK // the About modal's OK button
 )
 
 // Msg is one chat entry.
@@ -145,6 +149,13 @@ const (
 	checkSide = 20  // mute-checkbox square side
 	muteRowY  = 312 // mute-checkbox row top inside the panel (below busy time)
 
+	// About modal layout (drawAbout): a small informational panel shown by
+	// the header's About button.
+	aboutPanelW = 300 // panel width
+	aboutPanelH = 214 // panel height (title + tagline + credit + OK button)
+	minAboutH   = 260 // window height forced while the About modal is open
+	aboutBtnW   = 90  // OK button width
+
 	maxNameChars = 16 // character-name field rune cap
 
 	minCharAge          = 7  // youngest character age in the dropdown
@@ -204,6 +215,11 @@ type UI struct {
 	wantClose  bool // set by a click on the header's close button
 	wantPet    bool // set by a click on the header's "Haiya!" button
 	petRunning bool // onidia pet is running: the button is pink and quits it
+
+	// About modal state (see drawAbout): a small informational panel with an
+	// OK button, opened from the header's About button.
+	aboutOpen  bool
+	aboutPrevH int // window height before the About panel forced minAboutH
 
 	// Settings modal state (see drawSettings). name / age / sleepFrom /
 	// sleepTo / mute are the committed values: unset until the first save,
@@ -296,15 +312,26 @@ func (u *UI) closeRect() image.Rectangle {
 	return image.Rect(u.W-padX-hdrBtn, y, u.W-padX, y+hdrBtn)
 }
 
-// settingsRect is the gear button in the header, left of the close button.
-func (u *UI) settingsRect() image.Rectangle {
+// aboutRect is the header's About button, between the settings gear and the
+// close button. Clicking it opens the About modal (see drawAbout).
+func (u *UI) aboutRect() image.Rectangle {
 	x1 := u.closeRect().Min.X - btnGap
+	y := (headerH - hdrBtn) / 2
+	return image.Rect(x1-hdrBtn, y, x1, y+hdrBtn)
+}
+
+// settingsRect is the gear button in the header, left of the About button.
+func (u *UI) settingsRect() image.Rectangle {
+	x1 := u.aboutRect().Min.X - btnGap
 	y := (headerH - hdrBtn) / 2
 	return image.Rect(x1-hdrBtn, y, x1, y+hdrBtn)
 }
 
 // haiyaLabel is the text on the header button that launches the onidia pet.
 const haiyaLabel = "Haiya!"
+
+// aboutLabel is the text on the header button that opens the About modal.
+const aboutLabel = "About"
 
 // haiyaRect is the "Haiya!" button: a rounded pill right after the CHAT
 // label in the header, deliberately larger than the close/gear squares so the
@@ -505,6 +532,20 @@ func (u *UI) modalButtons() (cancel, save image.Rectangle) {
 		image.Rect(sx+modalBtnW+btnGap, by, sx+total, by+btnH)
 }
 
+// aboutPanel is the centred About dialog rectangle.
+func (u *UI) aboutPanel() image.Rectangle {
+	pw := min(aboutPanelW, u.W-2*modalPad)
+	return image.Rect((u.W-pw)/2, (u.H-aboutPanelH)/2, (u.W+pw)/2, (u.H+aboutPanelH)/2)
+}
+
+// aboutOKRect is the About modal's single OK button, centred in the panel foot.
+func (u *UI) aboutOKRect() image.Rectangle {
+	p := u.aboutPanel()
+	sx := p.Min.X + (p.Dx()-aboutBtnW)/2
+	by := p.Max.Y - 14 - btnH
+	return image.Rect(sx, by, sx+aboutBtnW, by+btnH)
+}
+
 // inRect reports whether the point is inside r.
 func inRect(x, y int, r image.Rectangle) bool {
 	return x >= r.Min.X && x < r.Max.X && y >= r.Min.Y && y < r.Max.Y
@@ -514,6 +555,13 @@ func inRect(x, y int, r image.Rectangle) bool {
 func (u *UI) HitTest(x, y int) Widget {
 	if x < 0 || y < 0 || x >= u.W || y >= u.H {
 		return WNone
+	}
+	if u.aboutOpen {
+		// The About modal owns the whole window while it is open.
+		if inRect(x, y, u.aboutOKRect()) {
+			return WAboutOK
+		}
+		return WModal
 	}
 	if u.settingsOpen {
 		// The modal owns the whole window while it is open. An open
@@ -579,6 +627,9 @@ func (u *UI) HitTest(x, y int) Widget {
 		if inRect(x, y, u.closeRect()) {
 			return WClose
 		}
+		if inRect(x, y, u.aboutRect()) {
+			return WAbout
+		}
 		if inRect(x, y, u.settingsRect()) {
 			return WSettings
 		}
@@ -617,6 +668,9 @@ func (u *UI) Resize(w, h int) {
 	u.W, u.H = max(w, 200), max(h, minH)
 	if u.settingsOpen {
 		u.H = max(u.H, minSettingsH) // the modal needs the taller window
+	}
+	if u.aboutOpen {
+		u.H = max(u.H, minAboutH) // the About panel needs the taller window
 	}
 	if !u.collapsed {
 		u.expandedH = u.H // remember the size to restore after collapsing
@@ -807,6 +861,13 @@ func (u *UI) Release(w Widget) bool {
 			if u.openSettings() {
 				return true // the window grew to fit the modal
 			}
+		case WAbout:
+			if u.openAbout() {
+				return true // the window grew to fit the modal
+			}
+		case WAboutOK:
+			u.press = WNone
+			return u.closeAbout()
 		case WName:
 			// Focus already moved above; typing now edits the name draft.
 		case WDrop:
@@ -890,6 +951,10 @@ func (u *UI) Release(w Widget) bool {
 				u.copyFlash = time.Now()
 			}
 		case WModal:
+			if u.aboutOpen {
+				u.press = WNone
+				return u.closeAbout() // a backdrop click dismisses About
+			}
 			u.openDrop = dropNone // a click outside the widgets closes the list
 		case WHeader:
 			if u.collapsed {
@@ -1025,6 +1090,45 @@ func (u *UI) closeSettings() bool {
 		resized = true
 	}
 	u.prevH = 0
+	return resized
+}
+
+// openAbout shows the About modal (see drawAbout), expanding a collapsed
+// window and growing it to fit the panel. Returns true when the window must
+// be resized to match.
+func (u *UI) openAbout() bool {
+	u.aboutOpen = true
+	u.wasCollapsed = u.collapsed
+	u.hover, u.press = WNone, WNone
+	changed := false
+	if u.collapsed {
+		u.collapsed = false
+		u.H = max(u.expandedH, minAboutH)
+		changed = true
+	}
+	if u.H < minAboutH {
+		u.aboutPrevH = u.H
+		u.H = minAboutH
+		changed = true
+	}
+	return changed
+}
+
+// closeAbout hides the About modal and restores the collapse state and window
+// height from before it opened. Returns true when the window must be resized.
+func (u *UI) closeAbout() bool {
+	u.aboutOpen = false
+	u.hover, u.press = WNone, WNone
+	resized := false
+	if u.wasCollapsed && !u.collapsed {
+		u.collapsed = true
+		u.H = headerH + inputH
+		resized = true
+	} else if u.aboutPrevH > 0 && !u.collapsed {
+		u.H = u.aboutPrevH
+		resized = true
+	}
+	u.aboutPrevH = 0
 	return resized
 }
 
@@ -1213,6 +1317,16 @@ const (
 
 // Key applies one key event; returns true when the UI changed.
 func (u *UI) Key(r rune, sym uint32) bool {
+	if u.aboutOpen {
+		// While the About modal is up the textarea is dormant: Enter and
+		// Escape both dismiss it (as does a click on OK or the backdrop).
+		switch sym {
+		case ksEscape, ksReturn, ksKPEnter:
+			u.closeAbout()
+			return true
+		}
+		return false
+	}
 	if u.settingsOpen {
 		// While the modal is up the textarea is dormant: Enter saves,
 		// Escape cancels, and typing edits the name field (when focused).
@@ -1302,6 +1416,9 @@ func (u *UI) Render() *image.NRGBA {
 	u.drawInputBar(frame)
 	if u.settingsOpen {
 		u.drawSettings(frame)
+	}
+	if u.aboutOpen {
+		u.drawAbout(frame)
 	}
 	roundWindowCorners(frame, winRadius)
 	return frame
@@ -1397,6 +1514,21 @@ func (u *UI) drawHeader(frame *image.NRGBA) {
 	drawRoundRect(frame, sr.Min.X+2, sr.Min.Y+2, hdrBtn-4, hdrBtn-4, 6, fill)
 	drawGear(frame, sr.Min.X+hdrBtn/2, sr.Min.Y+hdrBtn/2, glyphCol, fill)
 
+	// About button: a small square between the gear and the close button.
+	ar := u.aboutRect()
+	switch {
+	case u.press == WAbout:
+		fill, glyphCol = colPlum, colWhite
+	case u.hover == WAbout:
+		fill, glyphCol = colHairLight, colPlum
+	default:
+		fill, glyphCol = colTealShade, colWhite
+	}
+	drawRoundRect(frame, ar.Min.X, ar.Min.Y, hdrBtn, hdrBtn, 8, colTealShade)
+	drawRoundRect(frame, ar.Min.X+2, ar.Min.Y+2, hdrBtn-4, hdrBtn-4, 6, fill)
+	drawText(frame, ar.Min.X+(hdrBtn-textWidth("i", 1))/2,
+		ar.Min.Y+(hdrBtn-glyphH)/2, "i", 1, glyphCol)
+
 	// Toggle icon: + (collapsed) / - (expanded), left of the gear button.
 	icon := "+"
 	if !u.collapsed {
@@ -1409,6 +1541,40 @@ func (u *UI) drawHeader(frame *image.NRGBA) {
 	sub := "AI HELPER"
 	drawText(frame, iconX-padX-textWidth(sub, 1), (headerH-glyphH)/2, sub, 1,
 		color.RGBA{255, 255, 255, 190})
+}
+
+// About modal ---------------------------------------------------------------
+
+// drawAbout renders the About modal: a dim backdrop and a small centred panel
+// with the app name, its tagline and the engineering credit, plus an OK
+// button (a backdrop click dismisses it too).
+func (u *UI) drawAbout(frame *image.NRGBA) {
+	fillRect(frame, 0, 0, u.W, u.H, color.RGBA{40, 30, 55, 120}) // dim backdrop
+
+	p := u.aboutPanel()
+	drawRoundRect(frame, p.Min.X, p.Min.Y, p.Dx(), p.Dy(), winRadius, colPlum)
+	drawRoundRect(frame, p.Min.X+2, p.Min.Y+2, p.Dx()-4, p.Dy()-4, winRadius-2, colBubbleFill)
+
+	// Title: the app name in the header's larger scale, centred.
+	center := func(s string, scale, y int, col color.RGBA) {
+		drawText(frame, p.Min.X+(p.Dx()-textWidth(s, scale))/2, y, s, scale, col)
+	}
+	center("ONIDIA", uiFontScale, p.Min.Y+30, colPlum)
+
+	// Tagline: "ONIDIA" initials spelling the phrase, plus the full wording.
+	center("ONmIpresent DIgital Amigo", 1, p.Min.Y+62, colText)
+
+	// Hairline divider between the tagline and the credit.
+	fillRect(frame, p.Min.X+modalPad, p.Min.Y+86, p.Dx()-2*modalPad, 1, colInputBorder)
+
+	// Engineering credit on one line, two-tone: muted label + teal link.
+	credit := "Engineered by " + "https://mas-mas.it"
+	cx := p.Min.X + (p.Dx()-textWidth(credit, 1))/2
+	drawText(frame, cx, p.Min.Y+104, "Engineered by ", 1, colMuted)
+	drawText(frame, cx+textWidth("Engineered by ", 1), p.Min.Y+104,
+		"https://mas-mas.it", 1, colHeader)
+
+	u.drawModalButton(frame, u.aboutOKRect(), WAboutOK, "OK")
 }
 
 // Settings modal -------------------------------------------------------------
@@ -1676,7 +1842,7 @@ func (u *UI) drawModalButtons(frame *image.NRGBA) {
 
 func (u *UI) drawModalButton(frame *image.NRGBA, r image.Rectangle, w Widget, lbl string) {
 	fill, label, outline := colBtnOff, colMuted, colInputBorder
-	if w == WSave {
+	if w == WSave || w == WAboutOK {
 		fill, label, outline = colBtn, colWhite, colPlum
 	}
 	switch {
