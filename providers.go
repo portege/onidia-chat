@@ -3,6 +3,7 @@
 // Currently supported:
 //   - gemini: Google Gemini generateContent API (uses -api-key / -api-url / -model)
 //   - bedrock: Amazon Bedrock Converse API (uses -aws-profile / -aws-region / -model)
+//   - ollama: ollama-compatible /api/chat server (uses -api-url / -model; no key)
 
 package main
 
@@ -208,6 +209,14 @@ type bedrockProvider struct {
 // and available in most Bedrock regions.
 const defaultBedrockModelID = "amazon.nova-lite-v1:0"
 
+// defaultOllamaModel is the fallback model tag used when provider=ollama and
+// no model is configured — a small chat model that runs well on the hailo box.
+const defaultOllamaModel = "qwen2:1.5b"
+
+// defaultOllamaURL is the ollama-compatible server assumed for provider=ollama
+// (the hailo box on the local network). Override with -api-url / api-url.
+const defaultOllamaURL = "http://localhost:8000"
+
 // isGeminiModel reports whether an ID belongs to Google's Gemini family
 // (e.g. "gemini-3.6-flash").
 func isGeminiModel(id string) bool {
@@ -228,6 +237,101 @@ func isBedrockModel(id string) bool {
 		}
 	}
 	return false
+}
+
+// isOllamaModel reports whether an ID looks like an ollama model tag
+// (e.g. "qwen2:1.5b", "llama3.2:3b", "mistral:latest"): a colon tag that is
+// neither a Gemini nor a Bedrock identifier.
+func isOllamaModel(id string) bool {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" || isGeminiModel(id) || isBedrockModel(id) {
+		return false
+	}
+	tag := strings.LastIndex(id, ":")
+	return tag > 0 && tag < len(id)-1
+}
+
+// ollamaProvider talks to an ollama-compatible chat server (Ollama itself,
+// or the llama.cpp server on the hailo box) via its /api/chat endpoint — a
+// local, key-less backend: POST {model, messages, stream:false} and read the
+// assistant message back out of the single JSON object.
+type ollamaProvider struct {
+	apiURL string // server base, e.g. http://localhost:8000 (no trailing slash)
+	model  string // e.g. "qwen2:1.5b"
+	http   *http.Client
+}
+
+func (o *ollamaProvider) Name() string { return "ollama" }
+
+// ollamaChatMsg is one message of the /api/chat payload.
+type ollamaChatMsg struct {
+	Role    string `json:"role"` // "system" | "user" | "assistant"
+	Content string `json:"content"`
+}
+
+func (o *ollamaProvider) GenerateText(system string, history []Msg, userText string) (string, error) {
+	msgs := make([]ollamaChatMsg, 0, len(history)+2)
+	if system != "" {
+		msgs = append(msgs, ollamaChatMsg{Role: "system", Content: system})
+	}
+	for _, m := range history {
+		role := "assistant"
+		if m.From == "you" {
+			role = "user"
+		}
+		msgs = append(msgs, ollamaChatMsg{Role: role, Content: m.Text})
+	}
+	// Same rule as the gemini provider: make sure the conversation ends on a
+	// user turn carrying the new input.
+	if len(msgs) == 0 || msgs[len(msgs)-1].Role != "user" {
+		msgs = append(msgs, ollamaChatMsg{Role: "user", Content: userText})
+	}
+	// Cap the exchanged turns the same way gemini does; the system message
+	// always stays at the front.
+	if n := len(msgs); n > 1 && n-1 > maxHistTurns {
+		msgs = append(msgs[:1:1], msgs[n-maxHistTurns:]...)
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"model":    o.model,
+		"messages": msgs,
+		"stream":   false,
+	})
+	if err != nil {
+		return "", err
+	}
+	endpoint := strings.TrimRight(o.apiURL, "/") + "/api/chat"
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := o.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ollama %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("ollama: read reply: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("ollama %s: HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var out struct {
+		Message struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return "", fmt.Errorf("ollama: decode reply: %w", err)
+	}
+	text := strings.TrimSpace(out.Message.Content)
+	if text == "" {
+		return "", errors.New("empty answer")
+	}
+	return text, nil
 }
 
 func (p *bedrockProvider) Name() string { return "bedrock" }
@@ -337,4 +441,19 @@ func newBedrockProvider(profile, region, model string) (Provider, error) {
 		client: bedrockruntime.NewFromConfig(cfg),
 		model:  model,
 	}, nil
+}
+
+// newOllamaProvider builds an ollama-compatible /api/chat client (Ollama itself
+// or the llama.cpp server on the hailo box). apiURL is the server base (no
+// trailing slash); the /api/chat endpoint is appended by the provider. model is
+// the server-side tag, e.g. "qwen2:1.5b". No API key is used.
+func newOllamaProvider(apiURL, model string) Provider {
+	if model == "" {
+		model = defaultOllamaModel
+	}
+	return &ollamaProvider{
+		apiURL: strings.TrimRight(apiURL, "/"),
+		model:  model,
+		http:   http.DefaultClient,
+	}
 }

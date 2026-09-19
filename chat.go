@@ -299,7 +299,7 @@ func inferMood(text string) string {
 // returned alongside the text.
 func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 	if b.Provider == nil {
-		return ReplyResult{Text: fmt.Sprintf("you said: %s -- wire in a provider (gemini or bedrock) to wake me up!", userText)}
+		return ReplyResult{Text: fmt.Sprintf("you said: %s -- wire in a provider (gemini, bedrock or ollama) to wake me up!", userText)}
 	}
 
 	// Prompt-injection guard: sanitize everything that goes to the model

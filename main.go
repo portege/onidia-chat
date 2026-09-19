@@ -206,7 +206,7 @@ func main() {
 		providerVal = "gemini"
 	}
 	switch providerVal {
-	case "gemini", "bedrock":
+	case "gemini", "bedrock", "ollama":
 		// ok
 	default:
 		log.Printf("warning: unknown provider %q, using gemini", providerVal)
@@ -396,7 +396,7 @@ func main() {
 			QuitPet(petCmdPath, petGoneCh)
 			return
 		}
-		if err := LaunchPet(); err != nil {
+		if err := LaunchPet(ui.PetCharacter()); err != nil {
 			log.Printf("pet: %v", err)
 			return
 		}
@@ -440,7 +440,7 @@ func main() {
 	}
 	if cfg != nil && cfg.Mute {
 		ui.mute = true // the dialog's MUTE SPEECH checkbox starts checked
-	}
+		}
 	// Build the selected provider.
 	var botProvider Provider
 	switch providerVal {
@@ -461,6 +461,8 @@ func main() {
 			log.Fatalf("bedrock provider: %v", err)
 		}
 		botProvider = p
+	case "ollama":
+		botProvider = newOllamaProvider(urlVal, modelVal)
 	default: // gemini
 		botProvider = &geminiProvider{apiKey: key, apiURL: urlVal, model: modelVal, http: &http.Client{Timeout: imageTimeout + geminiTimeout}}
 	}
@@ -474,6 +476,8 @@ func main() {
 	}
 	if providerVal == "bedrock" {
 		log.Printf("bedrock: model=%s", modelVal)
+	} else if providerVal == "ollama" {
+		log.Printf("ollama: model=%s, api-url=%s", modelVal, urlVal)
 	} else if key == "" {
 		log.Printf("gemini: no API key (set GEMINI_API_KEY or -api-key) - running in stub mode")
 	} else {

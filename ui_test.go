@@ -3,6 +3,7 @@ package main
 import (
 	"image"
 	"image/color"
+	"image/draw"
 	"os"
 	"path/filepath"
 	"strings"
@@ -757,7 +758,7 @@ func TestModalPanelsStayFullSize(t *testing.T) {
 // without changing the frame size, with every dropdown state.
 func TestSettingsRenderSmoke(t *testing.T) {
 	for _, open := range []int{dropNone, dropAge, dropFrom, dropTo, dropFromM, dropToM} {
-		u := NewUI(380, 520)
+		u := NewUI(380, 560) // tall enough that the modal needs no window growth
 		u.collapsed = false
 		u.openSettings()
 		u.openDrop = open
@@ -772,7 +773,7 @@ func TestSettingsRenderSmoke(t *testing.T) {
 			u.hover = WOption
 		}
 		frame := u.Render()
-		if frame.Bounds() != (image.Rect(0, 0, 380, 520)) {
+		if frame.Bounds() != (image.Rect(0, 0, 380, 560)) {
 			t.Fatalf("frame bounds %v with openDrop=%d", frame.Bounds(), open)
 		}
 		// The panel interior must be opaque: the backdrop dims the window,
@@ -1039,6 +1040,111 @@ func TestSettingsNameField(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "character-age = 7") {
 		t.Errorf("INI lost the age while saving the name:\n%s", b)
+	}
+}
+
+// TestSettingsGenderPicker verifies the GENDER row: the GIRL/BOY buttons
+// hit-test as WGirl/WBoy, a click flips only the draft (committed on SAVE,
+// discarded by CANCEL), SAVE writes "character-gender" to the INI, and the
+// committed gender decides which character the Haiya! button launches.
+func TestSettingsGenderPicker(t *testing.T) {
+	path := writeTempINI(t, "[character]\ncharacter-gender = girl\n")
+	u := NewUI(380, 560)
+	u.age = 7
+	u.savePath = path
+	u.collapsed = false
+	u.H = 560
+	u.openSettings()
+
+	// Layout sanity: the picker sits below the busy rows and above the mute
+	// checkbox, which in turn sits above the SAVE/CANCEL buttons.
+	girl, boy := u.genderRects()
+	_, save := u.modalButtons()
+	if girl.Min.Y <= u.busyToMinRect().Max.Y || boy.Max.Y >= u.muteRect().Min.Y || u.muteRect().Max.Y >= save.Min.Y {
+		t.Fatalf("picker %v/%v must sit between the busy rows and the mute row (%v)", girl, boy, u.muteRect())
+	}
+	if u.genderDraft != "girl" || u.gender != "girl" {
+		t.Fatalf("INI said girl: draft=%q committed=%q", u.genderDraft, u.gender)
+	}
+	if u.PetCharacter() != "onidia" {
+		t.Errorf("girl default: PetCharacter()=%q, want onidia", u.PetCharacter())
+	}
+
+	// The picker renders the character names, not GIRL/BOY. The label checks
+	// run on copied button crops (frameHasString scans from (0,0), and a
+	// SubImage keeps absolute coordinates, so the crop must be re-based);
+	// over the whole frame the solid-white name box would make every
+	// colWhite template "match" (frameHasString compares ink pixels only).
+	frame := u.Render()
+	crop := func(r image.Rectangle) *image.NRGBA {
+		img := image.NewNRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
+		draw.Draw(img, img.Bounds(), frame, r.Min, draw.Src)
+		return img
+	}
+	girlImg, boyImg := crop(girl), crop(boy)
+	btnHas := func(img *image.NRGBA, s string) bool {
+		return frameHasString(img, s, uiFontScale, colWhite) ||
+			frameHasString(img, s, uiFontScale, colMuted)
+	}
+	if !btnHas(girlImg, "ONIDIA") {
+		t.Error("GIRL button should render the ONIDIA label")
+	}
+	if !btnHas(boyImg, "KAMA") {
+		t.Error("BOY button should render the KAMA label")
+	}
+	if btnHas(girlImg, "GIRL") || btnHas(girlImg, "BOY") ||
+		btnHas(boyImg, "GIRL") || btnHas(boyImg, "BOY") {
+		t.Error("gender picker still renders the old GIRL/BOY labels")
+	}
+
+	// Both buttons hit-test; clicking BOY flips only the draft.
+	if w := u.HitTest((girl.Min.X+girl.Max.X)/2, (girl.Min.Y+girl.Max.Y)/2); w != WGirl {
+		t.Fatalf("GIRL button hit: got %v want WGirl", w)
+	}
+	if w := u.HitTest((boy.Min.X+boy.Max.X)/2, (boy.Min.Y+boy.Max.Y)/2); w != WBoy {
+		t.Fatalf("BOY button hit: got %v want WBoy", w)
+	}
+	u.Press(WBoy)
+	u.Release(WBoy)
+	if u.genderDraft != "boy" || u.gender != "girl" {
+		t.Fatalf("BOY click: draft=%q committed=%q, want boy/girl", u.genderDraft, u.gender)
+	}
+
+	// CANCEL discards the draft.
+	u.Press(WCancel)
+	u.Release(WCancel)
+	if u.settingsOpen || u.gender != "girl" {
+		t.Fatalf("cancel: open=%v gender=%q, want closed/girl", u.settingsOpen, u.gender)
+	}
+
+	// Re-open (the draft re-seeds from the committed gender), pick BOY and
+	// SAVE: the INI gains character-gender = boy, the committed gender flips
+	// and Haiya! would now launch Kama.
+	u.openSettings()
+	if u.genderDraft != "girl" {
+		t.Fatalf("reopen should re-seed the draft from the committed gender, got %q", u.genderDraft)
+	}
+	u.Press(WBoy)
+	u.Release(WBoy)
+	_, save = u.modalButtons()
+	w := u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if u.settingsOpen {
+		t.Fatal("save should close the modal")
+	}
+	if u.gender != "boy" || u.PetCharacter() != "kama" {
+		t.Errorf("after save: gender=%q PetCharacter()=%q, want boy/kama", u.gender, u.PetCharacter())
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "character-gender = boy") {
+		t.Errorf("INI lacks the saved gender key:\n%s", b)
+	}
+	if !strings.Contains(string(b), "character-age = 7") {
+		t.Errorf("INI lost the age while saving the gender:\n%s", b)
 	}
 }
 

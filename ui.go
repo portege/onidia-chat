@@ -48,6 +48,8 @@ const (
 	WDropToBM   // BUSY TO minute dropdown 0/15/30/45
 	WDropBad    // dropdown whose selected value is invalid (for validation prompt)
 	WMute       // mute-speech checkbox row
+	WGirl       // gender picker: ONIDIA button (Haiya! launches the girl)
+	WBoy        // gender picker: KAMA button (Haiya! launches the boy)
 	WOption     // one row of an open dropdown list
 	WSave       // modal SAVE button
 	WCancel     // modal CANCEL button
@@ -141,14 +143,15 @@ const (
 	panelW    = 340 // modal panel width (clamped to the window; wide enough
 	// that the four sleep-time dropdowns fit their labels, chevrons and
 	// the expanded lists' dot + text)
-	panelH = 410 // modal panel height (name + age + sleep rows + busy rows +
-	// mute checkbox + buttons)
+	panelH = 464 // modal panel height (name + age + sleep rows + busy rows +
+	// character picker + mute checkbox + buttons)
 	dropH        = 32  // dropdown box height
 	optH         = 24  // dropdown list row height
-	minSettingsH = 480 // window height forced while the modal is open
+	genderRowY   = 314 // CHARACTER picker row top inside the panel (below busy time)
+	minSettingsH = 534 // window height forced while the modal is open
 
 	checkSide = 20  // mute-checkbox square side
-	muteRowY  = 312 // mute-checkbox row top inside the panel (below busy time)
+	muteRowY  = 374 // mute-checkbox row top inside the panel (below the character picker)
 
 	// About modal layout (drawAbout): a small informational panel shown by
 	// the header's About button.
@@ -242,6 +245,8 @@ type UI struct {
 	busyFromMinDraft  int       // busy start minute picked in the modal (0/15/30/45)
 	busyToMinDraft    int       // busy end minute picked in the modal (0/15/30/45)
 	muteDraft         bool      // mute-speech checkbox in the modal; committed on SAVE
+	gender            string    // committed pet gender: "girl" (Onidia) or "boy" (Kama)
+	genderDraft       string    // gender picked in the modal; committed on SAVE
 	prevH             int       // window height before the modal forced minSettingsH
 	name              string    // committed character name ("" = not set yet)
 	age               int       // committed character age (0 = not set yet)
@@ -277,7 +282,8 @@ func NewUI(w, h int) *UI {
 		caret:     true,
 		collapsed: true,
 		expandedH: max(h, 260),
-		sleepFrom: -1, // -1 = no sleep window configured yet
+		gender:    "girl", // GIRL picker active until the INI says boy
+		sleepFrom: -1,     // -1 = no sleep window configured yet
 		sleepTo:   -1,
 		pagerMsg:  -1, // no pager under the pointer yet
 		copyMsg:   -1, // no COPY pill under the pointer yet
@@ -468,6 +474,19 @@ func (u *UI) muteRect() image.Rectangle {
 		p.Min.X+modalPad+w, p.Min.Y+muteRowY+checkSide)
 }
 
+// genderRects returns the ONIDIA and KAMA picker buttons: a centred pair on
+// their own row below the busy time (the MUTE SPEECH checkbox sits directly
+// below them), sized like the dropdown boxes and laid out like the modal's
+// SAVE/CANCEL pair.
+func (u *UI) genderRects() (girl, boy image.Rectangle) {
+	p := u.modalPanel()
+	total := 2*modalBtnW + btnGap
+	sx := p.Min.X + (p.Dx()-total)/2
+	by := p.Min.Y + genderRowY + 16
+	return image.Rect(sx, by, sx+modalBtnW, by+dropH),
+		image.Rect(sx+modalBtnW+btnGap, by, sx+total, by+dropH)
+}
+
 // dropListRect is the expanded age list; empty unless the age list is open.
 func (u *UI) dropListRect() image.Rectangle {
 	if u.openDrop != dropAge {
@@ -636,6 +655,11 @@ func (u *UI) HitTest(x, y int) Widget {
 		}
 		if r := u.muteRect(); inRect(x, y, r) {
 			return WMute
+		}
+		if girl, boy := u.genderRects(); inRect(x, y, girl) {
+			return WGirl
+		} else if inRect(x, y, boy) {
+			return WBoy
 		}
 		return WModal
 	}
@@ -906,6 +930,10 @@ func (u *UI) Release(w Widget) bool {
 			u.toggleDrop(dropBusyToM)
 		case WMute:
 			u.muteDraft = !u.muteDraft // commits on SAVE, like the drafts
+		case WGirl:
+			u.genderDraft = "girl" // commits on SAVE, like the drafts
+		case WBoy:
+			u.genderDraft = "boy"
 		case WOption:
 			switch u.openDrop {
 			case dropAge:
@@ -1028,6 +1056,16 @@ func (u *UI) SetPetRunning(running bool) { u.petRunning = running }
 // PetRunning reports whether the onidia pet application is running.
 func (u *UI) PetRunning() bool { return u.petRunning }
 
+// PetCharacter reports which character the Haiya! button should launch for
+// the gender chosen in the settings dialog: Kama for a boy, Onidia (the
+// pet binary's own default) for a girl.
+func (u *UI) PetCharacter() string {
+	if normalizeGender(u.gender) == "boy" {
+		return "kama"
+	}
+	return "onidia"
+}
+
 // WantCopy reports whether a message's COPY pill was clicked; main() then
 // pushes the staged text onto the X11 clipboard.
 func (u *UI) WantCopy() bool { return u.wantCopy }
@@ -1074,6 +1112,7 @@ func (u *UI) openSettings() bool {
 	}
 	u.busyToMinDraft = minuteIndex(u.busyToMin)
 	u.muteDraft = u.mute
+	u.genderDraft = u.gender
 	// The modal keeps its full designed size, so the window grows in height
 	// when it is too short (prevH remembers the old height). collapsed is
 	// deliberately left alone: the history shows exactly what it showed
@@ -1216,10 +1255,10 @@ func (u *UI) ScrollMinuteList(dy int) bool {
 }
 
 // saveSettings commits the modal's drafts: the persona picks them up live,
-// character-name / character-age / sleep-time / mute are rewritten in the
-// INI file, and the stored system instruction is re-baked with the name and
-// age (see bakeCharacterPrompt). Failures are reported in the modal, which
-// then stays open.
+// character-name / character-age / sleep-time / mute / character-gender are
+// rewritten in the INI file, and the stored system instruction is re-baked
+// with the name and age (see bakeCharacterPrompt). Failures are reported in
+// the modal, which then stays open.
 func (u *UI) saveSettings() {
 	path := u.savePath
 	if path == "" {
@@ -1243,6 +1282,10 @@ func (u *UI) saveSettings() {
 		u.saveErr = err.Error()
 		return
 	}
+	if err := SetConfigValue(path, "character", "character-gender", u.genderDraft); err != nil {
+		u.saveErr = err.Error()
+		return
+	}
 	busy := fmt.Sprintf("%02d:%02d-%02d:%02d", u.busyFromDraft, sleepMinutes[u.busyFromMinDraft], u.busyToDraft, sleepMinutes[u.busyToMinDraft])
 	if err := SetConfigValue(path, "character", "busy-time", busy); err != nil {
 		u.saveErr = err.Error()
@@ -1263,6 +1306,7 @@ func (u *UI) saveSettings() {
 	u.busyFrom, u.busyTo = u.busyFromDraft, u.busyToDraft
 	u.busyFromMin, u.busyToMin = sleepMinutes[u.busyFromMinDraft], sleepMinutes[u.busyToMinDraft]
 	u.mute = u.muteDraft
+	u.gender = u.genderDraft
 	if u.Bot != nil {
 		if name != "" {
 			u.Bot.Name = name // bubble sender label
@@ -1621,27 +1665,29 @@ func (u *UI) drawSettings(frame *image.NRGBA) {
 	drawText(frame, p.Min.X+modalPad, p.Min.Y+112, "CHARACTER AGE", 1, colMuted)
 	u.drawSelectBox(frame, u.dropRect(), strconv.Itoa(u.ageDraft), u.openDrop == dropAge, WDrop)
 
-	drawText(frame, p.Min.X+modalPad, p.Min.Y+172, "SLEEP TIME", 1, colMuted)
+	drawText(frame, p.Min.X+modalPad, p.Min.Y+170, "SLEEP TIME", uiFontScale, colPlum)
 	fr, tr := u.sleepFromRect(), u.sleepToRect()
 	fm, tm := u.sleepFromMinRect(), u.sleepToMinRect()
-	drawText(frame, fr.Min.X, p.Min.Y+186, "FROM", 1, colMuted)
-	drawText(frame, tr.Min.X, p.Min.Y+186, "TO", 1, colMuted)
+	drawText(frame, fr.Min.X, p.Min.Y+190, "FROM", 1, colMuted)
+	drawText(frame, tr.Min.X, p.Min.Y+190, "TO", 1, colMuted)
 	u.drawSelectBox(frame, fr, hourLabel(u.sleepFromDraft), u.openDrop == dropFrom, WDropFrom)
 	u.drawSelectBox(frame, fm, minuteLabel(u.sleepFromMinDraft), u.openDrop == dropFromM, WDropFromM)
 	u.drawSelectBox(frame, tr, hourLabel(u.sleepToDraft), u.openDrop == dropTo, WDropTo)
 	u.drawSelectBox(frame, tm, minuteLabel(u.sleepToMinDraft), u.openDrop == dropToM, WDropToM)
 
-	drawText(frame, p.Min.X+modalPad, p.Min.Y+240, "BUSY TIME", 1, colMuted)
+	drawText(frame, p.Min.X+modalPad, p.Min.Y+240, "BUSY TIME", uiFontScale, colPlum)
 	busyF, busyT := u.busyFromRect(), u.busyToRect()
 	busyFM, busyTM := u.busyFromMinRect(), u.busyToMinRect()
-	drawText(frame, busyF.Min.X, p.Min.Y+254, "FROM", 1, colMuted)
-	drawText(frame, busyT.Min.X, p.Min.Y+254, "TO", 1, colMuted)
+	drawText(frame, busyF.Min.X, p.Min.Y+260, "FROM", 1, colMuted)
+	drawText(frame, busyT.Min.X, p.Min.Y+260, "TO", 1, colMuted)
 	u.drawSelectBox(frame, busyF, hourLabel(u.busyFromDraft), u.openDrop == dropBusyFrom, WDropFromB)
 	u.drawSelectBox(frame, busyFM, minuteLabel(u.busyFromMinDraft), u.openDrop == dropBusyFromM, WDropFromBM)
 	u.drawSelectBox(frame, busyT, hourLabel(u.busyToDraft), u.openDrop == dropBusyTo, WDropToB)
 	u.drawSelectBox(frame, busyTM, minuteLabel(u.busyToMinDraft), u.openDrop == dropBusyToM, WDropToBM)
 
 	u.drawMuteRow(frame)
+
+	u.drawGenderRow(frame)
 
 	u.drawModalButtons(frame)
 	if u.openDrop == dropAge {
@@ -1846,6 +1892,43 @@ func drawCheck(img *image.NRGBA, x, y int, col color.RGBA) {
 	}
 	for i := 0; i < 8; i++ { // long arm: up-right from the vertex
 		fillRect(img, x+8+i, y+12-i, 3, 3, col)
+	}
+}
+
+// drawGenderRow paints the pet-character picker: a CHARACTER label above a
+// centred ONIDIA/KAMA pair (the buttons carry the character names - Onidia is
+// the girl, Kama the boy). The chosen side is filled like SAVE, the other
+// stays an outlined button like CANCEL; the choice commits on SAVE and
+// decides which character the Haiya! button launches. The MUTE SPEECH
+// checkbox sits directly below this row.
+func (u *UI) drawGenderRow(frame *image.NRGBA) {
+	p := u.modalPanel()
+	drawText(frame, p.Min.X+modalPad, p.Min.Y+genderRowY, "CHARACTER", 1, colMuted)
+	girl, boy := u.genderRects()
+	for _, b := range [...]struct {
+		r   image.Rectangle
+		w   Widget
+		on  bool
+		lbl string
+	}{
+		{girl, WGirl, u.genderDraft == "girl", "ONIDIA"},
+		{boy, WBoy, u.genderDraft == "boy", "KAMA"},
+	} {
+		fill, label, outline := colBtnOff, colMuted, colInputBorder
+		if b.on {
+			fill, label, outline = colBtn, colWhite, colPlum
+		}
+		switch {
+		case u.press == b.w:
+			fill = colTealShade
+		case u.hover == b.w:
+			fill, label = colHairLight, colPlum
+		}
+		drawRoundRect(frame, b.r.Min.X, b.r.Min.Y, b.r.Dx(), b.r.Dy(), 9, outline)
+		drawRoundRect(frame, b.r.Min.X+2, b.r.Min.Y+2, b.r.Dx()-4, b.r.Dy()-4, 7, fill)
+		lw := textWidth(b.lbl, uiFontScale)
+		drawText(frame, b.r.Min.X+(b.r.Dx()-lw)/2,
+			b.r.Min.Y+(b.r.Dy()-glyphH*uiFontScale)/2, b.lbl, uiFontScale, label)
 	}
 }
 

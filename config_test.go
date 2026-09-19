@@ -119,6 +119,41 @@ func TestLoadConfigCharacterName(t *testing.T) {
 	}
 }
 
+// TestLoadConfigGender covers the character-gender key (the settings
+// dialog's GENDER picker): boy spellings normalize to "boy", anything else
+// falls back to "girl", and a missing key leaves the field empty (normalized
+// to the girl default where it is used).
+func TestLoadConfigGender(t *testing.T) {
+	c, err := LoadConfig(writeTempINI(t, "[character]\ncharacter-gender = boy\n"))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if c.Gender != "boy" {
+		t.Errorf("boy: got %q", c.Gender)
+	}
+	c, err = LoadConfig(writeTempINI(t, "[character]\ncharacter-gender = BOY\n"))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if c.Gender != "boy" {
+		t.Errorf("BOY: got %q, want case-insensitive boy", c.Gender)
+	}
+	c, err = LoadConfig(writeTempINI(t, "[character]\ncharacter-gender = dragon\n"))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if c.Gender != "girl" {
+		t.Errorf("junk: got %q, want the girl default", c.Gender)
+	}
+	c, err = LoadConfig(writeTempINI(t, "[character]\ncharacter-age = 7\n"))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if c.Gender != "" {
+		t.Errorf("missing key: got %q, want empty", c.Gender)
+	}
+}
+
 // TestLoadConfigMute covers the mute key (the settings dialog's MUTE SPEECH
 // checkbox): truthy spellings parse as true, everything else (and a missing
 // key) leaves speech unmuted.

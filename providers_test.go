@@ -2,6 +2,30 @@ package main
 
 import "testing"
 
+func TestIsOllamaModel(t *testing.T) {
+	cases := []struct {
+		id   string
+		want bool
+	}{
+		{"qwen2:1.5b", true},
+		{"llama3.2:3b", true},
+		{"mistral:latest", true},
+		{"QWEN2:1.5B", true},
+		{"gemini-3.6-flash", false},
+		{"amazon.nova-lite-v1:0", false},
+		{"anthropic.claude-3-5-sonnet-20240620-v1:0", false},
+		{"my-model", false},
+		{":tag", false},
+		{"model:", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isOllamaModel(tc.id); got != tc.want {
+			t.Errorf("isOllamaModel(%q) = %v, want %v", tc.id, got, tc.want)
+		}
+	}
+}
+
 func TestIsGeminiModel(t *testing.T) {
 	cases := []struct {
 		id   string

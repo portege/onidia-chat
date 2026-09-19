@@ -40,6 +40,7 @@ type Config struct {
 	AWSRegion        string `ini:"aws-region"`          // AWS region for Bedrock
 	CharacterAge     int    `ini:"character-age"`       // chat character's age (settings dialog, 7-13)
 	CharacterName    string `ini:"character-name"`      // chat character's name (settings dialog)
+	Gender           string `ini:"character-gender"`    // pet gender: "girl" launches Onidia, "boy" launches Kama (settings dialog)
 	SleepSet         bool   // sleep-time was present in the config
 	SleepFromH       int    // sleep-window start hour (0-23), from sleep-time
 	SleepFromM       int    // sleep-window start minute (0/15/30/45), from sleep-time
@@ -158,6 +159,8 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.TTSVoice = val
 	case "mute":
 		cfg.Mute = parseBool(val)
+	case "character-gender":
+		cfg.Gender = normalizeGender(val)
 	case "provider":
 		cfg.Provider = val
 	case "aws-profile":

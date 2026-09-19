@@ -73,6 +73,20 @@ func TestPetCmdPathFor(t *testing.T) {
 	}
 }
 
+// TestPetLaunchArgs checks the launch-argument mapping: the girl default
+// launches flagless (the binary's own default), a boy passes -character kama.
+func TestPetLaunchArgs(t *testing.T) {
+	if got := petLaunchArgs(""); len(got) != 0 {
+		t.Errorf("empty gender: args %v, want none", got)
+	}
+	if got := petLaunchArgs("onidia"); len(got) != 0 {
+		t.Errorf("girl/onidia: args %v, want none (binary default)", got)
+	}
+	if got := petLaunchArgs("kama"); len(got) != 2 || got[0] != "-character" || got[1] != "kama" {
+		t.Errorf("boy/kama: args %v, want [-character kama]", got)
+	}
+}
+
 // TestPetCmdDeliversCommand checks that petCmd writes the exact command line to
 // the pet's cmd FIFO (action/event forward from the LLM reply tags).
 func TestPetCmdDeliversCommand(t *testing.T) {

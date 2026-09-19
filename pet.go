@@ -148,11 +148,34 @@ func ensureOnidiaFresh(bin string) error {
 	return nil
 }
 
+// petLaunchArgs builds the launch arguments for the onidia binary: the
+// -character flag selects the sprite (Kama for a boy, Onidia for a girl).
+// Onidia is the binary's own default, so it launches flagless.
+func petLaunchArgs(character string) []string {
+	if character == "" || character == "onidia" {
+		return nil
+	}
+	return []string{"-character", character}
+}
+
+// normalizeGender maps any configured gender spelling onto "boy" or "girl";
+// anything unrecognised (including empty) is a girl, the historical default.
+func normalizeGender(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "boy", "male", "m", "b":
+		return "boy"
+	default:
+		return "girl"
+	}
+}
+
 // LaunchPet (re)builds the onidia binary if its sources changed, then starts
 // it detached from the chat-app process (new session, no shared stdout) so it
-// keeps running when chat-app exits. The started process is remembered for
+// keeps running when chat-app exits. character picks the sprite: "kama" for
+// the settings dialog's BOY gender, "onidia" (the binary's own default, so
+// no flag is passed) for GIRL. The started process is remembered for
 // QuitPet's SIGTERM fallback. Returns an error when nothing was started.
-func LaunchPet() error {
+func LaunchPet(character string) error {
 	bin := onidiaPath()
 	if bin == "" {
 		return errors.New("onidia binary not found - looked for onidia/onidia, desktop-pet/desktop-pet")
@@ -160,7 +183,7 @@ func LaunchPet() error {
 	if err := ensureOnidiaFresh(bin); err != nil {
 		log.Printf("pet: refresh build skipped (%v) - launching the existing binary", err)
 	}
-	cmd := exec.Command(bin)
+	cmd := exec.Command(bin, petLaunchArgs(character)...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from chat-app
