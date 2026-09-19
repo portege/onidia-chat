@@ -78,18 +78,19 @@ func TestCollapseDefault(t *testing.T) {
 	}
 }
 
-// TestToggleCollapse exercises a header click: press+release on WHeader
-// toggles the state and resizes H to the collapsed/expanded height.
+// TestToggleCollapse exercises the history show/hide button: press+release
+// on WToggle toggles the state and resizes H to the collapsed/expanded
+// height, while a plain title-bar click no longer toggles anything.
 func TestToggleCollapse(t *testing.T) {
 	u := NewUI(380, 520)
 
-	// Expand via header click.
-	u.Press(WHeader)
-	if !u.Release(WHeader) {
-		t.Fatal("Release(WHeader) on a collapsed UI should return true (state toggled)")
+	// Expand via the toggle button.
+	u.Press(WToggle)
+	if !u.Release(WToggle) {
+		t.Fatal("Release(WToggle) on a collapsed UI should return true (state toggled)")
 	}
 	if u.Collapsed() {
-		t.Fatal("header click should expand the conversation")
+		t.Fatal("toggle button click should expand the conversation")
 	}
 	if u.H != 520 {
 		t.Errorf("expanded height: got %d want 520", u.H)
@@ -100,12 +101,12 @@ func TestToggleCollapse(t *testing.T) {
 
 	// Collapse again; the expanded height must be remembered.
 	u.H = 340 // simulate a user resize before collapsing
-	u.Press(WHeader)
-	if !u.Release(WHeader) {
-		t.Fatal("Release(WHeader) on an expanded UI should return true")
+	u.Press(WToggle)
+	if !u.Release(WToggle) {
+		t.Fatal("Release(WToggle) on an expanded UI should return true")
 	}
 	if !u.Collapsed() {
-		t.Fatal("header click should collapse the conversation")
+		t.Fatal("toggle button click should collapse the conversation")
 	}
 	if u.H != headerH+inputH {
 		t.Errorf("collapsed height: got %d want %d", u.H, headerH+inputH)
@@ -118,24 +119,46 @@ func TestToggleCollapse(t *testing.T) {
 	}
 
 	// And expand again restores the remembered height.
-	u.Press(WHeader)
-	u.Release(WHeader)
+	u.Press(WToggle)
+	u.Release(WToggle)
 	if u.Collapsed() || u.H != 340 {
 		t.Errorf("re-expand: collapsed=%v H=%d want H=340", u.Collapsed(), u.H)
 	}
+
+	// A plain title-bar click must NOT toggle the history list anymore.
+	u.Press(WHeader)
+	if u.Release(WHeader) {
+		t.Fatal("Release(WHeader) should do nothing (drag handle, not a toggle)")
+	}
+	if u.Collapsed() || u.H != 340 {
+		t.Errorf("header click changed the collapse state: collapsed=%v H=%d", u.Collapsed(), u.H)
+	}
 }
 
-// TestHitTestHeader ensures the whole header strip is clickable and acts as
-// the collapse toggle, and that non-header regions stay on their widgets.
+// TestHitTestHeader ensures the whole header strip hit-tests as the drag
+// handle (WHeader), that clicking it no longer toggles the history, and that
+// the +/- toggle button is its own widget that does toggle.
 func TestHitTestHeader(t *testing.T) {
 	u := NewUI(380, 520)
 	if wd := u.HitTest(10, headerH/2); wd != WHeader {
 		t.Errorf("header hit: got %v want WHeader", wd)
 	}
-	// Simulate a click (press + release on the header) to expand.
+	// A header click does nothing now (no collapse change).
 	u.Press(u.HitTest(10, headerH/2))
-	if !u.Release(u.HitTest(10, headerH/2)) {
-		t.Fatal("header click should toggle the collapse state")
+	if u.Release(u.HitTest(10, headerH/2)) {
+		t.Fatal("header click should not toggle anything")
+	}
+	if !u.Collapsed() {
+		t.Fatal("header click must not expand the conversation")
+	}
+	// The toggle button hit-tests as WToggle and toggles.
+	tr := u.toggleRect()
+	if wd := u.HitTest(tr.Min.X+2, headerH/2); wd != WToggle {
+		t.Errorf("toggle button hit: got %v want WToggle", wd)
+	}
+	u.Press(WToggle)
+	if !u.Release(WToggle) {
+		t.Fatal("toggle button click should expand the conversation")
 	}
 	if wd := u.HitTest(10, headerH+10); wd != WMessages {
 		t.Errorf("message area hit: got %v want WMessages", wd)
@@ -166,11 +189,16 @@ func TestCloseButton(t *testing.T) {
 		t.Fatal("Release(WClose) should set the close request")
 	}
 
-	// The collapse toggle must never request a close.
+	// The history toggle must never request a close, and a plain header
+	// click does nothing at all now.
 	u2 := NewUI(380, 520)
+	u2.Press(WToggle)
+	if !u2.Release(WToggle) || u2.WantClose() {
+		t.Fatal("toggle button should resize but not request a close")
+	}
 	u2.Press(WHeader)
-	if !u2.Release(WHeader) || u2.WantClose() {
-		t.Fatal("header toggle should resize but not request a close")
+	if u2.Release(WHeader) || u2.WantClose() {
+		t.Fatal("plain header click should do nothing and never request a close")
 	}
 }
 
@@ -225,23 +253,28 @@ func TestHaiyaButton(t *testing.T) {
 		t.Fatal("SetPetRunning(false) did not stick")
 	}
 
-	// One-shot: the flag was consumed by the WantPet() read above. A later
-	// plain title-bar click must not re-fire the launch/quit action - the
-	// stale flag used to poof the running pet whenever the header was
-	// clicked to collapse/expand.
+	// One-shot: the flag was consumed by the WantPet() read above. No later
+	// click - toggle button or plain title bar - may re-fire the launch/quit
+	// action; the stale flag used to poof the running pet whenever the
+	// header was clicked to collapse/expand.
+	u.Press(WToggle)
+	if !u.Release(WToggle) || u.WantPet() {
+		t.Fatal("toggle click after a consumed Haiya click must not re-fire the pet action")
+	}
 	u.Press(WHeader)
-	if !u.Release(WHeader) || u.WantPet() {
-		t.Fatal("header toggle after a consumed Haiya click must not re-fire the pet action")
+	if u.Release(WHeader) || u.WantPet() {
+		t.Fatal("header click after a consumed Haiya click must not re-fire the pet action")
 	}
 
-	// The header area immediately around the button still toggles collapse.
+	// The header area immediately around the button still hit-tests as the
+	// drag handle, and clicking it does nothing (no toggle, no pet request).
 	u2 := NewUI(380, 520)
 	if u2.HitTest(u2.haiyaRect().Min.X-8, headerH/2) != WHeader {
-		t.Error("left of the Haiya button should fall through to WHeader (toggle)")
+		t.Error("left of the Haiya button should fall through to WHeader (drag handle)")
 	}
 	u2.Press(WHeader)
-	if !u2.Release(WHeader) || u2.WantPet() {
-		t.Fatal("plain header toggle should resize but not request a pet launch")
+	if u2.Release(WHeader) || u2.WantPet() {
+		t.Fatal("plain header click should do nothing and never request a pet launch")
 	}
 }
 
@@ -265,13 +298,13 @@ func TestAboutModal(t *testing.T) {
 		}
 	}
 	// Press+release opens the modal; like Settings it expands the window to
-	// fit the panel, so start from an expanded UI to assert collapse state
-	// is untouched.
-	u.Press(WHeader)
-	u.Release(WHeader)
+	// fit the panel, so start from an expanded UI (via the history toggle
+	// button) to assert collapse state is untouched.
+	u.Press(WToggle)
+	u.Release(WToggle)
 	wasCollapsed := u.Collapsed()
 	if wasCollapsed {
-		t.Fatal("header click should expand the fresh UI")
+		t.Fatal("toggle click should expand the fresh UI")
 	}
 	u.Press(WAbout)
 	u.Release(WAbout)
@@ -448,39 +481,46 @@ func TestSettingsGearHitTest(t *testing.T) {
 	}
 }
 
-// TestSettingsOpenCancel verifies the gear opens the modal (expanding a
-// collapsed window to fit it) and CANCEL closes it, restoring the collapse
-// state, without touching the committed age.
+// TestSettingsOpenCancel verifies the gear opens the modal (growing a
+// collapsed window to fit it while the history list stays hidden) and CANCEL
+// closes it, restoring the window height, without touching the committed age.
 func TestSettingsOpenCancel(t *testing.T) {
 	u := NewUI(380, 520)
 	u.age = 9
+	// NewUI leaves H=520; collapse to the real startup size (header+input
+	// only), exactly like main.go opens the window.
+	u.collapsed = true
+	u.H = headerH + inputH
 
-	// Open from the collapsed startup state.
+	// Open from the collapsed startup state: the window grows to fit the
+	// panel, but the conversation history must stay collapsed (the modal
+	// just overlays the prompt-only view).
 	u.Press(WSettings)
 	if !u.Release(WSettings) {
 		t.Fatal("Release(WSettings) from collapsed should report a resize")
 	}
-	if !u.settingsOpen || u.collapsed {
-		t.Fatalf("settings open=%v collapsed=%v, want true/false",
+	if !u.settingsOpen || !u.collapsed {
+		t.Fatalf("settings open=%v collapsed=%v, want true/true (history stays hidden)",
 			u.settingsOpen, u.collapsed)
 	}
 	if u.ageDraft != 9 {
 		t.Errorf("ageDraft: got %d want the committed age 9", u.ageDraft)
 	}
-	if u.H != 520 {
-		t.Errorf("expanded height: got %d want 520", u.H)
+	if u.H != minSettingsH {
+		t.Errorf("modal window height: got %d want %d", u.H, minSettingsH)
 	}
 
-	// The modal absorbs the whole window: a point over the message area is
-	// the backdrop now, not a message click.
+	// The modal absorbs the whole window: a point over the (hidden) history
+	// area is the backdrop now, not a message click.
 	if got := u.HitTest(10, 300); got != WModal {
 		t.Errorf("hit over the backdrop: got %v want WModal", got)
 	}
 
-	// Cancel: modal closes, window collapses back, age unchanged.
+	// Cancel: modal closes, window shrinks back to the collapsed height,
+	// age unchanged.
 	u.Press(WCancel)
 	if !u.Release(WCancel) {
-		t.Fatal("Release(WCancel) should report the collapse resize")
+		t.Fatal("Release(WCancel) should report the height restore")
 	}
 	if u.settingsOpen || !u.collapsed || u.H != headerH+inputH {
 		t.Fatalf("after cancel: open=%v collapsed=%v H=%d",
@@ -645,6 +685,71 @@ func TestSettingsMinHeightRestore(t *testing.T) {
 	}
 	if u.H != 280 {
 		t.Errorf("height after close: got %d want 280", u.H)
+	}
+}
+
+// TestModalPanelsStayFullSize is the regression guard for the two modal rules
+// that used to fight each other: the Settings and About panels must always
+// render at their full designed size (never squeezed into the short collapsed
+// window, which spilled their rows), and opening them must never change
+// whether the conversation history is shown. The window itself may grow, but
+// only in height, and only while the modal is open.
+func TestModalPanelsStayFullSize(t *testing.T) {
+	// The short window main.go starts with: header + prompt box only.
+	collapsedH := headerH + inputH
+
+	check := func(name string, openM, closeM func(*UI) bool,
+		panel func(*UI) image.Rectangle, wantW, wantH, wantWinH int) {
+		t.Helper()
+		u := NewUI(380, 520)
+		u.collapsed = true // history hidden, exactly like startup
+		u.H = collapsedH
+
+		if !openM(u) {
+			t.Errorf("%s: opening from a short window should report a resize", name)
+		}
+		if u.H != wantWinH {
+			t.Errorf("%s: window height during modal: got %d want %d", name, u.H, wantWinH)
+		}
+		if !u.collapsed {
+			t.Errorf("%s: opening must not reveal the history (collapsed became false)", name)
+		}
+		if p := panel(u); p.Dx() != wantW || p.Dy() != wantH {
+			t.Errorf("%s: panel %dx%d, want the full %dx%d",
+				name, p.Dx(), p.Dy(), wantW, wantH)
+		}
+		if !closeM(u) {
+			t.Errorf("%s: closing should report the height restore", name)
+		}
+		if u.H != collapsedH {
+			t.Errorf("%s: height after close: got %d want %d", name, u.H, collapsedH)
+		}
+		if !u.collapsed {
+			t.Errorf("%s: closing must leave the history hidden", name)
+		}
+	}
+
+	check("settings", func(u *UI) bool { return u.openSettings() }, func(u *UI) bool { return u.closeSettings() },
+		func(u *UI) image.Rectangle { return u.modalPanel() }, panelW, panelH, minSettingsH)
+	check("about", func(u *UI) bool { return u.openAbout() }, func(u *UI) bool { return u.closeAbout() },
+		func(u *UI) image.Rectangle { return u.aboutPanel() }, aboutPanelW, aboutPanelH, minAboutH)
+
+	// With the history already expanded, the window still grows for the panel;
+	// the expanded state (and therefore the visible history) is untouched.
+	u := NewUI(380, 520)
+	u.collapsed = false
+	u.H = 300 // a short expanded window
+	if !u.openSettings() {
+		t.Fatal("settings in a short expanded window should grow it")
+	}
+	if u.collapsed {
+		t.Error("settings grown from an expanded window must not collapse it")
+	}
+	if p := u.modalPanel(); p.Dx() != panelW || p.Dy() != panelH {
+		t.Errorf("expanded settings panel %dx%d, want %dx%d", p.Dx(), p.Dy(), panelW, panelH)
+	}
+	if !u.closeSettings() || u.H != 300 || u.collapsed {
+		t.Errorf("after close: H=%d collapsed=%v, want 300/false", u.H, u.collapsed)
 	}
 }
 

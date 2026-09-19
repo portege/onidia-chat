@@ -618,7 +618,7 @@ func main() {
 					switch wd {
 					case WInput, WName:
 						win.SetCursor(win.cursorText)
-					case WButton, WHeader, WClose, WHaiya, WSettings, WAbout,
+					case WButton, WHeader, WClose, WHaiya, WSettings, WAbout, WToggle,
 						WAboutOK, WCopy,
 						WDrop, WDropFrom, WDropTo, WMute, WOption, WSave, WCancel:
 						win.SetCursor(win.cursorHand)

@@ -28,8 +28,9 @@ const (
 	WInput
 	WButton
 	WClose
-	WHaiya // header "Haiya!" button: launches the onidia pet application
-	WAbout // header "About" button: opens the About modal
+	WHaiya  // header "Haiya!" button: launches the onidia pet application
+	WAbout  // header "About" button: opens the About modal
+	WToggle // header +/- button: shows/hides the conversation history
 
 	// Settings modal (see drawSettings): the header's gear button plus the
 	// widgets that live inside the modal.
@@ -241,7 +242,6 @@ type UI struct {
 	busyFromMinDraft  int       // busy start minute picked in the modal (0/15/30/45)
 	busyToMinDraft    int       // busy end minute picked in the modal (0/15/30/45)
 	muteDraft         bool      // mute-speech checkbox in the modal; committed on SAVE
-	wasCollapsed      bool      // collapse state when the modal opened
 	prevH             int       // window height before the modal forced minSettingsH
 	name              string    // committed character name ("" = not set yet)
 	age               int       // committed character age (0 = not set yet)
@@ -327,6 +327,15 @@ func (u *UI) settingsRect() image.Rectangle {
 	return image.Rect(x1-hdrBtn, y, x1, y+hdrBtn)
 }
 
+// toggleRect is the header's history show/hide button (+/-, left of the
+// settings gear). It is the only way to expand or collapse the conversation
+// list - a plain title-bar click just drags the window.
+func (u *UI) toggleRect() image.Rectangle {
+	x1 := u.settingsRect().Min.X - btnGap
+	y := (headerH - hdrBtn) / 2
+	return image.Rect(x1-hdrBtn, y, x1, y+hdrBtn)
+}
+
 // haiyaLabel is the text on the header button that launches the onidia pet.
 const haiyaLabel = "Haiya!"
 
@@ -345,13 +354,26 @@ func (u *UI) haiyaRect() image.Rectangle {
 	return image.Rect(x1, y, x1+w, y+h)
 }
 
-// modalPanel is the centred settings dialog rectangle.
+// modalPanel is the centred settings dialog rectangle, clamped to the current
+// window. Opening the modal grows the window to minSettingsH (see
+// openSettings) so the full panelH fits; the clamp only comes into play if the
+// window is somehow smaller while the modal is open.
 func (u *UI) modalPanel() image.Rectangle {
+	ph := min(panelH, u.H-modalPad)
 	pw := min(panelW, u.W-2*modalPad)
-	return image.Rect((u.W-pw)/2, (u.H-panelH)/2, (u.W+pw)/2, (u.H+panelH)/2)
+	return image.Rect((u.W-pw)/2, (u.H-ph)/2, (u.W+pw)/2, (u.H+ph)/2)
 }
 
-// nameRect is the character-name text field, the first row of the panel.
+// aboutPanel is the centred About dialog rectangle, likewise clamped.
+func (u *UI) aboutPanel() image.Rectangle {
+	ph := min(aboutPanelH, u.H-modalPad)
+	pw := min(aboutPanelW, u.W-2*modalPad)
+	return image.Rect((u.W-pw)/2, (u.H-ph)/2, (u.W+pw)/2, (u.H+ph)/2)
+}
+
+// nameRect is the editable character-name field: full panel width, directly
+// below the NAME label (a 14px label gap, same as the age/sleep/busy rows) and
+// above the age dropdown, with the same height as the other boxes (dropH).
 func (u *UI) nameRect() image.Rectangle {
 	p := u.modalPanel()
 	return image.Rect(p.Min.X+modalPad, p.Min.Y+66, p.Max.X-modalPad, p.Min.Y+66+dropH)
@@ -532,12 +554,6 @@ func (u *UI) modalButtons() (cancel, save image.Rectangle) {
 		image.Rect(sx+modalBtnW+btnGap, by, sx+total, by+btnH)
 }
 
-// aboutPanel is the centred About dialog rectangle.
-func (u *UI) aboutPanel() image.Rectangle {
-	pw := min(aboutPanelW, u.W-2*modalPad)
-	return image.Rect((u.W-pw)/2, (u.H-aboutPanelH)/2, (u.W+pw)/2, (u.H+aboutPanelH)/2)
-}
-
 // aboutOKRect is the About modal's single OK button, centred in the panel foot.
 func (u *UI) aboutOKRect() image.Rectangle {
 	p := u.aboutPanel()
@@ -633,6 +649,9 @@ func (u *UI) HitTest(x, y int) Widget {
 		if inRect(x, y, u.settingsRect()) {
 			return WSettings
 		}
+		if inRect(x, y, u.toggleRect()) {
+			return WToggle
+		}
 		if inRect(x, y, u.haiyaRect()) {
 			return WHaiya
 		}
@@ -659,19 +678,15 @@ func (u *UI) HitTest(x, y int) Widget {
 
 // State changes ------------------------------------------------------------
 
-// Resize updates the window size and re-clamps the scroll position.
+// Resize updates the window size and re-clamps the scroll position. While a
+// modal is open the height also covers its panel, so a resize cannot shrink
+// the window until the panel no longer fits.
 func (u *UI) Resize(w, h int) {
 	minH := 260
 	if u.collapsed {
 		minH = headerH + inputH
 	}
 	u.W, u.H = max(w, 200), max(h, minH)
-	if u.settingsOpen {
-		u.H = max(u.H, minSettingsH) // the modal needs the taller window
-	}
-	if u.aboutOpen {
-		u.H = max(u.H, minAboutH) // the About panel needs the taller window
-	}
 	if !u.collapsed {
 		u.expandedH = u.H // remember the size to restore after collapsing
 	}
@@ -832,8 +847,9 @@ func (u *UI) ScrollBy(dy int) { u.scroll = clamp(u.scroll+dy, 0, u.maxScroll()) 
 func (u *UI) Press(w Widget) { u.press = w }
 
 // Release completes a click; the action fires only when press+release hit
-// the same widget. Returns true when the header was clicked (collapse state
-// toggled), so the caller can resize the window to match the new size.
+// the same widget. Returns true when the window's height changed (the
+// history show/hide button or a modal needing a taller window), so the
+// caller can resize the X window to match.
 func (u *UI) Release(w Widget) bool {
 	if u.settingsOpen {
 		// Clicking anywhere else in the modal moves focus off the name
@@ -956,13 +972,15 @@ func (u *UI) Release(w Widget) bool {
 				return u.closeAbout() // a backdrop click dismisses About
 			}
 			u.openDrop = dropNone // a click outside the widgets closes the list
-		case WHeader:
+		case WToggle:
+			// The history show/hide button: the only collapse toggle -
+			// a plain title-bar click just drags the window. Collapsing
+			// keeps only the header + prompt box; expanding restores the
+			// last non-collapsed height.
 			if u.collapsed {
-				// Expand: restore the last non-collapsed height.
 				u.collapsed = false
 				u.H = max(u.expandedH, headerH+inputH)
 			} else {
-				// Collapse: only the header + prompt box remain.
 				u.expandedH = u.H
 				u.collapsed = true
 				u.H = headerH + inputH
@@ -1056,14 +1074,12 @@ func (u *UI) openSettings() bool {
 	}
 	u.busyToMinDraft = minuteIndex(u.busyToMin)
 	u.muteDraft = u.mute
-	u.wasCollapsed = u.collapsed
-	u.hover, u.press = WNone, WNone
+	// The modal keeps its full designed size, so the window grows in height
+	// when it is too short (prevH remembers the old height). collapsed is
+	// deliberately left alone: the history shows exactly what it showed
+	// before, and when it was collapsed the grown space is just the dim
+	// backdrop behind the panel (Render draws no messages while collapsed).
 	changed := false
-	if u.collapsed {
-		u.collapsed = false
-		u.H = max(u.expandedH, minSettingsH)
-		changed = true
-	}
 	if u.H < minSettingsH {
 		u.prevH = u.H
 		u.H = minSettingsH
@@ -1073,19 +1089,16 @@ func (u *UI) openSettings() bool {
 	return changed
 }
 
-// closeSettings hides the modal and restores the collapse state and window
-// height from before it opened. Returns true when the window must be resized.
+// closeSettings hides the modal and restores the window height from before it
+// opened. Returns true when the window must be resized.
 func (u *UI) closeSettings() bool {
 	u.settingsOpen = false
 	u.openDrop = dropNone
 	u.nameFocused = false
 	u.hover, u.press = WNone, WNone
+	u.scroll = clamp(u.scroll, 0, u.maxScroll())
 	resized := false
-	if u.wasCollapsed && !u.collapsed {
-		u.collapsed = true
-		u.H = headerH + inputH
-		resized = true
-	} else if u.prevH > 0 && !u.collapsed {
+	if u.prevH > 0 && u.H != u.prevH {
 		u.H = u.prevH
 		resized = true
 	}
@@ -1093,19 +1106,15 @@ func (u *UI) closeSettings() bool {
 	return resized
 }
 
-// openAbout shows the About modal (see drawAbout), expanding a collapsed
-// window and growing it to fit the panel. Returns true when the window must
-// be resized to match.
+// openAbout shows the About modal (see drawAbout). Like the settings modal it
+// keeps its full designed size: the window grows in height when the panel does
+// not fit (aboutPrevH remembers the old height), while collapsed is left alone
+// so the conversation history is never expanded - the modal just overlays
+// whatever was shown before it. Returns true when the window must be resized.
 func (u *UI) openAbout() bool {
 	u.aboutOpen = true
-	u.wasCollapsed = u.collapsed
 	u.hover, u.press = WNone, WNone
 	changed := false
-	if u.collapsed {
-		u.collapsed = false
-		u.H = max(u.expandedH, minAboutH)
-		changed = true
-	}
 	if u.H < minAboutH {
 		u.aboutPrevH = u.H
 		u.H = minAboutH
@@ -1114,17 +1123,13 @@ func (u *UI) openAbout() bool {
 	return changed
 }
 
-// closeAbout hides the About modal and restores the collapse state and window
-// height from before it opened. Returns true when the window must be resized.
+// closeAbout hides the About modal and restores the window height from before
+// it opened. Returns true when the window must be resized.
 func (u *UI) closeAbout() bool {
 	u.aboutOpen = false
 	u.hover, u.press = WNone, WNone
 	resized := false
-	if u.wasCollapsed && !u.collapsed {
-		u.collapsed = true
-		u.H = headerH + inputH
-		resized = true
-	} else if u.aboutPrevH > 0 && !u.collapsed {
+	if u.aboutPrevH > 0 && u.H != u.aboutPrevH {
 		u.H = u.aboutPrevH
 		resized = true
 	}
@@ -1529,17 +1534,28 @@ func (u *UI) drawHeader(frame *image.NRGBA) {
 	drawText(frame, ar.Min.X+(hdrBtn-textWidth("i", 1))/2,
 		ar.Min.Y+(hdrBtn-glyphH)/2, "i", 1, glyphCol)
 
-	// Toggle icon: + (collapsed) / - (expanded), left of the gear button.
+	// History toggle: a small square left of the gear button - the only
+	// way to expand/collapse the conversation list (+ = hidden, - = shown).
+	tr := u.toggleRect()
+	switch {
+	case u.press == WToggle:
+		fill, glyphCol = colPlum, colWhite
+	case u.hover == WToggle:
+		fill, glyphCol = colHairLight, colPlum
+	default:
+		fill, glyphCol = colTealShade, colWhite
+	}
+	drawRoundRect(frame, tr.Min.X, tr.Min.Y, hdrBtn, hdrBtn, 8, colTealShade)
+	drawRoundRect(frame, tr.Min.X+2, tr.Min.Y+2, hdrBtn-4, hdrBtn-4, 6, fill)
 	icon := "+"
 	if !u.collapsed {
 		icon = "-"
 	}
-	iconW := textWidth(icon, 1)
-	iconX := sr.Min.X - btnGap - iconW
-	drawText(frame, iconX, (headerH-glyphH)/2, icon, 1, colWhite)
+	drawText(frame, tr.Min.X+(hdrBtn-textWidth(icon, 1))/2,
+		tr.Min.Y+(hdrBtn-glyphH)/2, icon, 1, glyphCol)
 
 	sub := "AI HELPER"
-	drawText(frame, iconX-padX-textWidth(sub, 1), (headerH-glyphH)/2, sub, 1,
+	drawText(frame, tr.Min.X-padX-textWidth(sub, 1), (headerH-glyphH)/2, sub, 1,
 		color.RGBA{255, 255, 255, 190})
 }
 
