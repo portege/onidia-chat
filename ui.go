@@ -48,6 +48,7 @@ const (
 	WDropToBM   // BUSY TO minute dropdown 0/15/30/45
 	WDropBad    // dropdown whose selected value is invalid (for validation prompt)
 	WMute       // mute-speech checkbox row
+	WDemo       // demo-mode checkbox row (below mute)
 	WGirl       // gender picker: ONIDIA button (Haiya! launches the girl)
 	WBoy        // gender picker: KAMA button (Haiya! launches the boy)
 	WOption     // one row of an open dropdown list
@@ -143,15 +144,16 @@ const (
 	panelW    = 340 // modal panel width (clamped to the window; wide enough
 	// that the four sleep-time dropdowns fit their labels, chevrons and
 	// the expanded lists' dot + text)
-	panelH = 464 // modal panel height (name + age + sleep rows + busy rows +
-	// character picker + mute checkbox + buttons)
+	panelH = 504 // modal panel height (name + age + sleep rows + busy rows +
+	// character picker + mute checkbox + demo-mode checkbox + buttons)
 	dropH        = 32  // dropdown box height
 	optH         = 24  // dropdown list row height
 	genderRowY   = 314 // CHARACTER picker row top inside the panel (below busy time)
-	minSettingsH = 534 // window height forced while the modal is open
+	minSettingsH = 574 // window height forced while the modal is open
 
-	checkSide = 20  // mute-checkbox square side
-	muteRowY  = 374 // mute-checkbox row top inside the panel (below the character picker)
+	checkSide = 20  // checkbox square side (mute / demo mode)
+	muteRowY  = 370 // mute-checkbox row top inside the panel (below the character picker)
+	demoRowY  = 398 // demo-mode checkbox row top inside the panel (below mute)
 
 	// About modal layout (drawAbout): a small informational panel shown by
 	// the header's About button.
@@ -245,6 +247,9 @@ type UI struct {
 	busyFromMinDraft  int       // busy start minute picked in the modal (0/15/30/45)
 	busyToMinDraft    int       // busy end minute picked in the modal (0/15/30/45)
 	muteDraft         bool      // mute-speech checkbox in the modal; committed on SAVE
+	demo              bool      // committed demo mode: true = pet roams & chatters (default off)
+	demoDraft         bool      // demo-mode checkbox in the modal; committed on SAVE
+	wantPetRestart    bool      // SAVE changed demo mode while the pet runs: restart it
 	gender            string    // committed pet gender: "girl" (Onidia) or "boy" (Kama)
 	genderDraft       string    // gender picked in the modal; committed on SAVE
 	prevH             int       // window height before the modal forced minSettingsH
@@ -474,6 +479,15 @@ func (u *UI) muteRect() image.Rectangle {
 		p.Min.X+modalPad+w, p.Min.Y+muteRowY+checkSide)
 }
 
+// demoRect is the demo-mode checkbox row: the box plus its label, so clicking
+// either toggles the draft. It sits directly below the MUTE SPEECH row.
+func (u *UI) demoRect() image.Rectangle {
+	p := u.modalPanel()
+	w := checkSide + 10 + textWidth("DEMO MODE", 1)
+	return image.Rect(p.Min.X+modalPad, p.Min.Y+demoRowY,
+		p.Min.X+modalPad+w, p.Min.Y+demoRowY+checkSide)
+}
+
 // genderRects returns the ONIDIA and KAMA picker buttons: a centred pair on
 // their own row below the busy time (the MUTE SPEECH checkbox sits directly
 // below them), sized like the dropdown boxes and laid out like the modal's
@@ -655,6 +669,9 @@ func (u *UI) HitTest(x, y int) Widget {
 		}
 		if r := u.muteRect(); inRect(x, y, r) {
 			return WMute
+		}
+		if r := u.demoRect(); inRect(x, y, r) {
+			return WDemo
 		}
 		if girl, boy := u.genderRects(); inRect(x, y, girl) {
 			return WGirl
@@ -930,6 +947,8 @@ func (u *UI) Release(w Widget) bool {
 			u.toggleDrop(dropBusyToM)
 		case WMute:
 			u.muteDraft = !u.muteDraft // commits on SAVE, like the drafts
+		case WDemo:
+			u.demoDraft = !u.demoDraft // commits on SAVE, like the drafts
 		case WGirl:
 			u.genderDraft = "girl" // commits on SAVE, like the drafts
 		case WBoy:
@@ -1049,6 +1068,23 @@ func (u *UI) WantPet() bool {
 	return true
 }
 
+// PetDemo reports whether the pet should run in demo mode (autonomous
+// roaming + unsolicited chatter) per the settings dialog's DEMO MODE
+// checkbox. False plants it at the screen edge, still reactive to app
+// speech and still idly blinking.
+func (u *UI) PetDemo() bool { return u.demo }
+
+// WantPetRestart reports whether SAVE changed the demo mode of a pet that is
+// currently running, and consumes the flag (one-shot): the main loop then
+// quits and relaunches the pet so the new mode takes effect immediately.
+func (u *UI) WantPetRestart() bool {
+	if !u.wantPetRestart {
+		return false
+	}
+	u.wantPetRestart = false
+	return true
+}
+
 // SetPetRunning records whether the onidia pet application is running; the
 // header button turns pink while it is, signalling that a click now quits it.
 func (u *UI) SetPetRunning(running bool) { u.petRunning = running }
@@ -1112,6 +1148,7 @@ func (u *UI) openSettings() bool {
 	}
 	u.busyToMinDraft = minuteIndex(u.busyToMin)
 	u.muteDraft = u.mute
+	u.demoDraft = u.demo
 	u.genderDraft = u.gender
 	// The modal keeps its full designed size, so the window grows in height
 	// when it is too short (prevH remembers the old height). collapsed is
@@ -1282,6 +1319,10 @@ func (u *UI) saveSettings() {
 		u.saveErr = err.Error()
 		return
 	}
+	if err := SetConfigValue(path, "character", "demo-mode", strconv.FormatBool(u.demoDraft)); err != nil {
+		u.saveErr = err.Error()
+		return
+	}
 	if err := SetConfigValue(path, "character", "character-gender", u.genderDraft); err != nil {
 		u.saveErr = err.Error()
 		return
@@ -1306,6 +1347,13 @@ func (u *UI) saveSettings() {
 	u.busyFrom, u.busyTo = u.busyFromDraft, u.busyToDraft
 	u.busyFromMin, u.busyToMin = sleepMinutes[u.busyFromMinDraft], sleepMinutes[u.busyToMinDraft]
 	u.mute = u.muteDraft
+	// A demo-mode flip must reach a running pet immediately, so flag a
+	// restart (the main loop quits + relaunches it) — the checkbox would
+	// otherwise only take effect on the next manual Haiya! click.
+	if u.demo != u.demoDraft && u.petRunning {
+		u.wantPetRestart = true
+	}
+	u.demo = u.demoDraft
 	u.gender = u.genderDraft
 	if u.Bot != nil {
 		if name != "" {
@@ -1687,6 +1735,8 @@ func (u *UI) drawSettings(frame *image.NRGBA) {
 
 	u.drawMuteRow(frame)
 
+	u.drawDemoRow(frame)
+
 	u.drawGenderRow(frame)
 
 	u.drawModalButtons(frame)
@@ -1862,26 +1912,38 @@ func (u *UI) drawMinuteList(frame *image.NRGBA) {
 	}
 }
 
-// drawMuteRow paints the MUTE SPEECH checkbox: a rounded square that is
-// white while unchecked and teal with a white tick while checked, next to
-// its label. Hovering tints the border like the other modal controls.
+// drawMuteRow paints the MUTE SPEECH checkbox and drawDemoRow the DEMO MODE
+// one directly below it; both share drawCheckRow.
 func (u *UI) drawMuteRow(frame *image.NRGBA) {
-	r := u.muteRect()
+	u.drawCheckRow(frame, u.muteRect(), WMute, u.muteDraft, "MUTE SPEECH")
+}
+
+// drawDemoRow paints the DEMO MODE checkbox: checked means the pet roams and
+// chatters on its own; unchecked plants it at the screen edge (still reactive
+// and still idly blinking).
+func (u *UI) drawDemoRow(frame *image.NRGBA) {
+	u.drawCheckRow(frame, u.demoRect(), WDemo, u.demoDraft, "DEMO MODE")
+}
+
+// drawCheckRow paints one labelled checkbox: a rounded square that is white
+// while unchecked and teal with a white tick while checked, next to its label.
+// Hovering tints the border like the other modal controls.
+func (u *UI) drawCheckRow(frame *image.NRGBA, r image.Rectangle, w Widget, on bool, label string) {
 	border := colPlum
-	if u.hover == WMute || u.press == WMute {
+	if u.hover == w || u.press == w {
 		border = colHeader
 	}
 	fill := colWhite
-	if u.muteDraft {
+	if on {
 		fill = colHeader
 	}
 	drawRoundRect(frame, r.Min.X, r.Min.Y, checkSide, checkSide, 6, border)
 	drawRoundRect(frame, r.Min.X+2, r.Min.Y+2, checkSide-4, checkSide-4, 4, fill)
-	if u.muteDraft {
+	if on {
 		drawCheck(frame, r.Min.X, r.Min.Y, colWhite)
 	}
 	drawText(frame, r.Min.X+checkSide+10, r.Min.Y+(checkSide-glyphH)/2,
-		"MUTE SPEECH", 1, colMuted)
+		label, 1, colMuted)
 }
 
 // drawCheck paints a chunky tick inside a checkSide-sized box at (x,y): two

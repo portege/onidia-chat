@@ -149,13 +149,19 @@ func ensureOnidiaFresh(bin string) error {
 }
 
 // petLaunchArgs builds the launch arguments for the onidia binary: the
-// -character flag selects the sprite (Kama for a boy, Onidia for a girl).
-// Onidia is the binary's own default, so it launches flagless.
-func petLaunchArgs(character string) []string {
-	if character == "" || character == "onidia" {
-		return nil
+// -character flag selects the sprite (Kama for a boy, Onidia for a girl) and
+// -demo picks the autonomous-behavior mode. Both flags' defaults on the pet
+// side (onidia, demo off) match this app's defaults, so a default launch is
+// flagless.
+func petLaunchArgs(character string, demo bool) []string {
+	var args []string
+	if character != "" && character != "onidia" {
+		args = append(args, "-character", character)
 	}
-	return []string{"-character", character}
+	if demo {
+		args = append(args, "-demo=true")
+	}
+	return args
 }
 
 // normalizeGender maps any configured gender spelling onto "boy" or "girl";
@@ -173,9 +179,13 @@ func normalizeGender(v string) string {
 // it detached from the chat-app process (new session, no shared stdout) so it
 // keeps running when chat-app exits. character picks the sprite: "kama" for
 // the settings dialog's BOY gender, "onidia" (the binary's own default, so
-// no flag is passed) for GIRL. The started process is remembered for
-// QuitPet's SIGTERM fallback. Returns an error when nothing was started.
-func LaunchPet(character string) error {
+// no flag is passed) for GIRL. demo enables the pet's autonomous mode
+// (random roaming + unsolicited chatter); demo=false keeps it planted — it
+// still enters with the launch flourish and walks to its parking spot, but
+// then stays there instead of wandering, still reactive and still idly
+// blinking. The started process is remembered for QuitPet's SIGTERM fallback.
+// Returns an error when nothing was started.
+func LaunchPet(character string, demo bool) error {
 	bin := onidiaPath()
 	if bin == "" {
 		return errors.New("onidia binary not found - looked for onidia/onidia, desktop-pet/desktop-pet")
@@ -183,7 +193,7 @@ func LaunchPet(character string) error {
 	if err := ensureOnidiaFresh(bin); err != nil {
 		log.Printf("pet: refresh build skipped (%v) - launching the existing binary", err)
 	}
-	cmd := exec.Command(bin, petLaunchArgs(character)...)
+	cmd := exec.Command(bin, petLaunchArgs(character, demo)...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from chat-app

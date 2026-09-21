@@ -87,3 +87,37 @@ tts = on
 # set your own here or via $TYPECAST_API_KEY.
 tts-key = <TYPECAST_API_KEY>
 tts-voice = tc_6359e7f6467f9e240b68292c
+
+[character]
+# Everything in this section is owned by the settings (gear) dialog: SAVE
+# rewrites these keys in place. Sections are not enforced by the parser, but
+# keeping the dialog-managed keys together makes them easy to find.
+
+# Name and age of the chat character (NAME / AGE rows of the dialog). The
+# stored persona below has its "your name is ..." sentence rewritten to match.
+character-name = Onidia
+character-age = 7
+
+# Pet character picked by the CHARACTER row's buttons (ONIDIA = the chibi
+# girl, KAMA = the boy in the red hoodie). A running pet keeps its character
+# until it is quit with the pink Haiya! button and launched again.
+character-gender = girl
+
+# Sleep and busy windows, "HH:MM-HH:MM", set with the FROM/TO dropdowns.
+sleep-time = 22:00-07:00
+busy-time = 09:00-17:00
+
+# Mute checkbox: while true replies are shown as bubbles but never spoken.
+mute = false
+
+# Demo mode checkbox (the row directly below MUTE SPEECH): OFF (the default)
+# keeps the desktop pet "planted" - it never wanders and never starts talking
+# on its own, though it still blinks, idles and answers what you send it.
+# Either way the pet enters with its launch flourish (parachute /
+# poof-in) and then walks - never running - to its parking spot three character widths in from the
+# right edge, where its speech bubble is not clipped by the screen; planted
+# mode then stays there. ON restores the classic demo behavior: the pet roams
+# the screen and chatters randomly. Saving the dialog rewrites this key in
+# place and restarts the pet so the mode takes effect immediately.
+demo-mode = false
+

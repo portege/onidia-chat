@@ -384,6 +384,7 @@ func main() {
 	}
 	petGoneCh := make(chan struct{}, 1)
 	var petQuitting atomic.Bool
+	var petRestartPending atomic.Bool
 	petTick := time.NewTicker(2 * time.Second)
 	defer petTick.Stop()
 	// Haiya! click: launch when teal, gracefully quit (poof-out) when pink.
@@ -396,7 +397,7 @@ func main() {
 			QuitPet(petCmdPath, petGoneCh)
 			return
 		}
-		if err := LaunchPet(ui.PetCharacter()); err != nil {
+		if err := LaunchPet(ui.PetCharacter(), ui.PetDemo()); err != nil {
 			log.Printf("pet: %v", err)
 			return
 		}
@@ -440,7 +441,12 @@ func main() {
 	}
 	if cfg != nil && cfg.Mute {
 		ui.mute = true // the dialog's MUTE SPEECH checkbox starts checked
-		}
+	}
+	// Demo mode defaults to OFF (planted pet): only an explicit
+	// demo-mode = true in the INI turns autonomous roaming/chatter on.
+	if cfg != nil {
+		ui.demo = cfg.DemoMode
+	}
 	// Build the selected provider.
 	var botProvider Provider
 	switch providerVal {
@@ -483,6 +489,11 @@ func main() {
 	} else {
 		log.Printf("gemini: model=%s", modelVal)
 	}
+	demoState := "off (planted)"
+	if ui.PetDemo() {
+		demoState = "on (roams + chatters)"
+	}
+	log.Printf("pet: demo mode %s", demoState)
 	log.Printf("images: source=%s", imgSource)
 	if pipe == "" {
 		log.Printf("pet: say-pipe forwarding disabled")
@@ -602,6 +613,17 @@ func main() {
 					if ui.WantPet() { // header "Haiya!" button clicked
 						onHaiya() // launch when teal, poof-out quit when pink
 					}
+					// Settings SAVE flipped DEMO MODE while a pet is
+					// running: quit it now and relaunch the new mode as
+					// soon as the old process is confirmed gone (see the
+					// petGoneCh case), so the toggle takes effect at once
+					// instead of waiting for the next manual Haiya! click.
+					if ui.WantPetRestart() {
+						log.Printf("pet: demo mode changed - restarting the pet")
+						petRestartPending.Store(true)
+						petQuitting.Store(true)
+						QuitPet(petCmdPath, petGoneCh)
+					}
 					if ui.WantCopy() { // a message's COPY pill was clicked
 						if err := win.SetClipboard(ui.TakeCopiedText()); err != nil {
 							log.Printf("clipboard: %v", err)
@@ -704,6 +726,16 @@ func main() {
 			petQuitting.Store(false)
 			ui.SetPetRunning(false)
 			dirty = true
+			// A quit we made only to pick up a demo-mode flip: bring the
+			// pet straight back with the new -demo setting.
+			if petRestartPending.CompareAndSwap(true, false) {
+				if err := LaunchPet(ui.PetCharacter(), ui.PetDemo()); err != nil {
+					log.Printf("pet: restart: %v", err)
+				} else {
+					ui.SetPetRunning(true)
+					dirty = true
+				}
+			}
 		}
 
 		if dirty {

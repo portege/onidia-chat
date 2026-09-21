@@ -164,6 +164,19 @@ image-source = pixabay
 # dialog rewrites this key in place.
 # mute = false
 #
+# Demo-mode checkbox from the same dialog (the row directly below MUTE
+# SPEECH): off (the default) keeps the desktop pet "planted" - it never
+# wanders and never starts talking on its own, though it still blinks,
+# idles and answers what you send it. Either way the pet enters with its
+# launch flourish (parachute / poof-in) and then walks - never running - to its
+# parking spot three character widths in from the right edge, where its
+# speech bubble is not clipped by the screen; planted mode then stays
+# there. On restores the classic demo behavior: the pet roams the screen
+# and chatters randomly. Saving the dialog rewrites this key in place, and
+# a pet that is already running is quit and relaunched automatically so the
+# new mode takes effect immediately.
+# demo-mode = false
+#
 # Pet character from the same dialog: the CHARACTER row's buttons carry the
 # character names - ONIDIA (the chibi girl) or KAMA (the boy in the red
 # hoodie). Saving
@@ -313,8 +326,8 @@ Or without make: `go build -trimpath -ldflags="-s -w" -o chat-app .`
 | click **SEND** | submit (only enabled while the textarea has text) |
 | click textarea | focus it (border turns teal, caret blinks) |
 | click **+ / −** (header, left of ⚙) | show/hide the conversation history (starts collapsed) |
-| click **⚙ gear** (header, left of ✕) | open the settings dialog (character age 7-13, sleep window FROM/TO, busy window, CHARACTER picker — the buttons carry the character names: **ONIDIA** = Haiya! launches the girl, **KAMA** = the boy, MUTE SPEECH checkbox below it; SAVE writes `character-name`, `character-age`, `sleep-time`, `busy-time`, `mute` + `character-gender` to `chat-app.ini` and rewrites the stored persona's "your name is …" sentence with the name + age) |
-| in the dialog | type the character's name into NAME, click a dropdown to drop its list (hour lists scroll with the wheel), pick a value, pick **ONIDIA**/**KAMA** in the CHARACTER row for who the Haiya! button launches, tick/untick **MUTE SPEECH** to silence the text-to-speech voice, **SAVE** (or **Enter**); **CANCEL** / **Esc** discards |
+| click **⚙ gear** (header, left of ✕) | open the settings dialog (character age 7-13, sleep window FROM/TO, busy window, CHARACTER picker — the buttons carry the character names: **ONIDIA** = Haiya! launches the girl, **KAMA** = the boy, MUTE SPEECH and DEMO MODE checkboxes below it; SAVE writes `character-name`, `character-age`, `sleep-time`, `busy-time`, `mute`, `demo-mode` + `character-gender` to `chat-app.ini` and rewrites the stored persona's "your name is …" sentence with the name + age) |
+| in the dialog | type the character's name into NAME, click a dropdown to drop its list (hour lists scroll with the wheel), pick a value, pick **ONIDIA**/**KAMA** in the CHARACTER row for who the Haiya! button launches, tick/untick **MUTE SPEECH** to silence the text-to-speech voice, tick/untick **DEMO MODE** to switch the pet between roaming+chattering and standing still at the screen edge, **SAVE** (or **Enter**); **CANCEL** / **Esc** discards |
 | **drag** the header | move the window (`_NET_WM_MOVERESIZE`; the frame has no titlebar) |
 | click **✕** (header, far right) | quit the app |
 | **Alt+F4** | quit too (the WM delete protocol stays enabled) |

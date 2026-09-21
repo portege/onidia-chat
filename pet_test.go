@@ -74,16 +74,25 @@ func TestPetCmdPathFor(t *testing.T) {
 }
 
 // TestPetLaunchArgs checks the launch-argument mapping: the girl default
-// launches flagless (the binary's own default), a boy passes -character kama.
+// launches flagless (the binary's own default), a boy passes -character kama,
+// and only demo mode = true adds -demo=true (demo off is the binary default,
+// so it stays off the command line).
 func TestPetLaunchArgs(t *testing.T) {
-	if got := petLaunchArgs(""); len(got) != 0 {
-		t.Errorf("empty gender: args %v, want none", got)
+	if got := petLaunchArgs("", false); len(got) != 0 {
+		t.Errorf("empty gender, demo off: args %v, want none", got)
 	}
-	if got := petLaunchArgs("onidia"); len(got) != 0 {
-		t.Errorf("girl/onidia: args %v, want none (binary default)", got)
+	if got := petLaunchArgs("onidia", false); len(got) != 0 {
+		t.Errorf("girl/onidia, demo off: args %v, want none (binary default)", got)
 	}
-	if got := petLaunchArgs("kama"); len(got) != 2 || got[0] != "-character" || got[1] != "kama" {
-		t.Errorf("boy/kama: args %v, want [-character kama]", got)
+	if got := petLaunchArgs("kama", false); len(got) != 2 || got[0] != "-character" || got[1] != "kama" {
+		t.Errorf("boy/kama, demo off: args %v, want [-character kama]", got)
+	}
+	if got := petLaunchArgs("onidia", true); len(got) != 1 || got[0] != "-demo=true" {
+		t.Errorf("girl/onidia, demo on: args %v, want [-demo=true]", got)
+	}
+	if got := petLaunchArgs("kama", true); len(got) != 3 ||
+		got[0] != "-character" || got[1] != "kama" || got[2] != "-demo=true" {
+		t.Errorf("boy/kama, demo on: args %v, want [-character kama -demo=true]", got)
 	}
 }
 

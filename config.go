@@ -35,6 +35,7 @@ type Config struct {
 	TTSKey           string `ini:"tts-key"`             // Typecast API key
 	TTSVoice         string `ini:"tts-voice"`           // Typecast voice id
 	Mute             bool   `ini:"mute"`                // true = never speak replies (settings dialog checkbox)
+	DemoMode         bool   `ini:"demo-mode"`           // true = pet roams & chatters on its own (settings dialog checkbox; default off = planted)
 	Provider         string `ini:"provider"`            // "gemini" | "bedrock"
 	AWSProfile       string `ini:"aws-profile"`         // AWS shared profile name
 	AWSRegion        string `ini:"aws-region"`          // AWS region for Bedrock
@@ -159,6 +160,8 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.TTSVoice = val
 	case "mute":
 		cfg.Mute = parseBool(val)
+	case "demo-mode":
+		cfg.DemoMode = parseBool(val)
 	case "character-gender":
 		cfg.Gender = normalizeGender(val)
 	case "provider":

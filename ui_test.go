@@ -755,10 +755,12 @@ func TestModalPanelsStayFullSize(t *testing.T) {
 }
 
 // TestSettingsRenderSmoke verifies the modal renders over the conversation
-// without changing the frame size, with every dropdown state.
+// without changing the frame size, with every dropdown state. The window is
+// sized to minSettingsH so the modal needs no growth (the constant tracks the
+// panel height, so this stays true as the dialog gains rows).
 func TestSettingsRenderSmoke(t *testing.T) {
 	for _, open := range []int{dropNone, dropAge, dropFrom, dropTo, dropFromM, dropToM} {
-		u := NewUI(380, 560) // tall enough that the modal needs no window growth
+		u := NewUI(380, minSettingsH)
 		u.collapsed = false
 		u.openSettings()
 		u.openDrop = open
@@ -773,7 +775,7 @@ func TestSettingsRenderSmoke(t *testing.T) {
 			u.hover = WOption
 		}
 		frame := u.Render()
-		if frame.Bounds() != (image.Rect(0, 0, 380, 560)) {
+		if frame.Bounds() != (image.Rect(0, 0, 380, minSettingsH)) {
 			t.Fatalf("frame bounds %v with openDrop=%d", frame.Bounds(), open)
 		}
 		// The panel interior must be opaque: the backdrop dims the window,
@@ -1236,6 +1238,145 @@ func TestSettingsMuteCheckbox(t *testing.T) {
 	b, _ = os.ReadFile(path)
 	if !strings.Contains(string(b), "mute = false") {
 		t.Errorf("INI lacks the rewritten mute key:\n%s", b)
+	}
+}
+
+// TestSettingsDemoCheckbox verifies the DEMO MODE checkbox row (directly
+// below MUTE SPEECH): it hit-tests as WDemo, toggles the draft on click
+// (committing only on SAVE), re-seeds from the committed value when the
+// dialog reopens, SAVE persists "demo-mode" to the INI, and flipping it
+// while a pet is running flags the restart so the mode takes effect at
+// once.
+func TestSettingsDemoCheckbox(t *testing.T) {
+	path := writeTempINI(t, "[character]\ncharacter-age = 7\n")
+	u := NewUI(380, 520)
+	u.age = 7
+	u.savePath = path
+	u.collapsed = false
+	u.H = 520
+	u.openSettings()
+
+	// Layout sanity: the row lives below MUTE SPEECH and above the buttons.
+	dr, mr := u.demoRect(), u.muteRect()
+	cancel, _ := u.modalButtons()
+	if dr.Min.Y <= mr.Max.Y || dr.Max.Y >= cancel.Min.Y {
+		t.Fatalf("demoRect %v must sit between the mute row (%v) and the buttons", dr, mr)
+	}
+	if u.demoDraft || u.demo {
+		t.Fatal("demo mode should default to off (planted)")
+	}
+	if u.PetDemo() {
+		t.Fatal("demo mode should default to off (planted)")
+	}
+
+	// Click the checkbox: the draft toggles, nothing commits.
+	px, py := (dr.Min.X+dr.Max.X)/2, (dr.Min.Y+dr.Max.Y)/2
+	if w := u.HitTest(px, py); w != WDemo {
+		t.Fatalf("demo checkbox hit: got %v want WDemo", w)
+	}
+	u.Press(WDemo)
+	u.Release(WDemo)
+	if !u.demoDraft {
+		t.Fatal("click should check the demo draft")
+	}
+	if u.PetDemo() {
+		t.Fatal("nothing should commit before SAVE")
+	}
+
+	// SAVE: the INI gains demo-mode = true and the committed state flips.
+	_, save := u.modalButtons()
+	w := u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if u.settingsOpen {
+		t.Fatal("save should close the modal")
+	}
+	if !u.PetDemo() {
+		t.Error("PetDemo() should report true after saving the checked box")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "demo-mode = true") {
+		t.Errorf("INI lacks the saved demo-mode key:\n%s", b)
+	}
+	if !strings.Contains(string(b), "character-age = 7") {
+		t.Errorf("INI lost the age while saving demo mode:\n%s", b)
+	}
+
+	// Re-open: the draft re-seeds from the committed value.
+	u.openSettings()
+	if !u.demoDraft {
+		t.Fatal("reopen should seed the draft from the committed demo mode")
+	}
+
+	// Flipping it while the pet runs must schedule a restart, so the new
+	// mode reaches the running pet immediately instead of on the next
+	// manual Haiya! click.
+	u.SetPetRunning(true)
+	dr = u.demoRect()
+	px, py = (dr.Min.X+dr.Max.X)/2, (dr.Min.Y+dr.Max.Y)/2
+	u.Press(u.HitTest(px, py))
+	u.Release(u.HitTest(px, py))
+	if u.demoDraft {
+		t.Fatal("click should uncheck the seeded draft")
+	}
+	_, save = u.modalButtons()
+	w = u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if u.PetDemo() {
+		t.Error("PetDemo() should report false after unchecking and saving")
+	}
+	if !u.WantPetRestart() {
+		t.Error("a demo flip with a running pet should flag a restart")
+	}
+	if u.WantPetRestart() {
+		t.Error("the restart flag should clear once consumed")
+	}
+	b, _ = os.ReadFile(path)
+	if !strings.Contains(string(b), "demo-mode = false") {
+		t.Errorf("INI lacks the rewritten demo-mode key:\n%s", b)
+	}
+}
+
+// TestSettingsDemoCheckboxCancel verifies CANCEL discards a demo-mode flip:
+// the draft is dropped on reopen and nothing reaches the INI.
+func TestSettingsDemoCheckboxCancel(t *testing.T) {
+	path := writeTempINI(t, "[character]\ncharacter-age = 7\n")
+	u := NewUI(380, 520)
+	u.age = 7
+	u.savePath = path
+	u.collapsed = false
+	u.openSettings()
+
+	dr := u.demoRect()
+	px, py := (dr.Min.X+dr.Max.X)/2, (dr.Min.Y+dr.Max.Y)/2
+	if w := u.HitTest(px, py); w != WDemo {
+		t.Fatalf("demo row hit-test = %v, want WDemo", w)
+	}
+	u.Press(WDemo)
+	u.Release(WDemo)
+	if !u.demoDraft {
+		t.Fatal("click should check the demo draft")
+	}
+	cancel, _ := u.modalButtons()
+	w := u.HitTest((cancel.Min.X+cancel.Max.X)/2, (cancel.Min.Y+cancel.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if u.settingsOpen {
+		t.Fatal("cancel should close the modal")
+	}
+	if u.PetDemo() {
+		t.Error("cancel must not commit the demo draft")
+	}
+	if u.WantPetRestart() {
+		t.Error("cancel must not schedule a pet restart")
+	}
+	u.openSettings()
+	if u.demoDraft {
+		t.Error("reopen should re-seed the draft, dropping the cancelled flip")
 	}
 }
 
