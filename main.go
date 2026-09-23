@@ -53,8 +53,11 @@ func pickModel(flagVal string, flagSet bool, cfgModel, provider string) (string,
 		model = strings.TrimSpace(cfgModel)
 	}
 	if model == "" {
-		if provider == "bedrock" {
+		switch provider {
+		case "bedrock":
 			return defaultBedrockModelID, ""
+		case "openrouter":
+			return defaultOpenRouterModel, ""
 		}
 		return defaultModel, ""
 	}
@@ -68,6 +71,14 @@ func pickModel(flagVal string, flagSet bool, cfgModel, provider string) (string,
 			return defaultModel, fmt.Sprintf(
 				"provider=gemini but model %q is a Bedrock ID (from config) - using %q; set -model to a Gemini model",
 				model, defaultModel)
+		case provider == "openrouter" && isGeminiModel(model):
+			return defaultOpenRouterModel, fmt.Sprintf(
+				"provider=openrouter but model %q is a Gemini ID (from config) - using %q; set model in chat-app.ini or -model to an OpenRouter ID (e.g. deepseek/deepseek-chat)",
+				model, defaultOpenRouterModel)
+		case provider == "openrouter" && isBedrockModel(model):
+			return defaultOpenRouterModel, fmt.Sprintf(
+				"provider=openrouter but model %q is a Bedrock ID (from config) - using %q; set model in chat-app.ini or -model to an OpenRouter ID (e.g. deepseek/deepseek-chat)",
+				model, defaultOpenRouterModel)
 		}
 	}
 	if provider == "bedrock" && !isBedrockModel(model) {
@@ -107,12 +118,12 @@ func main() {
 		preview = flag.Bool("preview", false,
 			"render chat_ui_*.png previews and exit (no display needed)")
 		apiKey = flag.String("api-key", "",
-			`Google Gemini API key (default: $GEMINI_API_KEY, $GOOGLE_API_KEY, or the built-in key; "off" = stub mode)`)
-		model  = flag.String("model", "", "model ID (Gemini or Bedrock; default depends on -provider)")
+			`LLM API key (default: env or built-in for the selected provider; "off" = stub mode)`)
+		model  = flag.String("model", "", "model ID (Gemini, Bedrock, or OpenRouter; default depends on -provider)")
 		apiURL = flag.String("api-url", "",
-			"Gemini endpoint base for relays/mirrors (default: "+defaultAPIURL+")")
+			"LLM endpoint base (default depends on -provider: Gemini, OpenRouter, or localhost for ollama)")
 		provider = flag.String("provider", "",
-			`LLM backend: "gemini" (default) or "bedrock"`)
+			`LLM backend: "gemini" (default), "bedrock", "ollama", or "openrouter"`)
 		awsProfile = flag.String("aws-profile", "",
 			"AWS shared profile name for Bedrock (default: default, or $AWS_PROFILE)")
 		awsRegion = flag.String("aws-region", "",
@@ -206,7 +217,7 @@ func main() {
 		providerVal = "gemini"
 	}
 	switch providerVal {
-	case "gemini", "bedrock", "ollama":
+	case "gemini", "bedrock", "ollama", "openrouter":
 		// ok
 	default:
 		log.Printf("warning: unknown provider %q, using gemini", providerVal)
@@ -231,7 +242,14 @@ func main() {
 		urlVal = strings.TrimSpace(cfg.APIURL)
 	}
 	if urlVal == "" {
-		urlVal = defaultAPIURL
+		switch providerVal {
+		case "openrouter":
+			urlVal = defaultOpenRouterURL
+		case "ollama":
+			urlVal = defaultOllamaURL
+		default:
+			urlVal = defaultAPIURL
+		}
 	}
 
 	// Pet pipe: explicit flag > config file > auto-detect > off
@@ -447,6 +465,28 @@ func main() {
 	if cfg != nil {
 		ui.demo = cfg.DemoMode
 	}
+	// OpenRouter (and other OpenAI-compatible gateways) auth: explicit
+	// -api-key flag > $OPENROUTER_API_KEY > config api-key. There is no
+	// built-in default key, so a missing key makes GenerateText fail loud.
+	var openrouterKey string
+	if providerVal == "openrouter" {
+		openrouterKey = strings.TrimSpace(*apiKey)
+		if !explicitFlags["api-key"] {
+			if e := os.Getenv("OPENROUTER_API_KEY"); e != "" {
+				openrouterKey = strings.TrimSpace(e)
+			} else if cfg != nil && cfg.APIKey != "" {
+				openrouterKey = cfg.APIKey
+			}
+		}
+	}
+
+	// SSE streaming for the openrouter provider: default on, the config key
+	// `stream = false` switches back to single-shot replies.
+	streamVal := true
+	if cfg != nil && cfg.StreamSet {
+		streamVal = cfg.Stream
+	}
+
 	// Build the selected provider.
 	var botProvider Provider
 	switch providerVal {
@@ -469,11 +509,16 @@ func main() {
 		botProvider = p
 	case "ollama":
 		botProvider = newOllamaProvider(urlVal, modelVal)
+	case "openrouter":
+		botProvider = newOpenRouterProvider(openrouterKey, urlVal, modelVal, streamVal)
 	default: // gemini
 		botProvider = &geminiProvider{apiKey: key, apiURL: urlVal, model: modelVal, http: &http.Client{Timeout: imageTimeout + geminiTimeout}}
 	}
 
 	ui.Bot.Provider = botProvider
+	// SSE deltas fire on the reply goroutine; hand them to the main loop over
+	// a channel so only the main loop ever touches UI state (mirrors Replies).
+	ui.Bot.OnDelta = func(accumulated string) { ui.Stream <- accumulated }
 
 	if sysPrompt != "" || (sysFile != "" && sysFile != "off") {
 		log.Printf("system-instruction custom (from flag or config)")
@@ -484,6 +529,12 @@ func main() {
 		log.Printf("bedrock: model=%s", modelVal)
 	} else if providerVal == "ollama" {
 		log.Printf("ollama: model=%s, api-url=%s", modelVal, urlVal)
+	} else if providerVal == "openrouter" {
+		if openrouterKey == "" {
+			log.Printf("openrouter: no API key (set $OPENROUTER_API_KEY or -api-key) - replies will fail")
+		} else {
+			log.Printf("openrouter: model=%s, api-url=%s, stream=%t", modelVal, urlVal, streamVal)
+		}
 	} else if key == "" {
 		log.Printf("gemini: no API key (set GEMINI_API_KEY or -api-key) - running in stub mode")
 	} else {
@@ -667,8 +718,12 @@ func main() {
 			case EvExpose:
 				dirty = true
 			}
+		case accumulated := <-ui.Stream:
+			ui.SetStreamText(accumulated)
+			dirty = true
 		case reply := <-ui.Replies:
 			ui.Thinking = false
+			ui.streamText = ""    // drop the preview; AddMsg shows the final text
 			if reply.Text != "" { // empty = skipped greeting (quiet hours)
 				if reply.Image != nil {
 					ui.AddMsgWithImage(ui.Bot.Name, reply.Text, reply.Image)

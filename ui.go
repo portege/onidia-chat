@@ -157,9 +157,9 @@ const (
 
 	// About modal layout (drawAbout): a small informational panel shown by
 	// the header's About button.
-	aboutPanelW = 300 // panel width
-	aboutPanelH = 214 // panel height (title + tagline + credit + OK button)
-	minAboutH   = 260 // window height forced while the About modal is open
+	aboutPanelW = 340 // panel width
+	aboutPanelH = 280 // panel height (hero art + tagline + status + credit + OK)
+	minAboutH   = 300 // window height forced while the About modal is open
 	aboutBtnW   = 90  // OK button width
 
 	maxNameChars = 16 // character-name field rune cap
@@ -203,11 +203,13 @@ type UI struct {
 
 	Bot      *Bot             // the Gemini-powered brain (see chat.go)
 	Replies  chan ReplyResult // bot answers + optional image land here
+	Stream   chan string      // accumulated partial bot text while SSE streams in
 	Thinking bool             // true while a Gemini call is in flight
 
-	msgs   []Msg
-	input  []rune
-	scroll int // scrollTop in content px (clamped; 0 = oldest visible)
+	msgs       []Msg
+	streamText string // preview shown in the synthetic bubble ("" = "...")
+	input      []rune
+	scroll     int // scrollTop in content px (clamped; 0 = oldest visible)
 
 	focused   bool // the textarea owns the keyboard
 	caret     bool // caret blink phase
@@ -283,6 +285,7 @@ func NewUI(w, h int) *UI {
 		W: w, H: h,
 		Bot:       NewBot(),
 		Replies:   make(chan ReplyResult, 4),
+		Stream:    make(chan string, 16),
 		focused:   true,
 		caret:     true,
 		collapsed: true,
@@ -1474,6 +1477,29 @@ func (u *UI) Key(r rune, sym uint32) bool {
 	return false
 }
 
+// streamNewlines flattens every newline flavor a model reply might use (see
+// newlineToPageBreak) into a single space for the streaming preview.
+var streamNewlines = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ", `\\n`, " ", "\f", " ")
+
+// SetStreamText replaces the preview shown in the synthetic "..." bubble
+// while an SSE reply is streaming in. Called from the main loop only - the
+// reply goroutine hands text over via u.Stream and never touches UI state.
+// Tags are stripped to match the final bubble, a trailing unclosed "[" (a tag
+// cut off mid-flight) is dropped, and newlines collapse to spaces: the real
+// page breaks are decided later by finishReply. The view follows the bottom
+// only if the user was already there.
+func (u *UI) SetStreamText(s string) {
+	follow := u.scroll >= u.maxScroll()
+	_, _, _, _, txt := stripTags(s)
+	if i := strings.LastIndex(txt, "["); i >= 0 && !strings.Contains(txt[i:], "]") {
+		txt = txt[:i]
+	}
+	u.streamText = strings.TrimSpace(streamNewlines.Replace(txt))
+	if follow {
+		u.scroll = u.maxScroll()
+	}
+}
+
 // Submit sends the current input: the message is appended to the history and
 // the bot answers asynchronously (Gemini can take seconds; the UI shows a
 // "..." bubble meanwhile and the reply arrives on u.Replies). Empty input is
@@ -1490,6 +1516,7 @@ func (u *UI) Submit() {
 	// UI goroutine, so the call must not touch it afterwards.
 	hist := append([]Msg(nil), u.msgs...)
 	u.Thinking = true
+	u.streamText = ""        // no stale preview from the previous reply
 	u.scroll = u.maxScroll() // re-pin: the "..." bubble must be visible
 	bot := u.Bot
 	go func() {
@@ -1653,9 +1680,11 @@ func (u *UI) drawHeader(frame *image.NRGBA) {
 
 // About modal ---------------------------------------------------------------
 
-// drawAbout renders the About modal: a dim backdrop and a small centred panel
-// with the app name, its tagline and the engineering credit, plus an OK
-// button (a backdrop click dismisses it too).
+// drawAbout renders the About modal: a dim backdrop and a centred card with a
+// teal hero strip carrying the word-art title (gradient drop shadow, plum
+// outline, sparkles) beside the round character badge, then the tagline, a live
+// status line naming whichever pet is up, and the engineering credit, plus an
+// OK button (a backdrop click dismisses it too).
 func (u *UI) drawAbout(frame *image.NRGBA) {
 	fillRect(frame, 0, 0, u.W, u.H, color.RGBA{40, 30, 55, 120}) // dim backdrop
 
@@ -1663,24 +1692,108 @@ func (u *UI) drawAbout(frame *image.NRGBA) {
 	drawRoundRect(frame, p.Min.X, p.Min.Y, p.Dx(), p.Dy(), winRadius, colPlum)
 	drawRoundRect(frame, p.Min.X+2, p.Min.Y+2, p.Dx()-4, p.Dy()-4, winRadius-2, colBubbleFill)
 
-	// Title: the app name in the header's larger scale, centred.
-	center := func(s string, scale, y int, col color.RGBA) {
-		drawText(frame, p.Min.X+(p.Dx()-textWidth(s, scale))/2, y, s, scale, col)
+	// Hero strip in the app header's teal, so the card reads as part of the app
+	// rather than a floating box.
+	heroX, heroY := p.Min.X+10, p.Min.Y+10
+	heroW, heroH := p.Dx()-20, 96
+	drawRoundRect(frame, heroX, heroY, heroW, heroH, 12, colHeader)
+	fillRect(frame, heroX+14, heroY+heroH-2, heroW-28, 2, colTealShade)
+
+	// Word art: the biggest letter size that still fits next to the badge; on a
+	// very narrow window the badge is dropped rather than squeezing the title.
+	const title = "ONIDIA"
+	const badgeD = 72
+	cy := heroY + heroH/2
+	scale, withBadge := 2, false
+	for _, s := range []int{4, 3, 2} {
+		if textWidth(title, s)+badgeD+18 <= heroW-32 {
+			scale, withBadge = s, true
+			break
+		}
+		if textWidth(title, s) <= heroW-32 {
+			scale = s
+			break
+		}
 	}
-	center("ONIDIA", uiFontScale, p.Min.Y+30, colPlum)
+	tw := textWidth(title, scale)
+	titleX := heroX + (heroW-tw)/2
+	if withBadge {
+		titleX = heroX + (heroW-(tw+badgeD+18))/2
+		drawFaceBadge(frame, titleX+badgeD/2, cy, badgeD/2)
+		titleX += badgeD + 18
+	}
+	ty := cy - glyphH*scale/2
+	od := max(1, scale/2) // outline thickness follows the letter size
+	// Candy drop shadow (gradient), then the plum outline, then the solid white
+	// face of the letters: that last pass keeps the glyphs crisp and is what the
+	// About test looks for.
+	drawTextGrad(frame, titleX+4, ty+4, title, scale, colHaiyaPinkLo, colTealShade)
+	for _, d := range [][2]int{{-od, 0}, {od, 0}, {0, -od}, {0, od},
+		{-od, -od}, {od, -od}, {-od, od}, {od, od}} {
+		drawText(frame, titleX+d[0], ty+d[1], title, scale, colPlum)
+	}
+	drawText(frame, titleX, ty, title, scale, colWhite)
+	// Twinkle trail beside the letters - only where the teal strip has room
+	// for it, and always clear of the glyph ink. A strip nearly filled by
+	// the word art (narrow window) gets no sparkles rather than one crowded
+	// against the rounded edge.
+	free := heroX + heroW - (titleX + tw)
+	switch {
+	case free >= 40:
+		drawSparkle(frame, titleX+tw+12, heroY+26, 4, colHairLight)
+		drawSparkle(frame, titleX+tw+26, cy+6, 3, colWhite)
+		drawSparkle(frame, titleX+tw+12, heroY+heroH-26, 5, colWhite)
+	case free >= 24:
+		drawSparkle(frame, titleX+tw+12, heroY+30, 4, colHairLight)
+		drawSparkle(frame, titleX+tw+12, heroY+heroH-30, 4, colWhite)
+	}
 
-	// Tagline: "ONIDIA" initials spelling the phrase, plus the full wording.
-	center("ONmIpresent DIgital Amigo", 1, p.Min.Y+62, colText)
+	// Tagline and the app's one-liner, centred under the strip.
+	lineY := heroY + heroH + 14
+	center := func(s string, y int, col color.RGBA) {
+		if textWidth(s, 1) > p.Dx()-2*modalPad {
+			return // too wide for a narrow panel: drop it rather than spill
+		}
+		drawText(frame, p.Min.X+(p.Dx()-textWidth(s, 1))/2, y, s, 1, col)
+	}
+	center("OmNIpresent DIgital Amigo", lineY, colText)
+	center("Sparking curiosity, one question at a time", lineY+16, colMuted)
 
-	// Hairline divider between the tagline and the credit.
-	fillRect(frame, p.Min.X+modalPad, p.Min.Y+86, p.Dx()-2*modalPad, 1, colInputBorder)
+	// Live status: the name from the settings' CHARACTER picker plus a
+	// colour-coded dot, so the modal says whether anyone is home.
+	name := strings.ToUpper(u.PetCharacter())
+	status, dot := name+" is running", colBtn
+	if !u.petRunning {
+		status, dot = name+" is asleep - press Haiya! to call her", colMuted
+	}
+	if textWidth(status, 1) > p.Dx()-2*modalPad-12 { // narrow window: shorter
+		status = name + " asleep"
+		if u.petRunning {
+			status = name + " running"
+		}
+	}
+	sw := textWidth(status, 1)
+	sx := p.Min.X + (p.Dx()-(sw+12))/2
+	fillDisc(frame, sx+4, lineY+36, 3, dot)
+	drawText(frame, sx+12, lineY+32, status, 1, colText)
+
+	// Hairline divider between the status and the credit.
+	fillRect(frame, p.Min.X+modalPad, lineY+72, p.Dx()-2*modalPad, 1, colInputBorder)
 
 	// Engineering credit on one line, two-tone: muted label + teal link.
-	credit := "Engineered by " + "https://mas-mas.it"
-	cx := p.Min.X + (p.Dx()-textWidth(credit, 1))/2
-	drawText(frame, cx, p.Min.Y+104, "Engineered by ", 1, colMuted)
-	drawText(frame, cx+textWidth("Engineered by ", 1), p.Min.Y+104,
-		"https://mas-mas.it", 1, colHeader)
+	// On a narrow panel the label is dropped so the link still fits.
+	const label, link = "Engineered by ", "https://mas-mas.it"
+	line := label + link
+	if textWidth(line, 1) > p.Dx()-2*modalPad {
+		line = link
+	}
+	cx := p.Min.X + (p.Dx()-textWidth(line, 1))/2
+	if line == link {
+		drawText(frame, cx, lineY+84, link, 1, colHeader)
+	} else {
+		drawText(frame, cx, lineY+84, label, 1, colMuted)
+		drawText(frame, cx+textWidth(label, 1), lineY+84, link, 1, colHeader)
+	}
 
 	u.drawModalButton(frame, u.aboutOKRect(), WAboutOK, "OK")
 }
@@ -2112,8 +2225,13 @@ func (u *UI) blocks() []msgBlock {
 		bs = append(bs, u.blockFor(m, cols, maxW))
 	}
 	if u.Thinking {
-		// Synthetic "..." bubble while the Gemini call is in flight.
-		bs = append(bs, u.blockFor(Msg{From: u.Bot.Name, Text: "..."}, cols, maxW))
+		// Synthetic bubble while the call is in flight: "..." until the
+		// first SSE delta arrives, then the streaming preview.
+		txt := "..."
+		if u.streamText != "" {
+			txt = u.streamText
+		}
+		bs = append(bs, u.blockFor(Msg{From: u.Bot.Name, Text: txt}, cols, maxW))
 	}
 	return bs
 }

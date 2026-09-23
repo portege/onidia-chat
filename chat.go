@@ -118,7 +118,11 @@ type Bot struct {
 	BusyFrom int
 	BusyTo   int
 	Provider Provider // the active LLM backend (nil = offline stub)
-	HTTP     *http.Client
+	// OnDelta receives the accumulated reply text after every streamed
+	// fragment when the provider implements Streamer. main.go wires it to a
+	// channel so only the main loop touches UI state; nil disables it.
+	OnDelta func(accumulated string)
+	HTTP    *http.Client
 }
 
 func NewBot() *Bot {
@@ -330,7 +334,13 @@ func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 	if b.SleepSet {
 		sys += fmt.Sprintf(sleepInstructionFmt, b.SleepFromH, b.SleepFromM, b.SleepToH, b.SleepToM)
 	}
-	rawReply, err := b.Provider.GenerateText(sys, clean, sanitizeUserInput(userText))
+	var rawReply string
+	var err error
+	if s, ok := b.Provider.(Streamer); ok && b.OnDelta != nil {
+		rawReply, err = s.GenerateTextStream(sys, clean, sanitizeUserInput(userText), b.OnDelta)
+	} else {
+		rawReply, err = b.Provider.GenerateText(sys, clean, sanitizeUserInput(userText))
+	}
 	if err != nil {
 		return ReplyResult{Text: fmt.Sprintf("ouch - %s call failed: %v", b.Provider.Name(), err)}
 	}
@@ -356,7 +366,13 @@ func (b *Bot) Greeting() ReplyResult {
 		"Send the FIRST message of the day: greet the user warmly by mood, " +
 		"then share ONE short surprising did-you-know fun fact. " +
 		"Keep it under 40 words total, no questions, no lists.")
-	rawReply, err := b.Provider.GenerateText(sys, nil, prompt)
+	var rawReply string
+	var err error
+	if s, ok := b.Provider.(Streamer); ok && b.OnDelta != nil {
+		rawReply, err = s.GenerateTextStream(sys, nil, prompt, b.OnDelta)
+	} else {
+		rawReply, err = b.Provider.GenerateText(sys, nil, prompt)
+	}
 	if err != nil {
 		log.Printf("greeting: %v", err)
 		return ReplyResult{}

@@ -4,10 +4,15 @@
 //   - gemini: Google Gemini generateContent API (uses -api-key / -api-url / -model)
 //   - bedrock: Amazon Bedrock Converse API (uses -aws-profile / -aws-region / -model)
 //   - ollama: ollama-compatible /api/chat server (uses -api-url / -model; no key)
+//   - openrouter: OpenAI-compatible /chat/completions gateway (uses -api-key /
+//     -api-url / -model). OpenRouter by default (one key, any vendor: DeepSeek,
+//     Kimi/Moonshot, etc.); also works against a vendor's native /chat/completions
+//     endpoint (e.g. DeepSeek https://api.deepseek.com) by pointing -api-url at it.
 
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -30,6 +35,16 @@ import (
 type Provider interface {
 	Name() string
 	GenerateText(system string, history []Msg, userText string) (string, error)
+}
+
+// Streamer is implemented by providers that can deliver the reply
+// incrementally over SSE. onDelta receives the accumulated text so far (not
+// just the new fragment) after every content fragment and may be nil; the
+// full text is still returned, so callers can ignore the callback.
+type Streamer interface {
+	Provider
+	GenerateTextStream(system string, history []Msg, userText string,
+		onDelta func(accumulated string)) (string, error)
 }
 
 // geminiProvider talks to Google's Gemini generateContent API.
@@ -217,6 +232,17 @@ const defaultOllamaModel = "qwen2:1.5b"
 // (the hailo box on the local network). Override with -api-url / api-url.
 const defaultOllamaURL = "http://localhost:8000"
 
+// defaultOpenRouterURL is the OpenRouter endpoint base assumed for
+// provider=openrouter — an OpenAI-compatible /chat/completions gateway. Point
+// -api-url at a vendor's native endpoint (e.g. https://api.deepseek.com or
+// https://api.moonshot.cn/v1) to use that vendor directly with the same
+// provider; only the model ID and key differ.
+const defaultOpenRouterURL = "https://openrouter.ai/api/v1"
+
+// defaultOpenRouterModel is the fallback model ID used when provider=openrouter
+// and no model is configured — a capable, widely-available chat model.
+const defaultOpenRouterModel = "deepseek/deepseek-chat-v3-0324"
+
 // isGeminiModel reports whether an ID belongs to Google's Gemini family
 // (e.g. "gemini-3.6-flash").
 func isGeminiModel(id string) bool {
@@ -328,6 +354,201 @@ func (o *ollamaProvider) GenerateText(system string, history []Msg, userText str
 		return "", fmt.Errorf("ollama: decode reply: %w", err)
 	}
 	text := strings.TrimSpace(out.Message.Content)
+	if text == "" {
+		return "", errors.New("empty answer")
+	}
+	return text, nil
+}
+
+// openrouterProvider talks to an OpenAI-compatible chat gateway (OpenRouter by
+// default, or a vendor's native endpoint such as DeepSeek's
+// https://api.deepseek.com or Kimi/Moonshot's https://api.moonshot.cn/v1). It
+// POSTs {model, messages, stream} and reads either the single assistant
+// message out of choices[0].message.content (stream:false) or an SSE event
+// stream of choices[0].delta.content fragments (stream:true), authenticating
+// with a Bearer token. That is the OpenAI chat-completions dialect, which
+// OpenRouter forwards to DeepSeek, Kimi, and hundreds of other vendors
+// through a single key.
+type openrouterProvider struct {
+	apiKey string // Bearer token (OpenRouter / DeepSeek / Kimi API key)
+	apiURL string // endpoint base, e.g. https://openrouter.ai/api/v1 (no trailing slash)
+	model  string // "deepseek/deepseek-chat-v3-0324" (OpenRouter) or "deepseek-chat" (native)
+	stream bool   // true = SSE streaming reply; false = single-shot JSON
+	http   *http.Client
+}
+
+func (p *openrouterProvider) Name() string { return "openrouter" }
+
+var _ Streamer = (*openrouterProvider)(nil)
+
+// newOpenRouterProvider builds an OpenRouter / OpenAI-compatible client. apiURL
+// is the endpoint base (no trailing slash); /chat/completions is appended by
+// the provider. model is the model ID (vendor-prefixed on OpenRouter, bare on a
+// native endpoint). An empty model falls back to defaultOpenRouterModel.
+// stream selects the SSE streaming reply (true) or the single-shot JSON
+// answer (false).
+func newOpenRouterProvider(apiKey, apiURL, model string, stream bool) Provider {
+	if model == "" {
+		model = defaultOpenRouterModel
+	}
+	return &openrouterProvider{
+		apiKey: apiKey,
+		apiURL: strings.TrimRight(apiURL, "/"),
+		model:  model,
+		stream: stream,
+		http:   http.DefaultClient,
+	}
+}
+
+// openrouterChatMsg is one message of the /chat/completions payload.
+type openrouterChatMsg struct {
+	Role    string `json:"role"` // "system" | "user" | "assistant"
+	Content string `json:"content"`
+}
+
+func (p *openrouterProvider) GenerateText(system string, history []Msg, userText string) (string, error) {
+	return p.GenerateTextStream(system, history, userText, nil)
+}
+
+// GenerateTextStream performs one /chat/completions call. When the provider
+// has streaming enabled, the response is read as SSE and onDelta (if
+// non-nil) receives the accumulated text after every content fragment;
+// otherwise the classic single-shot JSON reply is used. Either way the full
+// reply text is returned, so callers that ignore deltas work unchanged.
+func (p *openrouterProvider) GenerateTextStream(system string, history []Msg, userText string, onDelta func(accumulated string)) (string, error) {
+	if p.apiKey == "" {
+		return "", errors.New("no OpenRouter API key (set -api-key, $OPENROUTER_API_KEY, or config api-key)")
+	}
+	// Same message assembly the ollama/gemini providers use: leading system
+	// message, then history (assistant by default, "you" -> user), guarantee a
+	// trailing user turn carrying the new input, then cap at maxHistTurns
+	// keeping the system message pinned at the front.
+	msgs := make([]openrouterChatMsg, 0, len(history)+2)
+	if system != "" {
+		msgs = append(msgs, openrouterChatMsg{Role: "system", Content: system})
+	}
+	for _, m := range history {
+		role := "assistant"
+		if m.From == "you" {
+			role = "user"
+		}
+		msgs = append(msgs, openrouterChatMsg{Role: role, Content: m.Text})
+	}
+	if len(msgs) == 0 || msgs[len(msgs)-1].Role != "user" {
+		msgs = append(msgs, openrouterChatMsg{Role: "user", Content: userText})
+	}
+	if n := len(msgs); n > 1 && n-1 > maxHistTurns {
+		msgs = append(msgs[:1:1], msgs[n-maxHistTurns:]...)
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"model":    p.model,
+		"messages": msgs,
+		"stream":   p.stream,
+	})
+	if err != nil {
+		return "", err
+	}
+	endpoint := strings.TrimRight(p.apiURL, "/") + "/chat/completions"
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	resp, err := p.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("openrouter %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+	if p.stream {
+		// SSE: a non-200 answer arrives as a plain JSON error object, not an
+		// event stream, so check the status (reading the body for the
+		// message) before handing the stream to the event parser.
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			return "", fmt.Errorf("openrouter %s: HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(raw)))
+		}
+		return p.readSSE(resp.Body, onDelta)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("openrouter: read reply: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("openrouter %s: HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var out struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return "", fmt.Errorf("openrouter: decode reply: %w", err)
+	}
+	if len(out.Choices) == 0 {
+		return "", errors.New("openrouter: no choices in reply")
+	}
+	text := strings.TrimSpace(out.Choices[0].Message.Content)
+	if text == "" {
+		return "", errors.New("empty answer")
+	}
+	return text, nil
+}
+
+// readSSE consumes an OpenAI-style text/event-stream: one "data: {json}" line
+// per chunk carrying choices[0].delta.content fragments, terminated by
+// "data: [DONE]". onDelta (may be nil) receives the accumulated text after
+// each fragment. A mid-stream "error" object aborts with its message, and a
+// stream that produced no text at all fails like the single-shot path.
+func (p *openrouterProvider) readSSE(r io.Reader, onDelta func(accumulated string)) (string, error) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20) // long data: lines on big replies
+	var sb strings.Builder
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue // blank separator, comments, id:/event: fields
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			break
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content *string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			return "", fmt.Errorf("openrouter: decode stream chunk: %w", err)
+		}
+		if chunk.Error != nil {
+			return "", fmt.Errorf("openrouter: stream: %s", chunk.Error.Message)
+		}
+		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta.Content == nil {
+			continue // role-only opening chunk, usage keep-alives
+		}
+		if frag := *chunk.Choices[0].Delta.Content; frag != "" {
+			sb.WriteString(frag)
+			if onDelta != nil {
+				onDelta(sb.String())
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return "", fmt.Errorf("openrouter: read stream: %w", err)
+	}
+	text := strings.TrimSpace(sb.String())
 	if text == "" {
 		return "", errors.New("empty answer")
 	}

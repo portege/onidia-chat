@@ -373,3 +373,49 @@ func TestReplyAppliesSleepWindow(t *testing.T) {
 		t.Errorf("unset sleep window must not inject a schedule line: %q", fp2.system)
 	}
 }
+
+// fakeStreamer is a Provider that also implements Streamer: it emits its
+// canned text as two accumulated deltas before returning it, mimicking SSE.
+type fakeStreamer struct {
+	fakeProvider
+}
+
+func (f *fakeStreamer) GenerateTextStream(system string, history []Msg, userText string, onDelta func(string)) (string, error) {
+	full, err := f.GenerateText(system, history, userText)
+	if err != nil || onDelta == nil || full == "" {
+		return full, err
+	}
+	onDelta(full[:len(full)/2])
+	onDelta(full)
+	return full, nil
+}
+
+// TestReplyStreamsDeltas verifies Bot.Reply forwards provider deltas to
+// Bot.OnDelta when the provider implements Streamer, while the final reply
+// still goes through finishReply (tags stripped). Without OnDelta the plain
+// GenerateText path serves the same reply.
+func TestReplyStreamsDeltas(t *testing.T) {
+	fp := &fakeStreamer{fakeProvider: fakeProvider{canned: "[happy] streamed reply"}}
+	bot := &Bot{Provider: fp, SystemInstruction: "You are Buddy.", ImageSource: "off"}
+	var got []string
+	bot.OnDelta = func(acc string) { got = append(got, acc) }
+	res := bot.Reply([]Msg{{From: "you", Text: "hi"}}, "hi")
+	if res.Text != "streamed reply" {
+		t.Errorf("reply text = %q, want %q", res.Text, "streamed reply")
+	}
+	want := []string{"[happy] str", "[happy] streamed reply"}
+	if len(got) != len(want) {
+		t.Fatalf("deltas = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("delta[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	plain := &Bot{Provider: &fakeProvider{canned: "[happy] streamed reply"},
+		SystemInstruction: "You are Buddy.", ImageSource: "off"}
+	if res := plain.Reply([]Msg{{From: "you", Text: "hi"}}, "hi"); res.Text != "streamed reply" {
+		t.Errorf("plain reply text = %q, want %q", res.Text, "streamed reply")
+	}
+}

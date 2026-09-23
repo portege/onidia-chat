@@ -3,8 +3,8 @@
 A tiny desktop chat window written in **pure Go** on raw X11
 ([`github.com/jezek/xgb`](https://github.com/jezek/xgb)) — the same
 no-cgo, no-GUI-toolkit approach as its sibling [`../desktop-pet`](../desktop-pet).
-It shares the pet's visual language: plum outlines, pastel teal and the 5×7
-bitmap font (extended here with **true lowercase** glyphs; the pet itself
+It shares the buddy's visual language: plum outlines, pastel teal and the 5×7
+bitmap font (extended here with **true lowercase** glyphs; the buddy itself
 renders small-caps).
 
 Ask it anything: the answer comes from the **Google Gemini API**
@@ -30,10 +30,10 @@ reply is shown inside her speech bubble as well.
 - ✅ **Phase 2 — the brain**: `chat.go` calls Gemini asynchronously (the UI
   shows a "..." bubble while waiting, so it never freezes), keeps the last 20
   turns as context, and parses an optional `[mood]` tag out of each answer.
-- ✅ **The pet bridge**: `pet.go` writes `[mood] [image pic.png] text` to the pet's
-  say-FIFO — best-effort and non-blocking; no pet running? It just skips.
+- ✅ **The buddy bridge**: `pet.go` writes `[mood] [image pic.png] text` to the pet's
+  say-FIFO — best-effort and non-blocking; no buddy running? It just skips.
 - ✅ **Text-to-speech**: each reply is spoken aloud via the Typecast API
-  (`tts.go` → `aplay`/`paplay`/`ffplay`; async + queued). The pet bubble is
+  (`tts.go` → `aplay`/`paplay`/`ffplay`; async + queued). The buddy bubble is
   shown only once the audio is ready to play and closes the moment playback
   ends, so the words and the bubble stay in sync.
 
@@ -51,6 +51,45 @@ Without a key the app still works in **stub mode** (each answer echoes your
 message plus a hint). The key is read from `-api-key`, `$GEMINI_API_KEY`, or
 `$GOOGLE_API_KEY`, in that order.
 
+### Other LLM providers
+
+chat-app selects its backend with `-provider`. Gemini is the default; Bedrock and
+OpenRouter are also built in (documented in `chat-app.ini`):
+
+| backend     | endpoint                                          | key                                | example `-model`               |
+|-------------|---------------------------------------------------|------------------------------------|--------------------------------|
+| `gemini`    | Google Generative Language                        | `-api-key` / `$GEMINI_API_KEY`     | `gemini-3.6-flash`             |
+| `bedrock`   | Amazon Bedrock Converse API                       | AWS SDK chain (`-aws-profile`)     | `amazon.nova-lite-v1:0`        |
+| `ollama`    | Ollama / llama.cpp `/api/chat` (local, no key)    | none                               | `qwen2:1.5b`                   |
+| `openrouter`| OpenRouter, or any OpenAI-compatible gateway      | `-api-key` / `$OPENROUTER_API_KEY` | `deepseek/deepseek-chat-v3-0324` |
+
+`-provider openrouter` is the "one key, any model" path: it talks to OpenRouter,
+which forwards to DeepSeek, Kimi/Moonshot, and hundreds of other vendors. The
+same code path also works against a **vendor's native** `/chat/completions` API
+— just point `-api-url` at it, so DeepSeek and Kimi need no extra code:
+
+```sh
+# OpenRouter (any model they expose, e.g. DeepSeek or Kimi):
+export OPENROUTER_API_KEY="your-key"
+./chat-app -provider openrouter -model deepseek/deepseek-chat-v3-0324
+
+# ...or DeepSeek's native /chat/completions endpoint (no OpenRouter):
+./chat-app -provider openrouter -api-url https://api.deepseek.com -model deepseek-chat
+
+# ...or Kimi/Moonshot native endpoint:
+./chat-app -provider openrouter -api-url https://api.moonshot.cn/v1 -model kimi-k2-0905-preview
+```
+
+With `-provider openrouter` replies stream over **SSE** by default: the chat bubble
+fills word-by-word while the model generates (the other providers stay
+single-shot). Set `stream = false` in the `[openrouter]` section of
+`chat-app.ini` to fall back to one-shot replies.
+
+A wrong-family `-model` (e.g. a Gemini ID with `-provider bedrock`, or a Bedrock
+ID with `-provider openrouter`) is auto-swapped to that backend's default and
+logged as a warning, so a leftover ID in `chat-app.ini` won't surface as a
+confusing API error.
+
 ### Flags
 
 ```sh
@@ -66,7 +105,7 @@ message plus a hint). The key is read from `-api-key`, `$GEMINI_API_KEY`, or
 -system-file /path/system.txt  load system instruction from file (overrides default)
 -config    chat-app.ini        INI file with defaults (flags and env override it;
                                auto-loads ./chat-app.ini when not given)
--provider gemini              LLM backend: "gemini" (default) or "bedrock"
+-provider gemini              LLM backend: "gemini" (default), "bedrock", "ollama", or "openrouter"
 -aws-profile default          AWS shared profile for Bedrock
 -aws-region us-east-1         AWS region for Bedrock
 -model gemini-3.6-flash       model ID (Gemini or Bedrock; default depends on -provider)
@@ -102,7 +141,7 @@ file, or edit `chat-app.ini` in place and just relaunch.
 Example `chat-app.ini`:
 
 ```ini
-# LLM backend: "gemini" (default) or "bedrock".
+# LLM backend: "gemini" (default), "bedrock", "ollama", or "openrouter".
 provider = gemini
 
 [gemini]
@@ -116,7 +155,7 @@ aws-profile = default
 aws-region = us-east-1
 
 [ui]
-# Where bot replies are forwarded so the pet speaks them:
+# Where bot replies are forwarded so the buddy speaks them:
 #   auto (default) - derive the FIFO path from $DISPLAY (/tmp/desktop-pet-<display>.say)
 #   off            - disable forwarding
 #   /absolute/path - write to this exact FIFO
@@ -165,22 +204,22 @@ image-source = pixabay
 # mute = false
 #
 # Demo-mode checkbox from the same dialog (the row directly below MUTE
-# SPEECH): off (the default) keeps the desktop pet "planted" - it never
+# SPEECH): off (the default) keeps the buddy "planted" - it never
 # wanders and never starts talking on its own, though it still blinks,
-# idles and answers what you send it. Either way the pet enters with its
+# idles and answers what you send it. Either way the buddy enters with its
 # launch flourish (parachute / poof-in) and then walks - never running - to its
 # parking spot three character widths in from the right edge, where its
 # speech bubble is not clipped by the screen; planted mode then stays
-# there. On restores the classic demo behavior: the pet roams the screen
+# there. On restores the classic demo behavior: the buddy roams the screen
 # and chatters randomly. Saving the dialog rewrites this key in place, and
-# a pet that is already running is quit and relaunched automatically so the
+# a buddy that is already running is quit and relaunched automatically so the
 # new mode takes effect immediately.
 # demo-mode = false
 #
-# Pet character from the same dialog: the CHARACTER row's buttons carry the
+# Buddy character from the same dialog: the CHARACTER row's buttons carry the
 # character names - ONIDIA (the chibi girl) or KAMA (the boy in the red
 # hoodie). Saving
-# the dialog rewrites this key in place; a pet that is already running keeps
+# the dialog rewrites this key in place; a buddy that is already running keeps
 # its character until it is quit (pink Haiya! button) and launched again.
 # character-gender = girl
 #
@@ -327,7 +366,8 @@ Or without make: `go build -trimpath -ldflags="-s -w" -o chat-app .`
 | click textarea | focus it (border turns teal, caret blinks) |
 | click **+ / −** (header, left of ⚙) | show/hide the conversation history (starts collapsed) |
 | click **⚙ gear** (header, left of ✕) | open the settings dialog (character age 7-13, sleep window FROM/TO, busy window, CHARACTER picker — the buttons carry the character names: **ONIDIA** = Haiya! launches the girl, **KAMA** = the boy, MUTE SPEECH and DEMO MODE checkboxes below it; SAVE writes `character-name`, `character-age`, `sleep-time`, `busy-time`, `mute`, `demo-mode` + `character-gender` to `chat-app.ini` and rewrites the stored persona's "your name is …" sentence with the name + age) |
-| in the dialog | type the character's name into NAME, click a dropdown to drop its list (hour lists scroll with the wheel), pick a value, pick **ONIDIA**/**KAMA** in the CHARACTER row for who the Haiya! button launches, tick/untick **MUTE SPEECH** to silence the text-to-speech voice, tick/untick **DEMO MODE** to switch the pet between roaming+chattering and standing still at the screen edge, **SAVE** (or **Enter**); **CANCEL** / **Esc** discards |
+| in the dialog | type the character's name into NAME, click a dropdown to drop its list (hour lists scroll with the wheel), pick a value, pick **ONIDIA**/**KAMA** in the CHARACTER row for who the Haiya! button launches, tick/untick **MUTE SPEECH** to silence the text-to-speech voice, tick/untick **DEMO MODE** to switch the buddy between roaming+chattering and planted (it walks to its parking spot three character widths in from the right edge and stays there), **SAVE** (or **Enter**); **CANCEL** / **Esc** discards |
+| click **About** (header, left of ✕) | open the About dialog: a teal hero strip with the word-art name (drop shadow, plum outline, sparkles) and the round character badge — her happy face, drawn in code — above the tagline, a live line naming whichever buddy is running, and the engineering credit; **OK**, a backdrop click or **Esc** dismisses it |
 | **drag** the header | move the window (`_NET_WM_MOVERESIZE`; the frame has no titlebar) |
 | click **✕** (header, far right) | quit the app |
 | **Alt+F4** | quit too (the WM delete protocol stays enabled) |
@@ -360,10 +400,11 @@ you ──▶ textarea ──▶ SEND/Enter ──▶ UI appends your bubble, sh
 ├── main.go        flags, config, window lifecycle, event loop
 ├── ui.go          layout, state, hit-testing and software rendering
 ├── font.go        5×7 bitmap font (+true lowercase) and draw primitives
+├── about_art.go   the About modal's hand-drawn character badge + sparkles
 ├── chat.go        the brain: Gemini client, persona, mood-tag handling
 ├── pet.go         desktop-pet say-FIFO bridge (non-blocking writes)
 ├── tts.go         Typecast text-to-speech (async fetch + aplay/paplay/ffplay)
-├── preview.go     -preview PNG renderer (like the pet's -debug mode)
+├── preview.go     -preview PNG renderer (like the buddy's -debug mode)
 ├── x11win.go      ARGB window setup, WM hints, cursors, keyboard mapping
 ├── x11draw.go     frame upload (chunked PutImage)
 ├── x11events.go   event pump + keycode→keysym decoding
@@ -379,6 +420,6 @@ you ──▶ textarea ──▶ SEND/Enter ──▶ UI appends your bubble, sh
 | Window still has a titlebar/border | WM ignores `_MOTIF_WM_HINTS` (rare); use Alt+F4 or the header ✕ |
 | Replies say "set GEMINI_API_KEY..." | export the key (or pass `-api-key`) and restart |
 | "gemini call failed: ..." bubbles | check network, key validity, or pick another `-model` |
-| Pet doesn't speak | start the desktop-pet first (it creates the FIFO); check `-pet-pipe` |
-| Want silence from the pet | run with `-pet-pipe off` |
+| Buddy doesn't speak | start the desktop-pet first (it creates the FIFO); check `-pet-pipe` |
+| Want silence from the buddy | run with `-pet-pipe off` |
 | `context deadline exceeded` on every call, while other sites work | your network filters `generativelanguage.googleapis.com`. Options: run behind a proxy (`export HTTPS_PROXY=...`, Go honors it), a VPN, or point `-api-url` at a relay you control that forwards to Gemini (any service that proxies `POST <base>/v1beta/models/*:generateContent` transparently). Debug with `go run ./cmd/geminitest -models`. |

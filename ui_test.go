@@ -55,6 +55,22 @@ func frameHasString(frame *image.NRGBA, s string, scale int, col color.RGBA) boo
 	return false
 }
 
+// countColourIn counts pixels of exactly col inside r (clipped to the frame).
+func countColourIn(frame *image.NRGBA, r image.Rectangle, col color.RGBA) int {
+	cr, cg, cb, ca := col.RGBA()
+	n := 0
+	r = r.Intersect(frame.Bounds())
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		for x := r.Min.X; x < r.Max.X; x++ {
+			pr, pg, pb, pa := frame.NRGBAAt(x, y).RGBA()
+			if pr == cr && pg == cg && pb == cb && pa == ca {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 // TestCollapseDefault verifies the conversation history starts collapsed so
 // only the prompt box is visible. NewUI keeps the passed window height (main
 // opens the window at the collapsed size; previews set the size explicitly).
@@ -323,11 +339,18 @@ func TestAboutModal(t *testing.T) {
 	if got := u.HitTest(10, headerH/2); got != WModal {
 		t.Errorf("header spot while About open: got %v want WModal", got)
 	}
-	// The modal draws the exact credit text.
+	// The modal draws the word-art name, the round character badge and the
+	// exact credit text.
 	frame := u.Render()
-	if !frameHasString(frame, "ONIDIA", uiFontScale, colPlum) ||
-		!frameHasString(frame, "mas-mas.it", 1, colHeader) {
-		t.Error("About modal should render the ONIDIA name and mas-mas.it credit")
+	if !frameHasString(frame, "ONIDIA", 4, colWhite) {
+		t.Error("About modal should render the ONIDIA word art")
+	}
+	if !frameHasString(frame, "mas-mas.it", 1, colHeader) {
+		t.Error("About modal should render the mas-mas.it credit")
+	}
+	// The badge portrait is drawn: its pink hair bobbles are on the panel.
+	if n := countColourIn(frame, u.aboutPanel(), colHaiyaPink); n < 60 {
+		t.Errorf("About badge: only %d bobble pixels, want >= 60", n)
 	}
 	// OK button dismisses.
 	u.Press(WAboutOK)
@@ -351,6 +374,53 @@ func TestAboutModal(t *testing.T) {
 	u.Release(WAbout)
 	if !u.Key(0, ksEscape) || u.aboutOpen {
 		t.Fatal("Escape should dismiss the About modal")
+	}
+}
+
+// TestAboutModalNarrow checks the About modal degrades gracefully in a narrow
+// window: the panel clamps to the window, the hero strip drops the badge and
+// still fits the word-art name, the credit survives (link only) and nothing
+// spills outside the panel - no badge ring, no sparkle halo beyond the strip.
+func TestAboutModalNarrow(t *testing.T) {
+	u := NewUI(240, 420)
+	u.collapsed = false
+	u.openAbout()
+
+	p := u.aboutPanel()
+	if p.Dx() > 240-2*modalPad+1 || p.Dy() > 420 {
+		t.Fatalf("about panel %v is not clamped to the window", p)
+	}
+	frame := u.Render()
+	okArt := false
+	for _, scale := range []int{4, 3, 2} {
+		if frameHasString(frame, "ONIDIA", scale, colWhite) {
+			okArt = true
+			break
+		}
+	}
+	if !okArt {
+		t.Error("narrow About should still render the ONIDIA word art")
+	}
+	if !frameHasString(frame, "mas-mas.it", 1, colHeader) {
+		t.Error("narrow About should still render the credit link")
+	}
+	// The art must not paint outside the panel: the backdrop stays dim.
+	if n := countColourIn(frame, image.Rect(0, 0, 240, 4), colHeader); n != 0 {
+		t.Errorf("about art spilled into the top margin (%d hero pixels)", n)
+	}
+	// The hero strip inset by its corner radius: no stray art (badge ring,
+	// sparkle halo) may leak past the strip's right edge. The check region
+	// stops short of the panel's own plum border.
+	heroX, heroW := p.Min.X+10, p.Dx()-20
+	strip := image.Rect(heroX, p.Min.Y+10, heroX+heroW, p.Min.Y+10+96)
+	outer := image.Rect(strip.Max.X+1, strip.Min.Y+12, p.Max.X-3, strip.Max.Y-12)
+	if n := countColourIn(frame, outer, colHeader); n != 0 {
+		t.Errorf("badge/sparkle leaked past the hero strip (%d hero pixels)", n)
+	}
+	for _, c := range []color.RGBA{colPlum, colWhite, colHairLight} {
+		if n := countColourIn(frame, outer, c); n > 4 {
+			t.Errorf("art leaked past the hero strip (%d pixels of %v)", n, c)
+		}
 	}
 }
 
@@ -1647,5 +1717,26 @@ func TestPagerFlip(t *testing.T) {
 	flip(px, py, WMessages) // prev is disabled at the first page
 	if m := u.msgs[0]; m.Page != 0 {
 		t.Errorf("prev clamped: got %d want 0", m.Page)
+	}
+}
+
+// TestStreamingBubblePreview verifies the synthetic thinking bubble grows
+// into the streamed reply: "..." before the first delta, the tag-stripped
+// preview afterwards (newlines flattened, a trailing unclosed "[" dropped),
+// and gone once Thinking ends.
+func TestStreamingBubblePreview(t *testing.T) {
+	u := NewUI(380, 520)
+	u.Thinking = true
+	if got := u.blocks()[len(u.msgs)].m.Text; got != "..." {
+		t.Fatalf("before deltas: synthetic text = %q, want %q", got, "...")
+	}
+	u.SetStreamText("[happy] hello\nthere [happ")
+	if got := u.blocks()[len(u.msgs)].m.Text; got != "hello there" {
+		t.Errorf("after delta: synthetic text = %q, want %q", got, "hello there")
+	}
+	u.Thinking = false
+	u.streamText = ""
+	if n := len(u.blocks()); n != len(u.msgs) {
+		t.Errorf("blocks = %d, want %d (synthetic bubble gone)", n, len(u.msgs))
 	}
 }

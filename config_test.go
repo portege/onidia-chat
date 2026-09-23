@@ -620,3 +620,35 @@ func TestSetConfigValueOnShippedINI(t *testing.T) {
 		t.Errorf("age clobbered by the sleep save: %d, want 11", c.CharacterAge)
 	}
 }
+
+// TestLoadConfigStreamKey verifies the openrouter `stream` key: absent means
+// the default (streaming on, StreamSet false), present parses as a bool and
+// marks the key as set.
+func TestLoadConfigStreamKey(t *testing.T) {
+	load := func(body string) *Config {
+		t.Helper()
+		tmp, err := os.CreateTemp("", "chat-app-config-*.ini")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(tmp.Name())
+		if _, err := tmp.WriteString(body); err != nil {
+			t.Fatal(err)
+		}
+		tmp.Close()
+		c, err := LoadConfig(tmp.Name())
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		return c
+	}
+	if c := load("provider = openrouter\n"); c.StreamSet {
+		t.Error("absent stream key: StreamSet should be false (default on applies)")
+	}
+	if c := load("stream = false\n"); !c.StreamSet || c.Stream {
+		t.Errorf("stream = false: got (Stream=%v, StreamSet=%v), want (false, true)", c.Stream, c.StreamSet)
+	}
+	if c := load("stream = on\n"); !c.Stream {
+		t.Error("stream = on: Stream should be true")
+	}
+}

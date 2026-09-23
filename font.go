@@ -225,6 +225,57 @@ func textWidth(s string, scale int) int {
 	return n*advW*scale - scale // no trailing tracking after last glyph
 }
 
+// mixRGBA blends two colours linearly: t=0 returns a, t=255 returns b.
+func mixRGBA(a, b color.RGBA, t uint32) color.RGBA {
+	if t > 255 {
+		t = 255
+	}
+	nt := 255 - t
+	return color.RGBA{
+		R: uint8((uint32(a.R)*nt + uint32(b.R)*t) / 255),
+		G: uint8((uint32(a.G)*nt + uint32(b.G)*t) / 255),
+		B: uint8((uint32(a.B)*nt + uint32(b.B)*t) / 255),
+		A: uint8((uint32(a.A)*nt + uint32(b.A)*t) / 255),
+	}
+}
+
+// drawTextGrad renders s like drawText but shades every glyph row from colTop
+// (top of the cell) to colBottom (bottom of the descender zone): the candy
+// look the About modal's word-art title uses for its drop shadow. The last
+// pass of a title must stay a solid drawText so its glyphs are one exact
+// colour on screen (and findable by the UI tests).
+func drawTextGrad(dst *image.NRGBA, x, y int, s string, scale int, colTop, colBottom color.RGBA) {
+	px := x
+	for _, r := range s {
+		g, ok := font5x7[r]
+		if !ok {
+			g, ok = font5x7[unicode.ToUpper(r)]
+			if !ok {
+				px += advW * scale
+				continue
+			}
+		}
+		for row := 0; row < glyphH; row++ {
+			bits := g[row]
+			if bits == 0 {
+				continue
+			}
+			t := uint32(0)
+			if glyphH > 1 {
+				t = uint32(255 * row / (glyphH - 1))
+			}
+			col := mixRGBA(colTop, colBottom, t)
+			for c := 0; c < glyphW; c++ {
+				if bits&(1<<(glyphW-1-c)) == 0 {
+					continue
+				}
+				fillRect(dst, px+c*scale, y+row*scale, scale, scale, col)
+			}
+		}
+		px += advW * scale
+	}
+}
+
 // wrapText breaks s into lines of at most cols runes (word wrap; words longer
 // than a full line are hard-split; explicit newlines are preserved).
 func wrapText(s string, cols int) []string {
