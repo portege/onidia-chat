@@ -2,6 +2,7 @@
 *.exe
 *.test
 chat-app
+/agentctl
 chat_live_test.go
 e2e_test*.go
 repro*_test.go
@@ -16,3 +17,6 @@ pet_*.png
 go.work
 go.work.sumgeminitest
 chat-app.ini
+
+# Packaged agent zips (make pack)
+dist/

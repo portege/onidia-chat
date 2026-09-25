@@ -69,6 +69,12 @@ type Msg struct {
 	Image image.Image // optional image to render inside the bubble
 	Pages []string    // paragraphs; >1 turns the bubble into a pager (see Page)
 	Page  int         // current page index into Pages (0 = first)
+	// Calls / Results carry the non-text half of a native tool-calling
+	// exchange (Phase 3, see toolcalls.go): a bot turn can report the abilities
+	// the model asked for, and the user turn after it the outcomes handed back.
+	// Both stay nil for ordinary chat messages; the renderer ignores them.
+	Calls   []ToolCall
+	Results []ToolResult
 }
 
 // Palette - shared with the desktop-pet (plum outlines, pastel teal).
@@ -1490,7 +1496,7 @@ var streamNewlines = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ", `\\n
 // only if the user was already there.
 func (u *UI) SetStreamText(s string) {
 	follow := u.scroll >= u.maxScroll()
-	_, _, _, _, txt := stripTags(s)
+	_, _, _, _, _, txt := stripTags(s)
 	if i := strings.LastIndex(txt, "["); i >= 0 && !strings.Contains(txt[i:], "]") {
 		txt = txt[:i]
 	}

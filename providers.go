@@ -12,7 +12,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -24,11 +23,11 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
-	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 )
 
 // Provider abstracts the LLM used for chat replies.
@@ -61,47 +60,19 @@ func (g *geminiProvider) GenerateText(system string, history []Msg, userText str
 	if g.apiKey == "" {
 		return "", errors.New("no Gemini API key")
 	}
-	contents := make([]geminiContent, 0, len(history)+1)
-	for _, m := range history {
-		role := "model"
-		if m.From == "you" {
-			role = "user"
-		}
-		contents = append(contents, geminiContent{Role: role,
-			Parts: []geminiPart{{Text: m.Text}}})
-	}
-	if len(contents) == 0 || contents[len(contents)-1].Role != "user" {
-		contents = append(contents, geminiContent{Role: "user",
-			Parts: []geminiPart{{Text: userText}}})
-	}
-	if len(contents) > maxHistTurns {
-		contents = contents[len(contents)-maxHistTurns:]
-	}
+	contents := geminiContents(history, userText)
 
-	out, err := g.generateRaw(contents, g.model, system, nil)
+	out, err := g.generateRaw(contents, g.model, system, nil, nil)
 	if err != nil {
 		return "", err
 	}
-	var sb strings.Builder
-	for _, c := range out.Candidates {
-		for _, p := range c.Content.Parts {
-			if p.Thought {
-				continue
-			}
-			sb.WriteString(p.Text)
-		}
-		if sb.Len() > 0 {
-			break
-		}
+	// A text-only call: geminiTurn also reads functionCall parts (there are
+	// none without tools) and reports the SAFETY / empty-answer errors.
+	turn, err := geminiTurn(out)
+	if err != nil {
+		return "", err
 	}
-	text := strings.TrimSpace(sb.String())
-	if text == "" {
-		if len(out.Candidates) > 0 && out.Candidates[0].FinishReason == "SAFETY" {
-			return "", errors.New("the answer was blocked by safety filters")
-		}
-		return "", errors.New("empty answer")
-	}
-	return text, nil
+	return turn.Text, nil
 }
 
 // generateImage asks a Gemini image model to create a picture from the prompt.
@@ -114,7 +85,7 @@ func (g *geminiProvider) generateImage(prompt string) (image.Image, error) {
 		Parts: []geminiPart{{Text: prompt}},
 	}}
 	cfg := &generationConfig{ResponseModalities: []string{"IMAGE", "TEXT"}}
-	out, err := g.generateRaw(contents, geminiImageModel, "", cfg)
+	out, err := g.generateRaw(contents, geminiImageModel, "", cfg, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -138,14 +109,14 @@ func (g *geminiProvider) generateImage(prompt string) (image.Image, error) {
 }
 
 // generateRaw fires a generateContent call for any model, retrying transient
-// failures.
-func (g *geminiProvider) generateRaw(contents []geminiContent, model, system string, genCfg *generationConfig) (*geminiResponse, error) {
+// failures. tools advertises function declarations (nil = plain text call).
+func (g *geminiProvider) generateRaw(contents []geminiContent, model, system string, genCfg *generationConfig, tools []geminiTools) (*geminiResponse, error) {
 	var lastErr error
 	for attempt := 0; attempt < 4; attempt++ {
 		if attempt > 0 {
 			time.Sleep(time.Duration(attempt) * 900 * time.Millisecond)
 		}
-		out, err := g.generateRawOnce(contents, model, system, genCfg, attempt)
+		out, err := g.generateRawOnce(contents, model, system, genCfg, tools, attempt)
 		if err == nil {
 			return out, nil
 		}
@@ -160,8 +131,8 @@ func (g *geminiProvider) generateRaw(contents []geminiContent, model, system str
 
 // generateRawOnce builds the JSON request body and fires one generateContent
 // call for the supplied model.
-func (g *geminiProvider) generateRawOnce(contents []geminiContent, model, system string, genCfg *generationConfig, retryAttempt int) (*geminiResponse, error) {
-	reqBody := geminiRequest{Contents: contents}
+func (g *geminiProvider) generateRawOnce(contents []geminiContent, model, system string, genCfg *generationConfig, tools []geminiTools, retryAttempt int) (*geminiResponse, error) {
+	reqBody := geminiRequest{Contents: contents, Tools: tools}
 	if system != "" {
 		reqBody.SystemInstruction = &geminiContent{Parts: []geminiPart{{Text: system}}}
 	}
@@ -285,79 +256,32 @@ type ollamaProvider struct {
 	apiURL string // server base, e.g. http://localhost:8000 (no trailing slash)
 	model  string // e.g. "qwen2:1.5b"
 	http   *http.Client
+	// noTools is set when the server rejected a tool request (an ollama older
+	// than 0.3, or a model without tool support). The reply loop then stops
+	// advertising tools and uses the [AGENT: ...] tag path instead.
+	noTools atomic.Bool
 }
 
 func (o *ollamaProvider) Name() string { return "ollama" }
 
-// ollamaChatMsg is one message of the /api/chat payload.
+// ToolsUnsupported reports a server/model that cannot do tool calling, so the
+// loop goes straight to the tag path (see toolRetirer in toolcalls.go).
+func (o *ollamaProvider) ToolsUnsupported() bool { return o.noTools.Load() }
+
+// ollamaChatMsg is one message of the /api/chat payload. The tool fields carry
+// the Phase 3 exchanges (see providertools.go).
 type ollamaChatMsg struct {
-	Role    string `json:"role"` // "system" | "user" | "assistant"
-	Content string `json:"content"`
+	Role      string           `json:"role"` // "system" | "user" | "assistant" | "tool"
+	Content   string           `json:"content"`
+	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+	ToolName  string           `json:"tool_name,omitempty"`
 }
 
+// GenerateText runs one text-only chat call: the tool machinery in
+// providertools.go handles both modes, so this is the plain-text entry point.
 func (o *ollamaProvider) GenerateText(system string, history []Msg, userText string) (string, error) {
-	msgs := make([]ollamaChatMsg, 0, len(history)+2)
-	if system != "" {
-		msgs = append(msgs, ollamaChatMsg{Role: "system", Content: system})
-	}
-	for _, m := range history {
-		role := "assistant"
-		if m.From == "you" {
-			role = "user"
-		}
-		msgs = append(msgs, ollamaChatMsg{Role: role, Content: m.Text})
-	}
-	// Same rule as the gemini provider: make sure the conversation ends on a
-	// user turn carrying the new input.
-	if len(msgs) == 0 || msgs[len(msgs)-1].Role != "user" {
-		msgs = append(msgs, ollamaChatMsg{Role: "user", Content: userText})
-	}
-	// Cap the exchanged turns the same way gemini does; the system message
-	// always stays at the front.
-	if n := len(msgs); n > 1 && n-1 > maxHistTurns {
-		msgs = append(msgs[:1:1], msgs[n-maxHistTurns:]...)
-	}
-
-	body, err := json.Marshal(map[string]any{
-		"model":    o.model,
-		"messages": msgs,
-		"stream":   false,
-	})
-	if err != nil {
-		return "", err
-	}
-	endpoint := strings.TrimRight(o.apiURL, "/") + "/api/chat"
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := o.http.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("ollama %s: %w", endpoint, err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return "", fmt.Errorf("ollama: read reply: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("ollama %s: HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	var out struct {
-		Message struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", fmt.Errorf("ollama: decode reply: %w", err)
-	}
-	text := strings.TrimSpace(out.Message.Content)
-	if text == "" {
-		return "", errors.New("empty answer")
-	}
-	return text, nil
+	turn, err := o.generateTurn(system, history, userText, nil, nil)
+	return turn.Text, err
 }
 
 // openrouterProvider talks to an OpenAI-compatible chat gateway (OpenRouter by
@@ -400,10 +324,15 @@ func newOpenRouterProvider(apiKey, apiURL, model string, stream bool) Provider {
 	}
 }
 
-// openrouterChatMsg is one message of the /chat/completions payload.
+// openrouterChatMsg is one message of the /chat/completions payload. The tool
+// fields carry the Phase 3 exchanges (see providertools.go). ToolCalls uses
+// the request (Out) shape because the loop echoes calls back to the API with
+// arguments as a JSON string.
 type openrouterChatMsg struct {
-	Role    string `json:"role"` // "system" | "user" | "assistant"
-	Content string `json:"content"`
+	Role       string                  `json:"role"` // "system" | "user" | "assistant" | "tool"
+	Content    string                  `json:"content"`
+	ToolCalls  []openrouterToolCallOut `json:"tool_calls,omitempty"`
+	ToolCallID string                  `json:"tool_call_id,omitempty"`
 }
 
 func (p *openrouterProvider) GenerateText(system string, history []Msg, userText string) (string, error) {
@@ -416,231 +345,17 @@ func (p *openrouterProvider) GenerateText(system string, history []Msg, userText
 // otherwise the classic single-shot JSON reply is used. Either way the full
 // reply text is returned, so callers that ignore deltas work unchanged.
 func (p *openrouterProvider) GenerateTextStream(system string, history []Msg, userText string, onDelta func(accumulated string)) (string, error) {
-	if p.apiKey == "" {
-		return "", errors.New("no OpenRouter API key (set -api-key, $OPENROUTER_API_KEY, or config api-key)")
-	}
-	// Same message assembly the ollama/gemini providers use: leading system
-	// message, then history (assistant by default, "you" -> user), guarantee a
-	// trailing user turn carrying the new input, then cap at maxHistTurns
-	// keeping the system message pinned at the front.
-	msgs := make([]openrouterChatMsg, 0, len(history)+2)
-	if system != "" {
-		msgs = append(msgs, openrouterChatMsg{Role: "system", Content: system})
-	}
-	for _, m := range history {
-		role := "assistant"
-		if m.From == "you" {
-			role = "user"
-		}
-		msgs = append(msgs, openrouterChatMsg{Role: role, Content: m.Text})
-	}
-	if len(msgs) == 0 || msgs[len(msgs)-1].Role != "user" {
-		msgs = append(msgs, openrouterChatMsg{Role: "user", Content: userText})
-	}
-	if n := len(msgs); n > 1 && n-1 > maxHistTurns {
-		msgs = append(msgs[:1:1], msgs[n-maxHistTurns:]...)
-	}
-
-	body, err := json.Marshal(map[string]any{
-		"model":    p.model,
-		"messages": msgs,
-		"stream":   p.stream,
-	})
-	if err != nil {
-		return "", err
-	}
-	endpoint := strings.TrimRight(p.apiURL, "/") + "/chat/completions"
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
-	resp, err := p.http.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("openrouter %s: %w", endpoint, err)
-	}
-	defer resp.Body.Close()
-	if p.stream {
-		// SSE: a non-200 answer arrives as a plain JSON error object, not an
-		// event stream, so check the status (reading the body for the
-		// message) before handing the stream to the event parser.
-		if resp.StatusCode != http.StatusOK {
-			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			return "", fmt.Errorf("openrouter %s: HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(raw)))
-		}
-		return p.readSSE(resp.Body, onDelta)
-	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return "", fmt.Errorf("openrouter: read reply: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("openrouter %s: HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	var out struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", fmt.Errorf("openrouter: decode reply: %w", err)
-	}
-	if len(out.Choices) == 0 {
-		return "", errors.New("openrouter: no choices in reply")
-	}
-	text := strings.TrimSpace(out.Choices[0].Message.Content)
-	if text == "" {
-		return "", errors.New("empty answer")
-	}
-	return text, nil
-}
-
-// readSSE consumes an OpenAI-style text/event-stream: one "data: {json}" line
-// per chunk carrying choices[0].delta.content fragments, terminated by
-// "data: [DONE]". onDelta (may be nil) receives the accumulated text after
-// each fragment. A mid-stream "error" object aborts with its message, and a
-// stream that produced no text at all fails like the single-shot path.
-func (p *openrouterProvider) readSSE(r io.Reader, onDelta func(accumulated string)) (string, error) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64<<10), 1<<20) // long data: lines on big replies
-	var sb strings.Builder
-	for sc.Scan() {
-		line := sc.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue // blank separator, comments, id:/event: fields
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "" {
-			continue
-		}
-		if payload == "[DONE]" {
-			break
-		}
-		var chunk struct {
-			Choices []struct {
-				Delta struct {
-					Content *string `json:"content"`
-				} `json:"delta"`
-			} `json:"choices"`
-			Error *struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			return "", fmt.Errorf("openrouter: decode stream chunk: %w", err)
-		}
-		if chunk.Error != nil {
-			return "", fmt.Errorf("openrouter: stream: %s", chunk.Error.Message)
-		}
-		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta.Content == nil {
-			continue // role-only opening chunk, usage keep-alives
-		}
-		if frag := *chunk.Choices[0].Delta.Content; frag != "" {
-			sb.WriteString(frag)
-			if onDelta != nil {
-				onDelta(sb.String())
-			}
-		}
-	}
-	if err := sc.Err(); err != nil {
-		return "", fmt.Errorf("openrouter: read stream: %w", err)
-	}
-	text := strings.TrimSpace(sb.String())
-	if text == "" {
-		return "", errors.New("empty answer")
-	}
-	return text, nil
+	turn, err := p.generateTurn(system, history, userText, nil, onDelta)
+	return turn.Text, err
 }
 
 func (p *bedrockProvider) Name() string { return "bedrock" }
 
+// GenerateText runs one tool-less Converse call: the turn machinery in
+// providertools.go handles the message assembly and both modes.
 func (p *bedrockProvider) GenerateText(system string, history []Msg, userText string) (string, error) {
-	// Bedrock requires the conversation to start with a user message and to
-	// alternate user/assistant roles. Skip the welcome bot message(s) that may
-	// appear before the first user message.
-	start := 0
-	for i, m := range history {
-		if m.From == "you" {
-			start = i
-			break
-		}
-	}
-
-	messages := make([]types.Message, 0, len(history)+1-start)
-	for i := start; i < len(history); i++ {
-		m := history[i]
-		role := types.ConversationRoleAssistant
-		if m.From == "you" {
-			role = types.ConversationRoleUser
-		}
-		// Drop any message that would create two consecutive turns with the
-		// same role (defensive against malformed history).
-		if len(messages) > 0 && messages[len(messages)-1].Role == role {
-			continue
-		}
-		messages = append(messages, types.Message{
-			Role:    role,
-			Content: []types.ContentBlock{&types.ContentBlockMemberText{Value: m.Text}},
-		})
-	}
-	if len(messages) == 0 || messages[len(messages)-1].Role != types.ConversationRoleUser {
-		messages = append(messages, types.Message{
-			Role:    types.ConversationRoleUser,
-			Content: []types.ContentBlock{&types.ContentBlockMemberText{Value: userText}},
-		})
-	}
-	if len(messages) > maxHistTurns {
-		messages = messages[len(messages)-maxHistTurns:]
-		// After truncation the first remaining message must still be user.
-		if messages[0].Role != types.ConversationRoleUser {
-			for i, msg := range messages {
-				if msg.Role == types.ConversationRoleUser {
-					messages = messages[i:]
-					break
-				}
-			}
-		}
-	}
-
-	var systemBlocks []types.SystemContentBlock
-	if system != "" {
-		systemBlocks = []types.SystemContentBlock{
-			&types.SystemContentBlockMemberText{Value: system},
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), geminiTimeout)
-	defer cancel()
-	out, err := p.client.Converse(ctx, &bedrockruntime.ConverseInput{
-		ModelId:  &p.model,
-		Messages: messages,
-		System:   systemBlocks,
-	})
-	if err != nil {
-		// Include the model ID: "model identifier is invalid" errors are
-		// otherwise confusing (usually a Gemini ID leftover in the config).
-		log.Printf("bedrock: model %s: %v", p.model, err)
-		return "", fmt.Errorf("model %s: %w", p.model, err)
-	}
-
-	msg, ok := out.Output.(*types.ConverseOutputMemberMessage)
-	if !ok {
-		return "", errors.New("bedrock: unexpected output type")
-	}
-	var sb strings.Builder
-	for _, block := range msg.Value.Content {
-		if textBlock, ok := block.(*types.ContentBlockMemberText); ok {
-			sb.WriteString(textBlock.Value)
-		}
-	}
-	text := strings.TrimSpace(sb.String())
-	if text == "" {
-		return "", errors.New("empty answer")
-	}
-	return text, nil
+	turn, err := p.generateTurn(system, history, userText, nil)
+	return turn.Text, err
 }
 
 // newBedrockProvider loads AWS credentials and creates a Bedrock runtime client.

@@ -133,6 +133,18 @@ busy-time = 09:00-17:00
 # Mute checkbox: while true replies are shown as bubbles but never spoken.
 mute = false
 
+# Agents: pluggable abilities the model invokes with [AGENT: ...] reply tags.
+# Each agent is a folder (agent.json + executable) in agents-dir; install new
+# ones with `agentctl install <folder|zip|url>` - no rebuild, restart to pick
+# up. See agents/README.md for the authoring guide.
+# agents-dir = /home/boi/.config/chat-app/agents
+# agents-off = false
+
+# Media folders for the built-in play_song / play_movie agents (flag names:
+# -music-dir / -video-dir). Unset = the agents use ~/Music and ~/Videos.
+# music-dir = ~/Music
+# video-dir = ~/Videos
+
 # Demo mode checkbox (the row directly below MUTE SPEECH): OFF (the default)
 # keeps the buddy "planted" - it never wanders and never starts talking
 # on its own, though it still blinks, idles and answers what you send it.

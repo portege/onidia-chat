@@ -55,7 +55,7 @@ func TestStripTags(t *testing.T) {
 		{"[ACTION: DANCE] case-insensitive", "", "", "dance", "", "case-insensitive"},
 	}
 	for _, tc := range cases {
-		mood, img, action, event, text := stripTags(tc.raw)
+		mood, img, action, event, _, text := stripTags(tc.raw)
 		if mood != tc.wantMood || img != tc.wantImg || action != tc.wantAction || event != tc.wantEvent || text != tc.wantText {
 			t.Errorf("stripTags(%q) = (%q, %q, %q, %q, %q), want (%q, %q, %q, %q, %q)",
 				tc.raw, mood, img, action, event, text, tc.wantMood, tc.wantImg, tc.wantAction, tc.wantEvent, tc.wantText)

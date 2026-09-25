@@ -405,6 +405,16 @@ you ──▶ textarea ──▶ SEND/Enter ──▶ UI appends your bubble, sh
 ├── pet.go         desktop-pet say-FIFO bridge (non-blocking writes)
 ├── tts.go         Typecast text-to-speech (async fetch + aplay/paplay/ffplay)
 ├── preview.go     -preview PNG renderer (like the buddy's -debug mode)
+├── agentbridge.go [AGENT: ...] bridge + the multi-round agent loop
+├── toolcalls.go   provider-neutral tool types + the native tool-call loop
+├── providertools.go  each provider's own tool dialect (Gemini, OpenRouter,
+│                  ollama, Bedrock Converse)
+├── story.go       the native read_story agent (AI tales, no API keys leaked)
+├── agent/         importable agent package: interface, registry, manifest,
+│                  discovery, external line-protocol client, env
+├── agents/        shippable agent folders + the authoring guide (make pack)
+├── docs/AGENT-PROTOCOL.md  manifest + wire protocol reference
+├── cmd/agentctl/  install/list/run/validate CLI (same code path as chat)
 ├── x11win.go      ARGB window setup, WM hints, cursors, keyboard mapping
 ├── x11draw.go     frame upload (chunked PutImage)
 ├── x11events.go   event pump + keycode→keysym decoding
@@ -412,6 +422,63 @@ you ──▶ textarea ──▶ SEND/Enter ──▶ UI appends your bubble, sh
 ├── Makefile
 └── go.mod
 ```
+
+## Agents - pluggable abilities (`[AGENT: ...]`)
+
+The model can invoke **agents**: small programs discovered at startup from
+the agents directory (`~/.config/chat-app/agents`, override with
+`-agents-dir` / `agents-dir`). Each registered agent is advertised in the
+system prompt catalog, so the reply can lead with
+`[AGENT: play_song title="Havana"]` - chat-app strips the tag, validates
+the parameters against the agent's declared `params` (the model can only
+send what the manifest declares), runs the agent, and folds its `OK`
+message into the reply (spoken by the pet too).
+
+One reply may ask for **several** abilities: they run in parallel (4 at a
+time, 60s shared budget) and their results are handed back to the model as
+a delimited, sanitized data block, so it can **chain** a second ability
+(feed a search result into a play call) or rephrase a failure - at most 3
+rounds, and the same ability+arguments never runs twice in one reply (see
+[`docs/AGENT-PROTOCOL.md`](docs/AGENT-PROTOCOL.md#the-reply-loop-brain-side)).
+
+```sh
+make agentctl
+./agentctl install agents/hello_world     # folder | .zip | https://...zip
+./agentctl list                           # catalog the model sees
+./agentctl run hello_world name=Ada       # test one run, no chat needed
+make pack                                 # zip shippable agents -> dist/agents/
+```
+
+Drop-in, no rebuild: write `agent.json` + any executable speaking the
+3-line protocol, zip it, `agentctl install` - restart chat-app and the
+model can use it. Full guide: [`agents/README.md`](agents/README.md),
+wire protocol: [`docs/AGENT-PROTOCOL.md`](docs/AGENT-PROTOCOL.md).
+Disable with `-agents-off` / `agents-off = true`.
+
+### Native tool calling (Phase 3)
+
+When the active provider has a function/tool-calling API (Gemini, OpenRouter
+and every OpenAI-compatible endpoint, ollama ≥ 0.3, Bedrock Converse), the
+registered abilities are handed to the model as **tool definitions** instead of
+being described in the prompt: the tool name is the agent `id`, the description
+the manifest `description`, and its parameters the declared `params` rendered as
+a JSON schema. The model then asks for an ability with **structured JSON
+arguments** - validated by the same gate a tag passes, so `unknown parameter`,
+type/enum and required checks still refuse a bad call before the agent runs -
+and the outcome returns as the provider's own tool result, so it can chain or
+rephrase exactly like on the tag path (same 4-at-a-time concurrency, 60 s
+budget, 3-round limit and dedupe).
+
+The `[AGENT: ...]` tag path is **kept as the fallback**: a provider, server or
+model without tool support makes the first tool request fail, and chat-app
+answers through the tags instead - so one agent works everywhere. See
+[`docs/AGENT-PROTOCOL.md`](docs/AGENT-PROTOCOL.md#native-tool-calling-phase-3---preferred-when-the-provider-supports-it).
+
+Bundled: **`read_story`** (native - AI tales through the pet/TTS
+pipeline), and downloadable **`play_song`** / **`play_movie`** folders
+(fuzzy search over `music-dir` / `video-dir`, detached player launch with
+mpv/cvlc/vlc/ffplay fallback). Install the latter two with
+`./agentctl install agents/play_song` (and `play_movie`).
 
 ## Troubleshooting
 

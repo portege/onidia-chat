@@ -58,6 +58,14 @@ type Config struct {
 	BusyTo           int    // legacy whole-hour alias kept for existing callers (set from H fields)
 	SleepFrom        int    // legacy whole-hour aliases kept for existing callers (set from H fields)
 	SleepTo          int    // legacy whole-hour aliases kept for existing callers (set from H fields)
+	AgentsDir        string `ini:"agents-dir"` // directory of downloadable agents ("" = default)
+	AgentsOff        bool   `ini:"agents-off"` // true = never discover agents / advertise them
+	MusicDir         string `ini:"music-dir"`  // play_song agent's music folder ("" = agent default)
+	VideoDir         string `ini:"video-dir"`  // play_movie agent's video folder ("" = agent default)
+	AgentsKey        string `ini:"agents-key"`        // trusted Ed25519 public key hex for agent signatures ("" = unverified)
+	AgentsRequireSig bool   `ini:"agents-require-sig"` // reject unsigned agents if true
+	AgentsRegistry   string `ini:"agents-registry"`   // registry index URL or path ("" = default/none)
+
 }
 
 // LoadConfig reads a simple INI file and returns populated Config.
@@ -193,6 +201,20 @@ func applyConfigField(cfg *Config, key, val string) {
 			cfg.BusyFrom, cfg.BusyTo = fh, th
 			cfg.BusySet = true
 		}
+	case "agents-dir":
+		cfg.AgentsDir = val
+	case "agents-off":
+		cfg.AgentsOff = parseBool(val)
+	case "agents-key":
+		cfg.AgentsKey = strings.TrimSpace(val)
+	case "agents-require-sig":
+		cfg.AgentsRequireSig = parseBool(val)
+	case "agents-registry":
+		cfg.AgentsRegistry = strings.TrimSpace(val)
+	case "music-dir":
+		cfg.MusicDir = val
+	case "video-dir":
+		cfg.VideoDir = val
 	}
 }
 

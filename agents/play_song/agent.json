@@ -1,0 +1,12 @@
+{
+  "id": "play_song",
+  "version": "1.0.0",
+  "description": "Play music from the user's local music folder. Use when the user asks to hear a song, an artist, or some music. Pass query with title/artist keywords; omit query (or pass empty) for a random track.",
+  "exec": ["python3", "play_song.py"],
+  "params": [
+    {
+      "name": "query",
+      "description": "song title, artist, or keywords to search for; empty = random pick"
+    }
+  ]
+}

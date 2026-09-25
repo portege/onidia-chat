@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/portege/chat-app/agent"
 )
 
 // defaultConfigPath returns the conventional chat-app.ini to auto-load when
@@ -38,6 +40,41 @@ func defaultConfigPath() string {
 		}
 	}
 	return ""
+}
+
+// firstNonEmpty returns the first non-blank argument (flag > config).
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// cfgStr safely reads a field from a possibly-nil config.
+func cfgStr(cfg *Config, get func(*Config) string) string {
+	if cfg == nil {
+		return ""
+	}
+	return get(cfg)
+}
+
+// expandHome resolves a leading ~/ to the user's home directory (config
+// paths are commonly written that way); anything else passes through.
+func expandHome(p string) string {
+	if p == "~" {
+		if h, err := os.UserHomeDir(); err == nil {
+			return h
+		}
+		return p
+	}
+	if strings.HasPrefix(p, "~/") {
+		if h, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(h, p[2:])
+		}
+	}
+	return p
 }
 
 // pickModel resolves the effective model ID for a provider and returns an
@@ -152,6 +189,14 @@ func main() {
 			"Typecast API key for spoken replies (default: $TYPECAST_API_KEY, config tts-key, or built-in)")
 		ttsVoice = flag.String("tts-voice", "",
 			"Typecast voice id for spoken replies (default: config tts-voice, or built-in)")
+		agentsDirFlag = flag.String("agents-dir", "",
+			"directory of downloadable agents (default: $XDG_CONFIG_HOME/chat-app/agents or ~/.config/chat-app/agents)")
+		agentsOffFlag = flag.Bool("agents-off", false,
+			"disable agent discovery and [AGENT: ...] reply tags")
+		musicDirFlag = flag.String("music-dir", "",
+			"music folder for the play_song agent (default: config music-dir, or ~/Music inside the agent)")
+		videoDirFlag = flag.String("video-dir", "",
+			"video folder for the play_movie agent (default: config video-dir, or ~/Videos inside the agent)")
 	)
 	flag.Parse()
 
@@ -337,6 +382,62 @@ func main() {
 		ttsVoiceVal = strings.TrimSpace(cfg.TTSVoice)
 	}
 
+	// Agents: downloadable pluggable abilities. Discovery is startup-only
+	// (drop a new folder into the dir and restart, or use agentctl run to
+	// test it standalone). Built-ins could Register() here before Discover
+	// so a download can never shadow them. Placed before the headless probe
+	// exits so `-preview` and friends exercise the same wiring.
+	agentsDir := strings.TrimSpace(*agentsDirFlag)
+	if agentsDir == "" && cfg != nil {
+		agentsDir = strings.TrimSpace(cfg.AgentsDir)
+	}
+	if agentsDir == "" {
+		agentsDir = agent.DefaultDir()
+	}
+	agentsOff := *agentsOffFlag
+	if !explicitFlags["agents-off"] && cfg != nil {
+		agentsOff = cfg.AgentsOff
+	}
+	// Media folders flow to the play_* agents as CHAT_APP_* env vars
+	// (flag > config > unset -> the agent falls back to ~/Music / ~/Videos).
+	agent.SetExtraEnv(map[string]string{
+		"CHAT_APP_MUSIC_DIR": expandHome(firstNonEmpty(
+			*musicDirFlag, cfgStr(cfg, func(c *Config) string { return c.MusicDir }))),
+		"CHAT_APP_VIDEO_DIR": expandHome(firstNonEmpty(
+			*videoDirFlag, cfgStr(cfg, func(c *Config) string { return c.VideoDir }))),
+	})
+	if agentsOff {
+		log.Printf("agents: disabled by config")
+	} else {
+		// Built-ins register BEFORE discovery so a downloaded folder can
+		// never shadow them (first registration wins).
+		if err := agent.Register(story); err != nil {
+			log.Printf("agents: %v", err)
+		}
+		if agentsDir != "" {
+			var pol agent.Policy
+			if cfg != nil {
+				pol.RequireSignature = cfg.AgentsRequireSig
+				if cfg.AgentsKey != "" {
+					if pk, err := agent.ParsePublicKey(cfg.AgentsKey); err == nil {
+						pol.Key = pk
+					} else {
+						log.Printf("agents: invalid agents-key in config: %v", err)
+					}
+				}
+			}
+			ids, problems := agent.DiscoverWithPolicy(agentsDir, pol)
+			for _, p := range problems {
+				log.Printf("%s", p)
+			}
+			if len(ids) > 0 {
+				log.Printf("agents: %d discovered: %s", len(ids), strings.Join(ids, ", "))
+			} else {
+				log.Printf("agents: none in %s (agentctl install <dir|zip|url> to add)", agentsDir)
+			}
+		}
+	}
+
 	// -fetch-image tests the resolved source's fetch path (the gemini source
 	// has its own -gen-image probe).
 	if *fetchImageFlag != "" {
@@ -516,6 +617,7 @@ func main() {
 	}
 
 	ui.Bot.Provider = botProvider
+	story.bot = ui.Bot // wire the native read_story agent to this provider
 	// SSE deltas fire on the reply goroutine; hand them to the main loop over
 	// a channel so only the main loop ever touches UI state (mirrors Replies).
 	ui.Bot.OnDelta = func(accumulated string) { ui.Stream <- accumulated }

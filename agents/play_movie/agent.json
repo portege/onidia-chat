@@ -1,0 +1,18 @@
+{
+  "id": "play_movie",
+  "version": "1.0.0",
+  "description": "Play a video from the user's local video folder. Use when the user asks to watch a movie or video. Pass query with title keywords; omit query (or pass empty) for a random pick.",
+  "exec": ["python3", "play_movie.py"],
+  "params": [
+    {
+      "name": "query",
+      "description": "movie title or keywords to search for; empty = random pick"
+    },
+    {
+      "name": "fullscreen",
+      "type": "bool",
+      "default": "true",
+      "description": "play in a fullscreen window"
+    }
+  ]
+}

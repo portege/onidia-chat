@@ -12,6 +12,7 @@ package main
 // a stub so the UI keeps working offline.
 
 import (
+	"encoding/json"
 	"fmt"
 	"image"
 	"log"
@@ -21,6 +22,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/portege/chat-app/agent"
 )
 
 const (
@@ -192,6 +195,63 @@ type geminiPart struct {
 		MimeType string `json:"mimeType"`
 		Data     string `json:"data"`
 	} `json:"inlineData,omitempty"`
+	// Phase 3 tool calling: an answer's functionCall part must be echoed back
+	// verbatim on the follow-up call (Gemini 3 signs it with a
+	// thoughtSignature), so the raw part JSON is kept alongside the decoded
+	// fields and re-emitted by MarshalJSON.
+	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+	Raw              json.RawMessage         `json:"-"`
+}
+
+// UnmarshalJSON decodes the known part fields and remembers the raw JSON.
+func (p *geminiPart) UnmarshalJSON(b []byte) error {
+	type part geminiPart // the alias avoids recursing into this method
+	var v part
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*p = geminiPart(v)
+	p.Raw = append(json.RawMessage(nil), b...)
+	return nil
+}
+
+// MarshalJSON re-emits the raw part when it came from a model answer (keeping
+// fields this struct does not model), and marshals the fields otherwise.
+func (p geminiPart) MarshalJSON() ([]byte, error) {
+	if len(p.Raw) > 0 {
+		return p.Raw, nil
+	}
+	type part geminiPart
+	return json.Marshal(part(p))
+}
+
+// geminiFunctionCall is one ability the model asked for: the tool name plus
+// its JSON arguments.
+type geminiFunctionCall struct {
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args,omitempty"`
+}
+
+// geminiFunctionResponse is the outcome handed back for one functionCall (the
+// response must be a JSON object, hence the wrapped "result"/"error" field).
+type geminiFunctionResponse struct {
+	Name     string          `json:"name"`
+	Response json.RawMessage `json:"response"`
+}
+
+// geminiFunctionDecl is one function definition advertised to the model:
+// parameters is the same JSON-schema object every other provider's tool API
+// takes (agent.ParamSchema).
+type geminiFunctionDecl struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+}
+
+// geminiTools is the request's tools field.
+type geminiTools struct {
+	FunctionDeclarations []geminiFunctionDecl `json:"functionDeclarations,omitempty"`
 }
 
 type geminiContent struct {
@@ -207,6 +267,7 @@ type geminiRequest struct {
 	Contents          []geminiContent   `json:"contents"`
 	SystemInstruction *geminiContent    `json:"systemInstruction,omitempty"`
 	GenerationConfig  *generationConfig `json:"generationConfig,omitempty"`
+	Tools             []geminiTools     `json:"tools,omitempty"`
 }
 
 type geminiResponse struct {
@@ -223,10 +284,11 @@ type geminiResponse struct {
 	} `json:"error,omitempty"`
 }
 
-// replyTag matches one [IMG: ...], [action]/[event] or [mood] tag plus any
-// blanks after it. Group 2 holds the image description, group 3 the action
-// name, group 4 the event name, group 5 the mood word.
-var replyTag = regexp.MustCompile(`(\[IMG:\s*([^\]]*)\]|\[ACTION:\s*([a-zA-Z]+)\]|\[EVENT:\s*([a-zA-Z]+)\]|\[([a-zA-Z]+)\])[ \t]*`)
+// replyTag matches one [IMG: ...], [action]/[event], [mood] or [AGENT: ...]
+// tag plus any blanks after it. Group 2 holds the image description, group 3
+// the action name, group 4 the event name, group 5 the mood word, and group 6
+// the raw agent payload (id + key=value args, parsed by agent.ParseCall).
+var replyTag = regexp.MustCompile(`(\[IMG:\s*([^\]]*)\]|\[ACTION:\s*([a-zA-Z]+)\]|\[EVENT:\s*([a-zA-Z]+)\]|\[([a-zA-Z]+)\]|\[AGENT:\s*([^\]]*)\])[ \t]*`)
 
 // petMoods are the tags the pet understands (see desktop-pet docs).
 var petMoods = map[string]bool{
@@ -334,17 +396,25 @@ func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 	if b.SleepSet {
 		sys += fmt.Sprintf(sleepInstructionFmt, b.SleepFromH, b.SleepFromM, b.SleepToH, b.SleepToM)
 	}
-	var rawReply string
-	var err error
-	if s, ok := b.Provider.(Streamer); ok && b.OnDelta != nil {
-		rawReply, err = s.GenerateTextStream(sys, clean, sanitizeUserInput(userText), b.OnDelta)
-	} else {
-		rawReply, err = b.Provider.GenerateText(sys, clean, sanitizeUserInput(userText))
-	}
+	// Phase 2 brain loop (agentbridge.go): the model's answer may ask for
+	// abilities - they run here (concurrently, under one cancel token) and
+	// their results are handed back so the model can finalize the reply or
+	// chain one more ability. A reply with no [AGENT: ...] tag pays nothing.
+	rawReply, runs, err := b.runAgentLoop(sys, clean, sanitizeUserInput(userText))
 	if err != nil {
 		return ReplyResult{Text: fmt.Sprintf("ouch - %s call failed: %v", b.Provider.Name(), err)}
 	}
-	return b.finishReply(rawReply)
+	return b.finishReply(rawReply, runs)
+}
+
+// generateText performs one model call: streaming through OnDelta when the
+// provider implements Streamer and OnDelta is wired (main.go), plain
+// otherwise. Shared by the agent loop and Greeting so both honor streaming.
+func (b *Bot) generateText(sys string, history []Msg, userText string) (string, error) {
+	if s, ok := b.Provider.(Streamer); ok && b.OnDelta != nil {
+		return s.GenerateTextStream(sys, history, userText, b.OnDelta)
+	}
+	return b.Provider.GenerateText(sys, history, userText)
 }
 
 // Greeting produces the unprompted welcome message shown once the character
@@ -366,18 +436,14 @@ func (b *Bot) Greeting() ReplyResult {
 		"Send the FIRST message of the day: greet the user warmly by mood, " +
 		"then share ONE short surprising did-you-know fun fact. " +
 		"Keep it under 40 words total, no questions, no lists.")
-	var rawReply string
-	var err error
-	if s, ok := b.Provider.(Streamer); ok && b.OnDelta != nil {
-		rawReply, err = s.GenerateTextStream(sys, nil, prompt, b.OnDelta)
-	} else {
-		rawReply, err = b.Provider.GenerateText(sys, nil, prompt)
-	}
+	rawReply, err := b.generateText(sys, nil, prompt)
 	if err != nil {
 		log.Printf("greeting: %v", err)
 		return ReplyResult{}
 	}
-	return b.finishReply(rawReply)
+	// Greetings run no abilities (the prompt asks for plain text); nil runs
+	// simply means any stray [AGENT: ...] tag is stripped from display.
+	return b.finishReply(rawReply, nil)
 }
 
 // quietNow reports whether the current time falls inside the sleep or busy
@@ -401,19 +467,27 @@ func (b *Bot) quietNow() bool {
 // finishReply post-processes a raw model answer: splits off the mood, image,
 // action and event tags, fetches the picture, builds the pet say/cmd lines,
 // and packages everything into a ReplyResult. Shared by Reply and Greeting.
-func (b *Bot) finishReply(rawReply string) ReplyResult {
+// runs holds the abilities the agent loop already executed (nil for
+// greetings): their messages join the reply text and the first pet command
+// they produced is forwarded when the model sent no [ACTION:]/[EVENT:] tag.
+func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 	// Split off the mood, image, action and event tags: chat shows bare text,
 	// the pet gets the mood plus an optional action/event command, and the
-	// image tag drives the picture (if enabled).
-	mood, imgDesc, action, event, text := stripTags(rawReply)
+	// image tag drives the picture (if enabled). Leftover [AGENT: ...] tags
+	// (the loop's step limit was hit) are stripped from the display here.
+	mood, imgDesc, action, event, _, text := stripTags(rawReply)
 	// The model sometimes skips the [mood] tag entirely (the replies come back
 	// as plain text), leaving the pet with a blank neutral face. Fall back to
 	// a keyword guess so the pet's expression still matches the reply.
 	if mood == "" {
 		mood = inferMood(text)
 	}
-	log.Printf("reply: mood=%q (tag=%t) action=%q event=%q text=%q",
-		mood, strings.HasPrefix(rawReply, "["), action, event, truncate(rawReply, 60))
+	// Fold in the abilities' messages - BEFORE newlineToPageBreak so a
+	// multi-line agent message paginates like model paragraphs.
+	agentCmd := agentPetCmd(runs)
+	text = foldAgentRuns(text, runs)
+	log.Printf("reply: mood=%q (tag=%t) action=%q event=%q agents=%d text=%q",
+		mood, strings.HasPrefix(rawReply, "["), action, event, len(runs), truncate(rawReply, 60))
 	// The LLM uses newlines as page breaks; convert them to \f for the chat
 	// bubble pager (see newlineToPageBreak).
 	text = newlineToPageBreak(text)
@@ -458,6 +532,8 @@ func (b *Bot) finishReply(rawReply string) ReplyResult {
 			cmdLine = "action " + action
 		case event != "":
 			cmdLine = "event " + event
+		case agentCmd != "":
+			cmdLine = agentCmd // full line from agent.Result.PetCmd
 		}
 	}
 	return ReplyResult{
@@ -481,6 +557,11 @@ func effectiveSystem(base, imageSource string) string {
 	base += inputGuard // the security rule applies to custom personas too
 	if !strings.Contains(base, "[ACTION:") && !strings.Contains(base, "[EVENT:") {
 		base += visualLanguageInstruction
+	}
+	// Registered agents are advertised dynamically (empty when none, and
+	// skipped when a custom persona already defines its own convention).
+	if s := agent.CatalogInstruction(); s != "" && !strings.Contains(base, "[AGENT:") {
+		base += s
 	}
 	if imageSource == "off" || strings.Contains(base, "[IMG:") {
 		return base
@@ -547,16 +628,18 @@ func userDataBlock(text string) string {
 	return "<<<USER>>>\n" + text + "\n<<<END USER>>>"
 }
 
-// stripTags extracts the reply's mood, image description, action and event
-// and returns the bare text. The model is asked to lead with its [mood] /
-// [IMG: ...] / [ACTION: ...] / [EVENT: ...] tags (and to put the mood right
-// after the image tag), so a tag only counts as the reply's header in that
-// "header" position: at the very start of the reply, at the start of a line,
-// or directly after another header tag. The same tags buried mid-sentence are
-// prose - they are stripped from the text but ignored. Removal keeps the
-// newlines around the tags intact so the paragraph -> page-break conversion
-// downstream still sees them.
-func stripTags(raw string) (mood, imgDesc, action, event, text string) {
+// stripTags extracts the reply's mood, image description, action, event and
+// agent calls and returns the bare text. The model is asked to lead with its
+// [mood] / [IMG: ...] / [ACTION: ...] / [EVENT: ...] / [AGENT: ...] tags (and
+// to put the mood right after the image tag), so a tag only counts as the
+// reply's header in that "header" position: at the very start of the reply,
+// at the start of a line, or directly after another header tag. The same tags
+// buried mid-sentence are prose - they are stripped from the text but
+// ignored. Removal keeps the newlines around the tags intact so the paragraph
+// -> page-break conversion downstream still sees them. agentCalls holds the
+// raw payload of every header-position [AGENT: ...] tag, in order (empty when
+// none) - Phase 2 executes all of them.
+func stripTags(raw string) (mood, imgDesc, action, event string, agentCalls []string, text string) {
 	text = strings.TrimSpace(raw)
 	prevEnd, prevCounted := -1, false
 	for _, loc := range replyTag.FindAllStringSubmatchIndex(text, -1) {
@@ -585,10 +668,17 @@ func stripTags(raw string) (mood, imgDesc, action, event, text string) {
 					mood = m
 				}
 			}
+		case loc[12] >= 0: // [AGENT: id key=value ...]
+			// Captured as raw payload whatever the id - agentbridge.go
+			// reports unknown agents / bad args to the user instead of
+			// dropping them silently like unknown pet actions.
+			if counted {
+				agentCalls = append(agentCalls, strings.TrimSpace(text[loc[12]:loc[13]]))
+			}
 		}
 		prevEnd, prevCounted = loc[1], counted
 	}
-	return mood, imgDesc, action, event, strings.TrimSpace(replyTag.ReplaceAllString(text, ""))
+	return mood, imgDesc, action, event, agentCalls, strings.TrimSpace(replyTag.ReplaceAllString(text, ""))
 }
 
 // newlineToPageBreak turns every newline form a model reply might use - an
