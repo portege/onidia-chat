@@ -20,3 +20,7 @@ chat-app.ini
 
 # Packaged agent zips (make pack)
 dist/
+
+# Python bytecode from the bundled python agents
+__pycache__/
+*.pyc

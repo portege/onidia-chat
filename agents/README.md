@@ -79,8 +79,9 @@ one `OK`/`ERR` line. Chaining is the *brain's* job.
 | id / folder | kind | what it does |
 |---|---|---|
 | `read_story` | **native** (in the binary) | tells an AI story through the chat/pet/TTS pipeline; params `theme`, `length` (short/medium/long). Native because it reuses the provider keys chat-app already holds - downloaded agents never see API keys |
-| `agents/play_song` | downloaded folder | fuzzy-searches your music folder and launches a detached player (`mpv` > `cvlc` > `vlc` > `ffplay`); param `query` (empty = random) |
+| `agents/play_song` | downloaded folder | fuzzy-searches your music folder and launches a detached player (`mpv` > `cvlc` > `vlc` > `ffplay`), then asks the pet to dance; param `query` (empty = random) |
 | `agents/play_movie` | downloaded folder | same for videos, with a `fullscreen` toggle |
+| `agents/media_control` | downloaded folder | **the transport buttons**: `pause` / `resume` / `stop` / `status` of whatever a `play_*` agent started, plus `target` (`any`/`song`/`movie`). Pauses mpv through its control socket, other players with `SIGSTOP`/`SIGCONT`; stops with `SIGINT` → `SIGTERM` → `SIGKILL` |
 | `agents/hello_world` | downloaded folder | the reference agent: greets you by name |
 | `agents/_template` | template | copy this to start your own |
 
@@ -88,6 +89,29 @@ Media folders come from `music-dir` / `video-dir` in chat-app.ini (or
 `-music-dir` / `-video-dir`) and reach the agents as `CHAT_APP_MUSIC_DIR` /
 `CHAT_APP_VIDEO_DIR`; unset means the agents fall back to `~/Music` /
 `~/Videos`. `CHAT_APP_PLAYER` overrides the player executable for testing.
+
+## Play, pause, stop
+
+When a `play_*` agent starts a player, chat-app shows a **NOW PLAYING** strip
+above the input box, with the track name and two buttons: **play/pause** and
+**stop**. It appears when the player starts, flips to **PAUSED** when the pause
+took, and disappears when the player is gone (or the song ended).
+
+The buttons do not touch the player themselves: a click calls the
+`media_control` agent, exactly as the model would when you say *"pause the
+music"*, so the transport behaves the same however it is triggered. So:
+
+- the LLM path works on its own - *"stop the music"*, *"what's playing?"*;
+- the buttons need the agent installed (`./agentctl install agents/media_control`);
+  without it there is simply no strip;
+- any other agent can join in: write a session file (or just call
+  `media_control`) and it gets the same transport.
+
+Install it alongside the players:
+
+```sh
+./agentctl install agents/media_control
+```
 
 Install them:
 
@@ -126,8 +150,15 @@ Install them:
 ```sh
 #!/bin/sh
 read -r line                            # RUN {"title":"Havana"}
+echo "PET action dance"                 # optional: make the pet act it out
 echo "OK Playing Havana by Camila Cabello"
 ```
+
+   The optional `PET action <name>` / `PET event <name>` line (at most one,
+   before `OK`) lets your agent **drive the character** - `play_song` asks for
+   a dance, a "storytime" agent could ask for `event celebration`. Valid names
+   and the trust rules are in
+   [`../docs/AGENT-PROTOCOL.md`](../docs/AGENT-PROTOCOL.md#control-the-character-pet).
 
 3. Test without the chat: `./agentctl validate ./my_agent` then
    `./agentctl run my_agent title=Havana`.

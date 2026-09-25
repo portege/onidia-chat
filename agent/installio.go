@@ -2,11 +2,11 @@ package agent
 
 import (
 	"archive/zip"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
-	"crypto/sha256"
-	"encoding/hex"
 
 	"path/filepath"
 	"strings"
@@ -127,6 +127,7 @@ func copyFile(src, dest string, mode os.FileMode) error {
 	}
 	return out.Close()
 }
+
 // Pack compresses folder into a .zip file at zipPath, prefixing all files
 // with the folder name (or explicit prefix if provided). Computes and returns
 // the hex-encoded SHA-256 of the created zip archive.
@@ -228,5 +229,3 @@ func HashFile(path string) (string, error) {
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
-
-

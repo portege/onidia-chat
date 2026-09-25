@@ -455,6 +455,27 @@ model can use it. Full guide: [`agents/README.md`](agents/README.md),
 wire protocol: [`docs/AGENT-PROTOCOL.md`](docs/AGENT-PROTOCOL.md).
 Disable with `-agents-off` / `agents-off = true`.
 
+An agent can also **act the work out on the character**: one optional
+`PET action <name>` / `PET event <name>` line before its `OK` (the bundled
+`play_song` asks the pet to dance) reaches the pet's cmd-FIFO when the model
+didn't choose an `[ACTION: ...]`/`[EVENT: ...]` itself. Names are validated
+against the pet's own tables, so an agent can only pick a pose the pet
+really has ([details](docs/AGENT-PROTOCOL.md#control-the-character-pet)).
+
+### Transport strip (play / pause / stop)
+
+When a media agent (`play_song`, `play_movie`) starts a player, a **NOW
+PLAYING** strip appears above the input box with the track name and two
+buttons - **play/pause** and **stop** - and the whole row toggles. It flips to
+**PAUSED** when the pause took and disappears when the player is gone.
+
+The buttons never touch the player directly: a click runs the `media_control`
+agent (`./agentctl install agents/media_control`), the same ability the model
+calls when you say *"pause the music"* - one implementation, one behaviour.
+mpv is paused through its control socket (playback resumes from the exact
+position); other players get `SIGSTOP`/`SIGCONT`, and stop escalates
+`SIGINT` → `SIGTERM` → `SIGKILL`.
+
 ### Native tool calling (Phase 3)
 
 When the active provider has a function/tool-calling API (Gemini, OpenRouter

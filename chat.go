@@ -312,6 +312,24 @@ var petEvents = map[string]bool{
 	"matrix": true, "magic": true,
 }
 
+// knownPetCmd reports whether an agent-supplied cmd-FIFO line ("action dance")
+// names a pose/FX the pet actually has. An ability is third-party code, so its
+// PET line is checked against the same tables the model's [ACTION:]/[EVENT:]
+// tags are: an unknown name is logged and dropped, never written to the FIFO.
+func knownPetCmd(line string) bool {
+	verb, name, ok := strings.Cut(strings.TrimSpace(line), " ")
+	if !ok {
+		return false
+	}
+	switch verb {
+	case "action":
+		return petActions[name]
+	case "event":
+		return petEvents[name]
+	}
+	return false
+}
+
 // moodHint pairs one pet mood with the lowercase phrases that suggest it.
 type moodHint struct {
 	mood  string
@@ -532,8 +550,10 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 			cmdLine = "action " + action
 		case event != "":
 			cmdLine = "event " + event
-		case agentCmd != "":
+		case knownPetCmd(agentCmd):
 			cmdLine = agentCmd // full line from agent.Result.PetCmd
+		case agentCmd != "":
+			log.Printf("agents: ignoring unknown pet command %q", agentCmd)
 		}
 	}
 	return ReplyResult{

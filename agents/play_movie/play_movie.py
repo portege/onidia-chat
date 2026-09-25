@@ -2,8 +2,10 @@
 """play_movie - chat-app media agent (protocol agent-line-v1).
 
 Twin of play_song.py (video edition): fuzzy-match query against the video
-folder, launch a detached player, answer "OK Playing <title>". Keep the
-two scripts' structure in sync - each folder must stay self-contained.
+folder, launch a detached player, answer "OK Playing <title>". The run records
+the player process in a JSON session file (see save_session) so the chat
+window's play/pause/stop strip and the media_control agent can drive it. Keep
+the two scripts' structure in sync - each folder must stay self-contained.
 """
 import json
 import os
@@ -13,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from difflib import SequenceMatcher
 
 VIDEO_EXT = {".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".wmv", ".flv", ".mpg", ".mpeg"}
@@ -70,6 +73,38 @@ def pick_player():
     return None
 
 
+# --- transport control -----------------------------------------------------
+# Same contract as play_song.py: record the process we started so the chat
+# window's transport strip and the media_control agent can pause/resume/stop
+# it. Best-effort - playback never depends on it (see save_session).
+
+def state_dir():
+    d = os.environ.get("CHAT_APP_STATE_DIR")
+    if d:
+        return d
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(base, "chat-app")
+
+
+def ipc_socket(name):
+    sock = os.path.join(state_dir(), name + ".sock")
+    return sock if len(sock) <= 100 else ""
+
+
+def save_session(name, pid, title, path, player, ipc):
+    try:
+        os.makedirs(state_dir(), exist_ok=True)
+        final = os.path.join(state_dir(), name + ".json")
+        tmp = final + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"id": name, "pid": pid, "title": title, "path": path,
+                       "player": player, "ipc": ipc, "paused": False,
+                       "started": int(time.time())}, f)
+        os.replace(tmp, final)
+    except (OSError, ValueError) as e:
+        out("INFO transport state not recorded: %s" % e)
+
+
 def main():
     line = sys.stdin.readline()
     if not line.startswith("RUN "):
@@ -111,11 +146,18 @@ def main():
     if not player:
         out("ERR no media player found - install mpv, vlc or ffmpeg (ffplay)")
         return 1
-    flags = MOVIE_FLAGS.get(os.path.basename(player[0]), []) if fullscreen else []
+    flags = list(MOVIE_FLAGS.get(os.path.basename(player[0]), [])) if fullscreen else []
+    ipc = ""
+    if os.path.basename(player[0]) == "mpv":
+        # mpv's control socket: media_control pauses through it and only falls
+        # back to signals when it is off (see play_song.py).
+        ipc = ipc_socket("play_movie")
+        if ipc:
+            flags.append("--input-ipc-server=" + ipc)
     title = os.path.splitext(os.path.basename(path))[0]
     title = title.replace("\n", " ").replace("\r", " ")  # protocol = one line
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             player + flags + [path],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -125,6 +167,7 @@ def main():
     except OSError as e:
         out("ERR cannot start %s: %s" % (player[0], e))
         return 1
+    save_session("play_movie", proc.pid, title, path, os.path.basename(player[0]), ipc)
     out("INFO player: %s" % " ".join(player + flags))
     out("OK Playing %s" % title)
     return 0

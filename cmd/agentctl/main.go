@@ -233,7 +233,6 @@ func cmdInstall(src, agentsDir, registrySrc, explicitSHA string, pol agent.Polic
 	fmt.Println("restart chat-app to pick it up (agentctl list shows it now)")
 }
 
-
 // cmdUpdate queries registry and upgrades installed agents when newer versions exist.
 func cmdUpdate(registrySrc, agentsDir, target string, pol agent.Policy) {
 	if registrySrc == "" {

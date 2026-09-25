@@ -1,0 +1,24 @@
+{
+  "id": "media_control",
+  "version": "1.0.0",
+  "description": "Pause, resume or stop the music or movie that is currently playing. Use when the user asks to pause, resume, unpause, skip or stop what is playing, or asks what is playing. The chat window's transport buttons call this same agent.",
+  "exec": ["./media_control.py"],
+  "timeout_ms": 5000,
+  "params": [
+    {
+      "name": "cmd",
+      "type": "string",
+      "required": true,
+      "enum": ["pause", "resume", "stop", "status"],
+      "description": "pause (freeze the player), resume (continue), stop (quit it), status (what is playing)"
+    },
+    {
+      "name": "target",
+      "type": "string",
+      "required": false,
+      "enum": ["any", "song", "movie"],
+      "default": "any",
+      "description": "which player to drive: any (newest), the song, or the movie"
+    }
+  ]
+}

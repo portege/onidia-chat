@@ -400,11 +400,15 @@ func main() {
 	}
 	// Media folders flow to the play_* agents as CHAT_APP_* env vars
 	// (flag > config > unset -> the agent falls back to ~/Music / ~/Videos).
+	// CHAT_APP_STATE_DIR is where the media agents record the player they
+	// started and where the chat window reads the transport strip from, so
+	// both halves of that contract always point at the same directory.
 	agent.SetExtraEnv(map[string]string{
 		"CHAT_APP_MUSIC_DIR": expandHome(firstNonEmpty(
 			*musicDirFlag, cfgStr(cfg, func(c *Config) string { return c.MusicDir }))),
 		"CHAT_APP_VIDEO_DIR": expandHome(firstNonEmpty(
 			*videoDirFlag, cfgStr(cfg, func(c *Config) string { return c.VideoDir }))),
+		"CHAT_APP_STATE_DIR": mediaStateDir(),
 	})
 	if agentsOff {
 		log.Printf("agents: disabled by config")
@@ -680,6 +684,14 @@ func main() {
 	busyTicker := time.NewTicker(1 * time.Minute)
 	defer busyTicker.Stop()
 
+	// mediaTick re-reads the media agents' session files once a second: that
+	// is what makes the transport strip appear when an agent starts a player,
+	// flip to PAUSED when the pause took, and vanish when the player is gone
+	// (or the last song ended). The buttons themselves never poll - a click
+	// runs media_control once and the next tick paints the result.
+	mediaTick := time.NewTicker(time.Second)
+	defer mediaTick.Stop()
+
 	// Header-drag state: pressing the frameless header and moving beyond a
 	// small threshold hands the drag to the WM via _NET_WM_MOVERESIZE; a
 	// plain click (no movement) still toggles collapse on release.
@@ -782,6 +794,12 @@ func main() {
 							log.Printf("clipboard: %v", err)
 						}
 					}
+					// Transport button clicked (play/pause or stop): run the
+					// media_control agent in the background - a click must not
+					// block the window - and let the next tick repaint.
+					if cmd := ui.TakeMedia(); cmd != "" {
+						go applyMediaControl(cmd)
+					}
 				}
 				dirty = true
 			case EvMotion:
@@ -798,7 +816,7 @@ func main() {
 					case WInput, WName:
 						win.SetCursor(win.cursorText)
 					case WButton, WHeader, WClose, WHaiya, WSettings, WAbout, WToggle,
-						WAboutOK, WCopy,
+						WAboutOK, WCopy, WMediaPlay, WMediaStop,
 						WDrop, WDropFrom, WDropTo, WMute, WOption, WSave, WCancel:
 						win.SetCursor(win.cursorHand)
 					default:
@@ -863,6 +881,15 @@ func main() {
 			}
 		case <-busyTicker.C:
 			if ui.updateBusyState() {
+				dirty = true
+			}
+		case <-mediaTick.C:
+			// Reflect what the media agents recorded. The strip is part of
+			// the layout, so the X window has to grow/shrink with it.
+			if active := ui.MediaActive(); ui.SetMedia(currentMedia()) {
+				if active != ui.MediaActive() {
+					win.Resize(ui.W, ui.H)
+				}
 				dirty = true
 			}
 		case <-petTick.C:

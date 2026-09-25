@@ -69,9 +69,10 @@ after that). Working directory = the agent's folder.
 
 ```
 brain -> agent   RUN <json-object>\n
-agent -> brain   INFO <text>\n          # optional, repeatable: logged only
-agent -> brain   OK <message>\n         # terminal: message joins the reply
-               | ERR <text>\n           # terminal: shown as the failure
+agent -> brain   INFO <text>\n           # optional, repeatable: logged only
+agent -> brain   PET action <name>\n    # optional, before OK: drive the pet
+agent -> brain   OK <message>\n          # terminal: message joins the reply
+               | ERR <text>\n            # terminal: shown as the failure
 ```
 
 - The JSON object maps param names to their validated **string** values
@@ -86,6 +87,40 @@ agent -> brain   OK <message>\n         # terminal: message joins the reply
   included in the error shown in the reply.
 - Timeout (`timeout_ms`): process killed, reply gets
   `agent <id>: timed out after <d>`.
+
+### Control the character (`PET`)
+
+An ability can make the pet **act it out** - the song agent starts a dance, a
+"look outside" agent could ask for a peek. Emit one optional line **before**
+your `OK`:
+
+```
+agent -> brain   PET action dance        # a pose animation
+agent -> brain   PET event celebration   # an overlay effect
+```
+
+Rules:
+
+- at most **one** `PET` line per run, and only before `OK`/`ERR`; a second one
+  is a protocol error (a run cannot quietly swap its command);
+- the payload must be `action|event` + **one** name (`[a-z][a-z0-9_]*`) -
+  `PET action dance; rm -rf /` is rejected and the run fails. The line ends up
+  in the pet's command FIFO, so nothing else may ride in it;
+- the name must be one the pet knows, else chat-app logs
+  `ignoring unknown pet command` and drops it - the reply still succeeds;
+- it is a **fallback**: when the model already used `[ACTION: ...]` /
+  `[EVENT: ...]` for that reply, the model's choice wins;
+- with `-pet-pipe off` (pet forwarding disabled) nothing is written;
+- a native (in-process) agent does the same by returning
+  `agent.Result{PetCmd: "action dance"}`.
+
+Names come from the pet's own tables - the same ones the model may use:
+
+| actions | events |
+|---|---|
+| `skip` `juggle` `dance` `eat` `work` `guitar` `sneeze` `sixseven` `basketball` `drive` `ride` `kitten` `wave` | `love` `idea` `celebration` `sleep` `peace` `halloween` `matrix` `magic` |
+
+(`disappear`/`appear` are internal pet states - never use them.)
 
 ### Minimal agent (any language)
 
@@ -210,6 +245,7 @@ sets from its configuration:
 |---|---|---|
 | `CHAT_APP_MUSIC_DIR` | `-music-dir` / `music-dir` | music folder for `play_song` (unset = agent uses `~/Music`) |
 | `CHAT_APP_VIDEO_DIR` | `-video-dir` / `video-dir` | video folder for `play_movie` (unset = agent uses `~/Videos`) |
+| `CHAT_APP_STATE_DIR` | derived (`$XDG_STATE_HOME/chat-app`) | where a media agent records the player it started, so the chat window can show a transport strip and `media_control` can pause/stop it. Best-effort: if it cannot be written, playback still works, there is just no strip |
 
 Standard convention for your own agents: prefix config-derived variables
 with `CHAT_APP_`. `CHAT_APP_PLAYER` is a built-in override (whole command

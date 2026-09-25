@@ -129,6 +129,71 @@ func TestReplyRunsAgentEndToEnd(t *testing.T) {
 	}
 }
 
+// TestReplyPetCmdPrecedenceAndTrust pins the rules for the pet command an
+// ability can ask for: the model's own [ACTION:]/[EVENT:] tag wins, the agent's
+// line is only a fallback, and an agent naming a pose the pet does not have is
+// dropped instead of being written to the cmd-FIFO.
+func TestReplyPetCmdPrecedenceAndTrust(t *testing.T) {
+	agent.Reset()
+	defer agent.Reset()
+	if err := agent.Register(&echoAgent{petCmd: "action dance"}); err != nil {
+		t.Fatal(err)
+	}
+	newBot := func(reply string) *Bot {
+		return &Bot{Provider: &fakeProvider{canned: reply}, SystemInstruction: "You are Buddy.",
+			ImageSource: "off", PetPipe: "/tmp/desktop-pet--0.say"}
+	}
+
+	// The model's own tag outranks the agent's request.
+	res := newBot("[AGENT: echoer text=go]\n[ACTION: wave] hi").Reply([]Msg{{From: "you", Text: "go"}}, "go")
+	if res.petCmdLine != "action wave" {
+		t.Errorf("petCmdLine = %q, want the model's action wave", res.petCmdLine)
+	}
+
+	// With no model tag, the agent's command drives the pet.
+	res = newBot("[AGENT: echoer text=go]\nhi").Reply([]Msg{{From: "you", Text: "go"}}, "go")
+	if res.petCmdLine != "action dance" {
+		t.Errorf("petCmdLine = %q, want the agent's action dance", res.petCmdLine)
+	}
+
+	// An agent inventing a pose is ignored; the reply still succeeds.
+	agent.Reset()
+	if err := agent.Register(&bogusCmdAgent{}); err != nil {
+		t.Fatal(err)
+	}
+	res = newBot("[AGENT: echoer text=go]\nhi").Reply([]Msg{{From: "you", Text: "go"}}, "go")
+	if res.petCmdLine != "" {
+		t.Errorf("petCmdLine = %q, want empty (unknown pet command dropped)", res.petCmdLine)
+	}
+	if !strings.Contains(res.Text, "echo: go") {
+		t.Errorf("reply text = %q, want the agent message kept", res.Text)
+	}
+
+	// Pet forwarding off: no command at all, even a valid one.
+	agent.Reset()
+	if err := agent.Register(&echoAgent{petCmd: "action dance"}); err != nil {
+		t.Fatal(err)
+	}
+	off := &Bot{Provider: &fakeProvider{canned: "[AGENT: echoer text=go]\nhi"},
+		SystemInstruction: "You are Buddy.", ImageSource: "off", PetPipe: ""}
+	res = off.Reply([]Msg{{From: "you", Text: "go"}}, "go")
+	if res.petCmdLine != "" {
+		t.Errorf("petCmdLine = %q, want empty when the pet pipe is off", res.petCmdLine)
+	}
+}
+
+// bogusCmdAgent is like echoAgent but asks for a pose the desktop-pet lacks.
+type bogusCmdAgent struct{}
+
+func (b *bogusCmdAgent) ID() string          { return "echoer" }
+func (b *bogusCmdAgent) Description() string { return "Echoes." }
+func (b *bogusCmdAgent) Params() []agent.Param {
+	return []agent.Param{{Name: "text", Required: true}}
+}
+func (b *bogusCmdAgent) Run(_ context.Context, args map[string]string) (agent.Result, error) {
+	return agent.Result{Message: "echo: " + args["text"], PetCmd: "action moonwalk"}, nil
+}
+
 func TestEffectiveSystemAgentCatalog(t *testing.T) {
 	agent.Reset()
 	defer agent.Reset()

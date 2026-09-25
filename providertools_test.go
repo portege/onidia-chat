@@ -280,7 +280,6 @@ func TestGeminiToolDialect(t *testing.T) {
 		}
 	}
 
-
 	// The exchange the loop feeds back becomes functionCall/functionResponse.
 	calls, results := wireExchange()
 	contents := geminiContents([]Msg{
@@ -511,7 +510,6 @@ func TestOllamaToolDialect(t *testing.T) {
 		t.Error("a generic 500 must NOT retire the tool API")
 	}
 }
-
 
 // TestBedrockToolDialect covers the Converse dialect without AWS credentials:
 // the toolConfig, the toolUse/toolResult blocks (paired on the tool-use id,

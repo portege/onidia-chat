@@ -27,15 +27,15 @@ type RegistryIndex struct {
 
 // RegistryEntry describes one downloadable agent in the registry.
 type RegistryEntry struct {
-	ID          string   `json:"id"`
-	Version     string   `json:"version"`
-	Description string   `json:"description"`
-	URL         string   `json:"url"`
-	SHA256      string   `json:"sha256"`           // hex-encoded SHA-256 of the zip payload
-	Signer      string   `json:"signer,omitempty"` // canonical SignerID (hex sha256 of pubkey)
-	Homepage    string   `json:"homepage,omitempty"`
-	Author      string   `json:"author,omitempty"`
-	Params      []Param  `json:"params,omitempty"`
+	ID          string  `json:"id"`
+	Version     string  `json:"version"`
+	Description string  `json:"description"`
+	URL         string  `json:"url"`
+	SHA256      string  `json:"sha256"`           // hex-encoded SHA-256 of the zip payload
+	Signer      string  `json:"signer,omitempty"` // canonical SignerID (hex sha256 of pubkey)
+	Homepage    string  `json:"homepage,omitempty"`
+	Author      string  `json:"author,omitempty"`
+	Params      []Param `json:"params,omitempty"`
 }
 
 // ParseIndex unmarshals and validates a registry index JSON document.

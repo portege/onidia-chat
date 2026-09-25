@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"fmt"
 	"errors"
+	"fmt"
 
 	"net/http"
 	"os"
@@ -151,7 +151,6 @@ func Remove(id, destDir string) error {
 	}
 	return os.RemoveAll(target)
 }
-
 
 // stage materializes src (folder / zip file / http(s) zip URL) into a
 // temp folder containing agent.json, plus a cleanup func. For a plain

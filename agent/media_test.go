@@ -103,17 +103,27 @@ func TestShippedMediaAgents(t *testing.T) {
 	if !strings.Contains(got, "--no-video") {
 		t.Errorf("player log = %q, want mpv song flags", got)
 	}
+	// The song agent also asks the character to act it out: this is the
+	// end-to-end proof that an ability reaches the pet's cmd-FIFO.
+	if res.PetCmd != "action dance" {
+		t.Errorf("PetCmd = %q, want %q", res.PetCmd, "action dance")
+	}
 
 	// Empty query -> random pick from the index.
 	if res, err := Run("play_song", nil); err != nil ||
 		!strings.HasPrefix(res.Message, "Playing ") {
 		t.Errorf("random pick = (%q, %v), want Playing ...", res.Message, err)
+	} else if res.PetCmd != "action dance" {
+		t.Errorf("random pick PetCmd = %q, want action dance", res.PetCmd)
 	}
 
-	// No match -> visible error with suggestions.
-	if _, err := Run("play_song", map[string]string{"query": "zzzz-nonexistent"}); err == nil ||
+	// No match -> visible error with suggestions, and no pet command: a failed
+	// run must not leave the character dancing.
+	if res, err := Run("play_song", map[string]string{"query": "zzzz-nonexistent"}); err == nil ||
 		!strings.Contains(err.Error(), "no match") {
 		t.Errorf("no-match error = %v", err)
+	} else if res.PetCmd != "" {
+		t.Errorf("failed run PetCmd = %q, want empty", res.PetCmd)
 	}
 
 	// Movie, fullscreen=false: no flag; default (true): --fullscreen.

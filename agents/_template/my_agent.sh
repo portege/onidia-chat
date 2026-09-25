@@ -2,6 +2,8 @@
 # my_agent - template chat-app agent (protocol agent-line-v1).
 # Copy this folder, rename id/params in agent.json, implement the body.
 # Contract: read one RUN line, answer OK <message> or ERR <why>, exit.
+# Optional: echo "PET action dance" (or "PET event love") before the OK line
+# to make the pet act the work out - see docs/AGENT-PROTOCOL.md.
 set -eu
 
 payload=""

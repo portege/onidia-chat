@@ -103,6 +103,112 @@ func TestExternalAgentCrashWithoutTerminal(t *testing.T) {
 	}
 }
 
+// runScriptAgent builds an external agent whose script is body and runs it,
+// returning the parsed Result / error.
+func runScriptAgent(t *testing.T, body string) (Result, error) {
+	t.Helper()
+	dir := t.TempDir()
+	m := writeAgent(t, dir, "#!/bin/sh\nread -r line\n"+body, nil)
+	ext, err := NewExternal(m, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ext.Run(context.Background(), nil)
+}
+
+// TestExternalAgentPetCmd covers the optional character-control line: the
+// canonical form is forwarded, a well-formed unknown name passes through (the
+// brain, which owns the pet's tables, drops it), and a malformed or repeated
+// directive fails the run loudly instead of reaching the cmd-FIFO.
+func TestExternalAgentPetCmd(t *testing.T) {
+	res, err := runScriptAgent(t, "echo 'PET action dance'\necho 'OK playing'\n")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.PetCmd != "action dance" {
+		t.Errorf("PetCmd = %q, want %q", res.PetCmd, "action dance")
+	}
+	if res.Message != "playing" {
+		t.Errorf("Message = %q, want playing", res.Message)
+	}
+
+	// Casing/whitespace are normalized; an event works the same way.
+	res, err = runScriptAgent(t, "echo 'PET  Event   LOVE '\necho 'OK x'\n")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.PetCmd != "event love" {
+		t.Errorf("PetCmd = %q, want %q", res.PetCmd, "event love")
+	}
+
+	// A PET line after OK is never read: the terminal line ends the run.
+	res, err = runScriptAgent(t, "echo 'OK done'\necho 'PET action dance'\n")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.PetCmd != "" {
+		t.Errorf("PetCmd = %q, want empty (PET after OK ignored)", res.PetCmd)
+	}
+
+	// No PET line at all stays valid: it is optional.
+	res, err = runScriptAgent(t, "echo 'OK plain'\n")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.PetCmd != "" {
+		t.Errorf("PetCmd = %q, want empty", res.PetCmd)
+	}
+
+	// Malformed / hostile directives fail the run (never smuggled through).
+	for _, bad := range []struct{ line, want string }{
+		{"PET action", "want"},
+		{"PET dance", "want"}, // no verb at all
+		{"PET twerk dance", "unknown command"},
+		{"PET quit", "want"},
+		{"PET action dance; rm -rf /", "bad action name"},
+		{"PET action dance extra", "bad action name"},
+		{"PET action ../../evil", "bad action name"},
+		// A real newline can never arrive (the client splits on it), but a
+		// literal "\r" or any other separator can - and must not survive.
+		{"PET action dance\\rm -rf /", "bad action name"},
+	} {
+		_, err := runScriptAgent(t, "echo '"+bad.line+"'\necho 'OK x'\n")
+		if err == nil || !strings.Contains(err.Error(), bad.want) {
+			t.Errorf("PET %q: error = %v, want one containing %q", bad.line, err, bad.want)
+		}
+	}
+
+	// A second directive cannot overwrite the first one.
+	_, err = runScriptAgent(t, "echo 'PET action dance'\necho 'PET event love'\necho 'OK x'\n")
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("duplicate PET: error = %v, want duplicate-PET error", err)
+	}
+}
+
+func TestNormalizePetCmd(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"action dance", "action dance"},
+		{"ACTION DANCE", "action dance"},
+		{"  event   celebration  ", "event celebration"},
+	} {
+		got, err := normalizePetCmd(tc.in)
+		if err != nil || got != tc.want {
+			t.Errorf("normalizePetCmd(%q) = (%q, %v), want %q", tc.in, got, err, tc.want)
+		}
+	}
+	// Surrounding whitespace is tolerated (a trailing newline can never reach
+	// here: the client splits lines and trims \r), but anything else that could
+	// smuggle a second command into the FIFO is rejected.
+	for _, bad := range []string{
+		"", "dance", "action", "event", "action a b", "action do it",
+		"action dance\necho pwned", "action dance; rm -rf /", "action ..",
+	} {
+		if got, err := normalizePetCmd(bad); err == nil {
+			t.Errorf("normalizePetCmd(%q) = %q, want error", bad, got)
+		}
+	}
+}
+
 func TestResolveExec(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "run.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {

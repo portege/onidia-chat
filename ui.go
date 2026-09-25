@@ -60,6 +60,11 @@ const (
 
 	// About modal (see drawAbout): a small informational panel.
 	WAboutOK // the About modal's OK button
+
+	// Transport strip under the messages (see drawMediaBar): the play/pause
+	// toggle and the stop button of whatever a media agent is playing.
+	WMediaPlay
+	WMediaStop
 )
 
 // Msg is one chat entry.
@@ -140,6 +145,14 @@ const (
 	copyBtnPad   = 4 // padding around the Copy label inside its pill
 	copyLbl      = "Copy"
 	copyFlashDur = 1200 * time.Millisecond // lit after a successful copy
+
+	// Transport strip (drawMediaBar): the "now playing" row with the
+	// play/pause and stop buttons, shown only while an agent's player runs.
+	mediaH    = 34 // strip height (between the messages and the input bar)
+	mediaBtn  = 26 // transport button square
+	mediaGap  = 8  // gap between the two buttons
+	mediaLbl  = "NOW PLAYING"
+	mediaMaxT = 64 // title rune cap (the strip is narrow)
 
 	maxInput  = 280 // textarea rune cap
 	winRadius = 12  // window shell corner rounding (transparent corners)
@@ -282,6 +295,14 @@ type UI struct {
 	wantCopy          bool      // a Copy pill was clicked; main() pushes the text onto the clipboard
 	copiedText        string    // the message text to copy
 	copyFlash         time.Time // when the copy happened (pill lights up briefly)
+
+	// Transport strip (see media.go and drawMediaBar). mediaActive is the
+	// mirror of "a player an agent started is still running"; the strip is
+	// only drawn - and only takes part in the layout - while it is true.
+	mediaActive bool
+	mediaPaused bool
+	mediaTitle  string
+	wantMedia   string // one-shot transport command a button click queued ("" = none)
 }
 
 // NewUI creates a UI sized w x h with a welcome message from the bot.
@@ -309,11 +330,51 @@ func NewUI(w, h int) *UI {
 
 // Geometry -----------------------------------------------------------------
 
+// mediaBarH is the transport strip's height right now: mediaH while a player
+// runs, 0 otherwise - so the strip only ever takes part in the layout (and
+// grows the collapsed window) when it is actually shown.
+func (u *UI) mediaBarH() int {
+	if u.mediaActive {
+		return mediaH
+	}
+	return 0
+}
+
+// mediaBar is the strip's row: directly above the input bar, full width. The
+// zero rectangle means "hidden", which makes inRect report no hits.
+func (u *UI) mediaBar() image.Rectangle {
+	if h := u.mediaBarH(); h > 0 {
+		return image.Rect(0, u.H-inputH-h, u.W, u.H-inputH)
+	}
+	return image.Rectangle{}
+}
+
+// mediaPlayRect is the play/pause toggle, the right-most button; mediaStopRect
+// the stop button to its left.
+func (u *UI) mediaPlayRect() image.Rectangle {
+	b := u.mediaBar()
+	if b.Empty() {
+		return image.Rectangle{}
+	}
+	x := b.Max.X - padX - mediaBtn
+	y := b.Min.Y + (mediaH-mediaBtn)/2
+	return image.Rect(x, y, x+mediaBtn, y+mediaBtn)
+}
+
+func (u *UI) mediaStopRect() image.Rectangle {
+	p := u.mediaPlayRect()
+	if p.Empty() {
+		return image.Rectangle{}
+	}
+	x := p.Min.X - mediaGap - mediaBtn
+	return image.Rect(x, p.Min.Y, x+mediaBtn, p.Max.Y)
+}
+
 func (u *UI) msgArea() (y, h int) {
 	if u.collapsed {
 		return headerH, 0
 	}
-	return headerH, u.H - headerH - inputH
+	return headerH, u.H - headerH - inputH - u.mediaBarH()
 }
 
 func (u *UI) inputRect() image.Rectangle {
@@ -707,6 +768,17 @@ func (u *UI) HitTest(x, y int) Widget {
 		}
 		return WHeader
 	}
+	if b := u.mediaBar(); !b.Empty() && inRect(x, y, b) {
+		// Transport strip: only its two buttons are live, the rest is the
+		// (passive) "now playing" label.
+		if inRect(x, y, u.mediaPlayRect()) {
+			return WMediaPlay
+		}
+		if inRect(x, y, u.mediaStopRect()) {
+			return WMediaStop
+		}
+		return WMediaPlay // whole strip toggles play/pause
+	}
 	if y >= u.H-inputH {
 		br := u.buttonRect()
 		if x >= br.Min.X && x < br.Max.X && y >= br.Min.Y && y < br.Max.Y {
@@ -734,7 +806,7 @@ func (u *UI) HitTest(x, y int) Widget {
 func (u *UI) Resize(w, h int) {
 	minH := 260
 	if u.collapsed {
-		minH = headerH + inputH
+		minH = headerH + inputH + u.mediaBarH()
 	}
 	u.W, u.H = max(w, 200), max(h, minH)
 	if !u.collapsed {
@@ -1028,6 +1100,17 @@ func (u *UI) Release(w Widget) bool {
 				return u.closeAbout() // a backdrop click dismisses About
 			}
 			u.openDrop = dropNone // a click outside the widgets closes the list
+		case WMediaPlay:
+			// Play/pause toggle. The queued command is consumed by main(),
+			// which runs the media_control agent; the strip repaints from the
+			// next state poll, so the glyph flips when the player really did.
+			if u.mediaPaused {
+				u.wantMedia = "resume"
+			} else {
+				u.wantMedia = "pause"
+			}
+		case WMediaStop:
+			u.wantMedia = "stop"
 		case WToggle:
 			// The history show/hide button: the only collapse toggle -
 			// a plain title-bar click just drags the window. Collapsing
@@ -1035,11 +1118,11 @@ func (u *UI) Release(w Widget) bool {
 			// last non-collapsed height.
 			if u.collapsed {
 				u.collapsed = false
-				u.H = max(u.expandedH, headerH+inputH)
+				u.H = max(u.expandedH, headerH+inputH+u.mediaBarH())
 			} else {
 				u.expandedH = u.H
 				u.collapsed = true
-				u.H = headerH + inputH
+				u.H = headerH + inputH + u.mediaBarH()
 			}
 			u.scroll = clamp(u.scroll, 0, u.maxScroll())
 			u.press = WNone
@@ -1052,6 +1135,38 @@ func (u *UI) Release(w Widget) bool {
 
 // Collapsed reports whether the conversation history is currently hidden.
 func (u *UI) Collapsed() bool { return u.collapsed }
+
+// SetMedia applies a fresh transport-strip state (media.go:currentMedia) and
+// reports whether anything changed, so the caller only repaints on a real
+// difference. The caller must also resize the window when MediaActive flips:
+// the strip is part of the layout.
+func (u *UI) SetMedia(st MediaState) bool {
+	if u.mediaActive == st.Active && u.mediaPaused == st.Paused &&
+		u.mediaTitle == st.Title {
+		return false
+	}
+	oldBar := u.mediaBarH()
+	u.mediaActive, u.mediaPaused, u.mediaTitle = st.Active, st.Paused, st.Title
+	if u.collapsed && u.mediaBarH() != oldBar {
+		// A collapsed window is exactly header + input bar, so the strip has
+		// nowhere to go: grow (or shrink) the window with it. Expanded, the
+		// strip just takes the height it needs from the message area.
+		u.H = max(u.H+u.mediaBarH()-oldBar, headerH+inputH+u.mediaBarH())
+	}
+	return true
+}
+
+// MediaActive reports whether the transport strip is on screen.
+func (u *UI) MediaActive() bool { return u.mediaActive }
+
+// TakeMedia hands main() the transport command a button click queued, if any
+// (one-shot, like WantPet/WantCopy: a second click before it is consumed wins
+// the race, and an unconsumed command is never replayed).
+func (u *UI) TakeMedia() string {
+	cmd := u.wantMedia
+	u.wantMedia = ""
+	return cmd
+}
 
 // Muted reports whether the settings dialog's mute checkbox is committed on,
 // i.e. replies must not be spoken aloud. The main loop checks it right
@@ -1543,6 +1658,7 @@ func (u *UI) Render() *image.NRGBA {
 	if !u.collapsed {
 		u.drawMessages(frame)
 	}
+	u.drawMediaBar(frame)
 	u.drawInputBar(frame)
 	if u.settingsOpen {
 		u.drawSettings(frame)
@@ -2412,9 +2528,108 @@ func (u *UI) drawPagBtn(layer *image.NRGBA, r image.Rectangle, glyph string, on 
 	gw := textWidth(glyph, 1)
 	drawText(layer, r.Min.X+(r.Dx()-gw)/2, r.Min.Y+(r.Dy()-glyphH)/2, glyph, 1, col)
 }
+
+// drawMediaBar paints the transport strip: "NOW PLAYING <title>" on the left,
+// a play/pause toggle and a stop button on the right. It is only called with
+// the strip visible (Render guards on the same mediaActive state the geometry
+// uses), and the glyphs are drawn as plain shapes: the bitmap font has no media
+// symbols, and hand-drawn bars/squares/triangles match the other icons (see
+// drawChevron, drawGear).
+func (u *UI) drawMediaBar(frame *image.NRGBA) {
+	b := u.mediaBar()
+	if b.Empty() {
+		return
+	}
+	fillRect(frame, b.Min.X, b.Min.Y, b.Dx(), 1, colInputBorder) // top hairline
+
+	lbl, lblCol := mediaLbl, colMuted
+	if u.mediaPaused {
+		lbl, lblCol = "PAUSED", colPlum // readable without decoding the glyph
+	}
+	y := b.Min.Y + (mediaH-glyphH)/2
+	drawText(frame, padX, y, lbl, 1, lblCol)
+
+	// Title: clipped to the room left between the label and the buttons.
+	tx := padX + textWidth(lbl, 1) + 6
+	if avail := u.mediaStopRect().Min.X - btnGap - tx; avail > cellW {
+		drawText(frame, tx, y, ellipsize(oneLine(u.mediaTitle), 1, avail), 1, colText)
+	}
+
+	u.drawMediaBtn(frame, u.mediaStopRect(), WMediaStop, false)
+	u.drawMediaBtn(frame, u.mediaPlayRect(), WMediaPlay, u.mediaPaused)
+}
+
+// drawMediaBtn paints one transport button (a round square) plus its glyph,
+// with the same hover/press feedback the other buttons use. play is the
+// play/pause toggle: it draws the resume triangle while paused, the two pause
+// bars while playing.
+func (u *UI) drawMediaBtn(frame *image.NRGBA, r image.Rectangle, w Widget, resume bool) {
+	if r.Empty() {
+		return
+	}
+	fill, col := colBubbleFill, colPlum
+	switch {
+	case u.press == w:
+		fill = colHairLight
+	case u.hover == w:
+		fill = colBtnOff
+	}
+	drawRoundRect(frame, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), 7, colInputBorder)
+	drawRoundRect(frame, r.Min.X+1, r.Min.Y+1, r.Dx()-2, r.Dy()-2, 6, fill)
+
+	cx, cy := r.Min.X+r.Dx()/2, r.Min.Y+r.Dy()/2
+	switch {
+	case w == WMediaPlay && resume:
+		fillTriangleRight(frame, cx-3, cy, cx+5, cy-5, col)
+	case w == WMediaPlay:
+		fillRect(frame, cx-4, cy-4, 3, 9, col) // two bars, 3px apart
+		fillRect(frame, cx+2, cy-4, 3, 9, col)
+	default: // stop: a filled square
+		fillRect(frame, cx-4, cy-4, 9, 9, col)
+	}
+}
+
+// fillTriangleRight draws the play/resume glyph pointing right. The three
+// points are filled row by row (no anti-aliasing, like the other hand-drawn
+// shapes); x1 is the tip, yTop the top base corner, cy the middle row.
+func fillTriangleRight(img *image.NRGBA, x0, cy, x1, yTop int, col color.RGBA) {
+	h := cy - yTop
+	for dy := 0; dy <= h; dy++ {
+		y := yTop + dy
+		p := cy - y
+		if p < 0 { // mirror row below the midline
+			p = -p
+		}
+		if p > h {
+			continue
+		}
+		fillRect(img, x0, y, (x1-x0)*(h-p)/h, 1, col)
+	}
+}
+
+// ellipsize cuts s to fit maxW pixels at the given scale, appending an ellipsis
+// when it had to cut (a one-line title, not a word-wrapped paragraph).
+func ellipsize(s string, scale, maxW int) string {
+	if maxW <= 0 || textWidth(s, scale) <= maxW {
+		return s
+	}
+	r := []rune(s)
+	for len(r) > 1 && textWidth(string(r)+"...", scale) > maxW {
+		r = r[:len(r)-1]
+	}
+	return string(r) + "..."
+}
+
+// oneLine flattens a string to a single line: the strip draws one row, and an
+// agent-supplied title must not be able to paint over the rest of the window.
+func oneLine(s string) string {
+	return strings.Join(strings.FieldsFunc(s, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == '\t'
+	}), " ")
+}
+
 func (u *UI) drawInputBar(frame *image.NRGBA) {
 	fillRect(frame, 0, u.H-inputH, u.W, 1, colInputBorder)
-
 	// Textarea: white body, border turns teal while focused.
 	ta := u.inputRect()
 	border := color.RGBA(colInputBorder)

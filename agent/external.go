@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -22,6 +23,8 @@ import (
 //
 //	brain -> agent (stdin):  RUN {"title":"Havana","shuffle":"true"}\n
 //	agent -> brain (stdout): [INFO <text> ...]  (optional progress, logged)
+//	                          PET action <name>  (optional, before OK: the pet
+//	                                              should act this out)
 //	                          OK <message>       (done, message shown to user)
 //	                          - or -
 //	                          ERR <text>         (failed, shown as the error)
@@ -180,6 +183,8 @@ func (e *ExternalAgent) Run(ctx context.Context, args map[string]string) (Result
 		failed bool
 		done   bool
 		infos  int
+		petCmd string // optional character command from a PET line
+		petErr error  // malformed/unsupported PET directive
 	)
 scan:
 	for {
@@ -194,6 +199,17 @@ scan:
 				term, failed, done = strings.TrimSpace(line[2:]), false, true
 			case line == "ERR" || strings.HasPrefix(line, "ERR "):
 				term, failed, done = strings.TrimSpace(line[3:]), true, true
+			case line == "PET" || strings.HasPrefix(line, "PET "):
+				// Optional character control, emitted at most once and before
+				// OK. Keep only the first valid directive; a later one is a
+				// protocol error rather than a way to overwrite it.
+				if petErr == nil {
+					if petCmd != "" {
+						petErr = errors.New("duplicate PET directive")
+					} else {
+						petCmd, petErr = normalizePetCmd(strings.TrimSpace(line[3:]))
+					}
+				}
 			default: // INFO lines and anything unknown (forward-compat) are logged
 				if infos < maxInfoLines {
 					infos++
@@ -236,7 +252,10 @@ scan:
 		return Result{}, errors.New(term)
 	}
 	if done {
-		return Result{Message: term}, nil
+		if petErr != nil {
+			return Result{}, fmt.Errorf("agent %s: %w", e.m.ID, petErr)
+		}
+		return Result{Message: term, PetCmd: petCmd}, nil
 	}
 	// No terminal line: crashed, hung, or wrong protocol.
 	if ctx.Err() != nil {
@@ -260,4 +279,36 @@ func stderrSuffix(b *bytes.Buffer) string {
 		return ": " + s
 	}
 	return ""
+}
+
+// petNameRe matches a pet pose/FX name as the brain spells it on the cmd-FIFO:
+// lowercase word, digits and underscores ("dance", "celebration", "sixseven").
+var petNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+
+// normalizePetCmd validates the payload of a "PET <verb> <name>" line and
+// returns the canonical cmd-FIFO line ("action dance"), so an ability can make
+// the character act the ability out - play a song, start a dance; fail, look
+// worried.
+//
+// That line goes straight to the desktop-pet's cmd-FIFO, which is the one
+// place where third-party agent output could smuggle in a second command, so
+// the shape is strict: a known verb, ONE pet name, nothing else - no spaces,
+// no separators, no newlines. Whether the pet actually knows the name is the
+// brain's business (it owns the action/event tables and drops unknown names
+// with a log line), so a well-formed but unknown name passes through here and
+// fails soft instead of failing the whole run.
+func normalizePetCmd(s string) (string, error) {
+	verb, name, ok := strings.Cut(strings.TrimSpace(s), " ")
+	if !ok {
+		return "", fmt.Errorf("PET %q: want \"action <name>\" or \"event <name>\"", s)
+	}
+	verb = strings.ToLower(verb)
+	name = strings.ToLower(strings.TrimSpace(name))
+	if verb != "action" && verb != "event" {
+		return "", fmt.Errorf("PET: unknown command %q (want action or event)", verb)
+	}
+	if !petNameRe.MatchString(name) {
+		return "", fmt.Errorf("PET: bad %s name %q", verb, name)
+	}
+	return verb + " " + name, nil
 }

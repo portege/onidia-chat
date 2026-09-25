@@ -58,13 +58,13 @@ type Config struct {
 	BusyTo           int    // legacy whole-hour alias kept for existing callers (set from H fields)
 	SleepFrom        int    // legacy whole-hour aliases kept for existing callers (set from H fields)
 	SleepTo          int    // legacy whole-hour aliases kept for existing callers (set from H fields)
-	AgentsDir        string `ini:"agents-dir"` // directory of downloadable agents ("" = default)
-	AgentsOff        bool   `ini:"agents-off"` // true = never discover agents / advertise them
-	MusicDir         string `ini:"music-dir"`  // play_song agent's music folder ("" = agent default)
-	VideoDir         string `ini:"video-dir"`  // play_movie agent's video folder ("" = agent default)
-	AgentsKey        string `ini:"agents-key"`        // trusted Ed25519 public key hex for agent signatures ("" = unverified)
+	AgentsDir        string `ini:"agents-dir"`         // directory of downloadable agents ("" = default)
+	AgentsOff        bool   `ini:"agents-off"`         // true = never discover agents / advertise them
+	MusicDir         string `ini:"music-dir"`          // play_song agent's music folder ("" = agent default)
+	VideoDir         string `ini:"video-dir"`          // play_movie agent's video folder ("" = agent default)
+	AgentsKey        string `ini:"agents-key"`         // trusted Ed25519 public key hex for agent signatures ("" = unverified)
 	AgentsRequireSig bool   `ini:"agents-require-sig"` // reject unsigned agents if true
-	AgentsRegistry   string `ini:"agents-registry"`   // registry index URL or path ("" = default/none)
+	AgentsRegistry   string `ini:"agents-registry"`    // registry index URL or path ("" = default/none)
 
 }
 
