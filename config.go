@@ -12,6 +12,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -29,9 +31,41 @@ type Config struct {
 	ImageSource      string `ini:"image-source"`        // "pixabay" | "wiki" | "gemini" | "off"
 	PixabayKey       string `ini:"pixabay-key"`         // Pixabay API key (empty = env/built-in default)
 	ForceImage       string `ini:"force-image"`         // always fetch image for this keyword
-	Provider         string `ini:"provider"`            // "gemini" | "bedrock"
-	AWSProfile       string `ini:"aws-profile"`         // AWS shared profile name
-	AWSRegion        string `ini:"aws-region"`          // AWS region for Bedrock
+	TTS              string `ini:"tts"`                 // "on" (default) | "off"
+	TTSKey           string `ini:"tts-key"`             // Typecast API key
+	TTSVoice         string `ini:"tts-voice"`           // Typecast voice id
+	Mute             bool   `ini:"mute"`                // true = never speak replies (settings dialog checkbox)
+	DemoMode         bool   `ini:"demo-mode"`           // true = pet roams & chatters on its own (settings dialog checkbox; default off = planted)
+	Provider         string `ini:"provider"`            // "gemini" (default) | "bedrock" | "ollama" | "openrouter"
+	Stream           bool   `ini:"stream"`              // openrouter: SSE streaming reply (default on)
+	StreamSet        bool   // stream key was present in the config (absent = default on)
+	AWSProfile       string `ini:"aws-profile"`      // AWS shared profile name
+	AWSRegion        string `ini:"aws-region"`       // AWS region for Bedrock
+	CharacterAge     int    `ini:"character-age"`    // chat character's age (settings dialog, 7-13)
+	CharacterName    string `ini:"character-name"`   // chat character's name (settings dialog)
+	Gender           string `ini:"character-gender"` // pet gender: "girl" launches Onidia, "boy" launches Kama (settings dialog)
+	SleepSet         bool   // sleep-time was present in the config
+	SleepFromH       int    // sleep-window start hour (0-23), from sleep-time
+	SleepFromM       int    // sleep-window start minute (0/15/30/45), from sleep-time
+	SleepToH         int    // sleep-window end hour (0-23), from sleep-time
+	SleepToM         int    // sleep-window end minute (0/15/30/45), from sleep-time
+	BusySet          bool   // busy-time was present in the config
+	BusyFromH        int    // busy-window start hour (0-23), from busy-time
+	BusyFromM        int    // busy-window start minute (0/15/30/45), from busy-time
+	BusyToH          int    // busy-window end hour (0-23), from busy-time
+	BusyToM          int    // busy-window end minute (0/15/30/45), from busy-time
+	BusyFrom         int    // legacy whole-hour alias kept for existing callers (set from H fields)
+	BusyTo           int    // legacy whole-hour alias kept for existing callers (set from H fields)
+	SleepFrom        int    // legacy whole-hour aliases kept for existing callers (set from H fields)
+	SleepTo          int    // legacy whole-hour aliases kept for existing callers (set from H fields)
+	AgentsDir        string `ini:"agents-dir"`         // directory of downloadable agents ("" = default)
+	AgentsOff        bool   `ini:"agents-off"`         // true = never discover agents / advertise them
+	MusicDir         string `ini:"music-dir"`          // play_song agent's music folder ("" = agent default)
+	VideoDir         string `ini:"video-dir"`          // play_movie agent's video folder ("" = agent default)
+	AgentsKey        string `ini:"agents-key"`         // trusted Ed25519 public key hex for agent signatures ("" = unverified)
+	AgentsRequireSig bool   `ini:"agents-require-sig"` // reject unsigned agents if true
+	AgentsRegistry   string `ini:"agents-registry"`    // registry index URL or path ("" = default/none)
+
 }
 
 // LoadConfig reads a simple INI file and returns populated Config.
@@ -128,16 +162,402 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.PixabayKey = val
 	case "force-image":
 		cfg.ForceImage = val
+	case "tts":
+		cfg.TTS = val
+	case "tts-key":
+		cfg.TTSKey = val
+	case "tts-voice":
+		cfg.TTSVoice = val
+	case "mute":
+		cfg.Mute = parseBool(val)
+	case "demo-mode":
+		cfg.DemoMode = parseBool(val)
+	case "character-gender":
+		cfg.Gender = normalizeGender(val)
 	case "provider":
 		cfg.Provider = val
+	case "stream":
+		cfg.Stream = parseBool(val)
+		cfg.StreamSet = true
 	case "aws-profile":
 		cfg.AWSProfile = val
 	case "aws-region":
 		cfg.AWSRegion = val
+	case "character-age":
+		cfg.CharacterAge = parseIntVal(val)
+	case "character-name":
+		cfg.CharacterName = val
+	case "sleep-time":
+		if fh, fm, th, tm, ok := parseSleepTime(val); ok {
+			cfg.SleepFromH, cfg.SleepFromM = fh, fm
+			cfg.SleepToH, cfg.SleepToM = th, tm
+			cfg.SleepFrom, cfg.SleepTo = fh, th
+			cfg.SleepSet = true
+		}
+	case "busy-time":
+		if fh, fm, th, tm, ok := parseSleepTime(val); ok {
+			cfg.BusyFromH, cfg.BusyFromM = fh, fm
+			cfg.BusyToH, cfg.BusyToM = th, tm
+			cfg.BusyFrom, cfg.BusyTo = fh, th
+			cfg.BusySet = true
+		}
+	case "agents-dir":
+		cfg.AgentsDir = val
+	case "agents-off":
+		cfg.AgentsOff = parseBool(val)
+	case "agents-key":
+		cfg.AgentsKey = strings.TrimSpace(val)
+	case "agents-require-sig":
+		cfg.AgentsRequireSig = parseBool(val)
+	case "agents-registry":
+		cfg.AgentsRegistry = strings.TrimSpace(val)
+	case "music-dir":
+		cfg.MusicDir = val
+	case "video-dir":
+		cfg.VideoDir = val
 	}
+}
+
+// parseIntVal parses a plain integer config value; junk parses as 0.
+func parseIntVal(s string) int {
+	n, _ := strconv.Atoi(strings.TrimSpace(s))
+	return n
+}
+
+// sleepMinutes are the only quarter-hour steps the settings dialog offers
+// next to the hour (00 / 15 / 30 / 45).
+var sleepMinutes = [4]int{0, 15, 30, 45}
+
+// parseSleepTime parses a sleep window "22:15-07:30" (the settings dialog's
+// format; bare hours like "22-7" and any "HH:MM" are accepted too) into
+// start/end hour+minute. Minutes outside the quarter-hour steps snap down to
+// the nearest step (e.g. :50 -> :45), so legacy hand-edited values keep
+// working.
+func parseSleepTime(s string) (fromH, fromM, toH, toM int, ok bool) {
+	parts := strings.SplitN(s, "-", 2)
+	if len(parts) != 2 {
+		return 0, 0, 0, 0, false
+	}
+	fromH, fromM, ok1 := parseHourMin(parts[0])
+	toH, toM, ok2 := parseHourMin(parts[1])
+	if !ok1 || !ok2 {
+		return 0, 0, 0, 0, false
+	}
+	return fromH, fromM, toH, toM, true
+}
+
+// parseHourMin parses one "HH", "H" or "HH:MM" value into hour 0..23 plus a
+// quarter-hour minute (00/15/30/45).
+func parseHourMin(s string) (h, m int, ok bool) {
+	s = strings.TrimSpace(s)
+	m = 0
+	if i := strings.Index(s, ":"); i >= 0 {
+		mm, err := strconv.Atoi(strings.TrimSpace(s[i+1:]))
+		if err != nil || mm < 0 || mm > 59 {
+			return 0, 0, false
+		}
+		if mm >= 45 {
+			m = 45
+		} else if mm >= 30 {
+			m = 30
+		} else if mm >= 15 {
+			m = 15
+		}
+		s = s[:i]
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 || n > 23 {
+		return 0, 0, false
+	}
+	return n, m, true
+}
+
+// parseHour parses one "HH", "H" or "HH:MM" value into the hour 0..23.
+func parseHour(s string) (int, bool) {
+	h, _, ok := parseHourMin(s)
+	return h, ok
 }
 
 func parseBool(s string) bool {
 	s = strings.ToLower(strings.TrimSpace(s))
 	return s == "true" || s == "yes" || s == "1" || s == "on"
+}
+
+// SetConfigValue sets a single key = value pair in an INI file while
+// preserving everything else: comments, sections and unknown keys stay
+// byte-for-byte identical (the settings dialog must not destroy API keys or
+// hand-tuned prompts). The key is matched on uncommented lines outside ```
+// multi-line fences only. Values containing newlines are written as a ```
+// fenced multi-line block - the exact format LoadConfig reads back - and a
+// rewrite replaces a previous fenced value through its closing fence, so no
+// stale lines survive. When the key already exists it is rewritten in
+// place; otherwise it is inserted right after the [section] header, or
+// appended as a fresh section at the end of the file. A missing file is
+// created. The write is atomic (temp file + rename).
+func SetConfigValue(path, section, key, val string) error {
+	var lines []string
+	raw, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		lines = strings.Split(string(raw), "\n")
+	case os.IsNotExist(err):
+		lines = []string{
+			"# chat-app configuration (INI format)",
+			"# Partially maintained by the in-app settings dialog.",
+			"",
+		}
+	default:
+		return fmt.Errorf("read config %s: %w", path, err)
+	}
+
+	// Pass 1: find an existing uncommented "key = ..." line (outside fences).
+	inFence := false
+	for i := 0; i < len(lines); i++ {
+		s := strings.TrimSpace(lines[i])
+		if inFence {
+			if strings.HasPrefix(s, "```") {
+				inFence = false // end of the multi-line block
+			}
+			continue
+		}
+		if s == "" || strings.HasPrefix(s, "#") || strings.HasPrefix(s, ";") {
+			continue
+		}
+		if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+			continue // section header
+		}
+		idx := strings.Index(s, "=")
+		if idx <= 0 {
+			continue
+		}
+		k := strings.TrimSpace(s[:idx])
+		fenced := strings.HasPrefix(strings.TrimSpace(s[idx+1:]), "```")
+		if k == key {
+			// Replace the whole assignment. A fenced multi-line value
+			// spans through its closing fence: swallow those lines too,
+			// or the old value would survive as stray text.
+			end := i + 1
+			if fenced {
+				for end < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[end]), "```") {
+					end++
+				}
+				if end < len(lines) {
+					end++ // step past the closing fence
+				}
+			}
+			assign := strings.Split(configAssign(key, val), "\n")
+			out := make([]string, 0, len(lines)+len(assign))
+			out = append(out, lines[:i]...)
+			out = append(out, assign...)
+			out = append(out, lines[end:]...)
+			return writeConfigLines(path, out)
+		}
+		if fenced {
+			inFence = true // multi-line value starts on this line
+		}
+	}
+
+	// Pass 2: the key is new - insert it right after its section header.
+	if section != "" {
+		header := "[" + section + "]"
+		for i, line := range lines {
+			if strings.TrimSpace(line) == header {
+				assign := strings.Split(configAssign(key, val), "\n")
+				out := make([]string, 0, len(lines)+len(assign))
+				out = append(out, lines[:i+1]...)
+				out = append(out, assign...)
+				out = append(out, lines[i+1:]...)
+				return writeConfigLines(path, out)
+			}
+		}
+	}
+
+	// Pass 3: no section either - append one at the end of the file.
+	end := len(lines)
+	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	lines = append(lines[:end:end], "")
+	if section != "" {
+		lines = append(lines, "["+section+"]")
+	}
+	lines = append(lines, strings.Split(configAssign(key, val), "\n")...)
+	return writeConfigLines(path, lines)
+}
+
+// configAssign renders one "key = value" assignment. Values containing
+// newlines are emitted as a ``` fenced multi-line block, the same format
+// LoadConfig reads back for system-prompt-multi and friends.
+func configAssign(key, val string) string {
+	if strings.Contains(val, "\n") {
+		return key + " = ```\n" + val + "\n```"
+	}
+	return key + " = " + val
+}
+
+// namePhraseRe locates the persona's identity sentence opening, "your name
+// is", in any capitalisation.
+var namePhraseRe = regexp.MustCompile(`(?i)your name is`)
+
+// ageClauseRe matches an age clause right after the name, as a previous
+// save wrote it (", 12 years old"), so re-saving replaces it in place
+// instead of stacking copies.
+var ageClauseRe = regexp.MustCompile(`(?i)^[\s,]*(?:and\s+)?(\d+)\s*years?[\s-]*old`)
+
+// withCharacterSettings returns the system prompt with the settings
+// dialog's name and age written into its "your name is ..." sentence: the
+// name slot is replaced and the age added right behind it ("..., 12 years
+// old"). An age clause from a previous save is replaced, never stacked, a
+// [character-settings] block left by older versions is dropped, and
+// everything else - including the rest of that sentence - is preserved.
+// Clearing the name in the dialog keeps the persona's written name. A
+// persona without the sentence grows one as a new last line; an empty
+// prompt grows the built-in persona first, so a first save cannot drop the
+// default character definition.
+func withCharacterSettings(prompt, name string, age int) string {
+	// Drop a [character-settings] block an older version appended after
+	// the persona, so its stale name/age cannot contradict the rewritten
+	// identity sentence below.
+	if i := strings.Index(prompt, "[character-settings]"); i >= 0 {
+		end := len(prompt)
+		if j := strings.Index(prompt[i:], "[/character-settings]"); j >= 0 {
+			end = i + j + len("[/character-settings]")
+		}
+		prompt = strings.TrimRight(prompt[:i]+prompt[end:], " \t\r\n")
+	}
+
+	sentence := func(name string, age int) string {
+		if name != "" {
+			if age > 0 {
+				return fmt.Sprintf("Your name is %s, %d years old.", name, age)
+			}
+			return "Your name is " + name + "."
+		}
+		if age > 0 {
+			return fmt.Sprintf("You are %d years old; keep your replies age-appropriate.", age)
+		}
+		return ""
+	}
+
+	loc := namePhraseRe.FindStringIndex(prompt)
+	if loc == nil {
+		s := sentence(name, age)
+		if s == "" {
+			return prompt
+		}
+		prompt = strings.TrimRight(prompt, " \t\r\n")
+		if prompt == "" {
+			return botPersona + "\n" + s
+		}
+		return prompt + "\n" + s
+	}
+
+	// The name runs from the phrase's end to the next sentence delimiter.
+	i := loc[1]
+	for i < len(prompt) && !strings.ContainsRune(",.;:!?\n\r", rune(prompt[i])) {
+		i++
+	}
+	if name == "" {
+		name = strings.TrimSpace(prompt[loc[1]:i]) // keep the written name
+	}
+	// Swallow an age clause a previous save wrote right after the name.
+	j := i
+	if m := ageClauseRe.FindStringSubmatch(prompt[j:]); m != nil {
+		j += len(m[0])
+	}
+	if age > 0 {
+		return prompt[:loc[1]] + " " + name + fmt.Sprintf(", %d years old", age) + prompt[j:]
+	}
+	return prompt[:loc[1]] + " " + name + prompt[j:]
+}
+
+// existingPromptKey reports which INI key currently holds the system
+// instruction: "system-prompt-multi", "system-prompt", or "" when the file
+// defines neither. The multi-line alias wins when both exist, matching the
+// loader's precedence (LoadConfig copies it over the single-line value).
+func existingPromptKey(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	single, multi := false, false
+	inFence := false
+	for _, line := range strings.Split(string(raw), "\n") {
+		s := strings.TrimSpace(line)
+		if inFence {
+			if strings.HasPrefix(s, "```") {
+				inFence = false
+			}
+			continue
+		}
+		if s == "" || strings.HasPrefix(s, "#") || strings.HasPrefix(s, ";") {
+			continue
+		}
+		if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+			continue // section header
+		}
+		idx := strings.Index(s, "=")
+		if idx <= 0 {
+			continue
+		}
+		fenced := strings.HasPrefix(strings.TrimSpace(s[idx+1:]), "```")
+		switch strings.TrimSpace(s[:idx]) {
+		case "system-prompt-multi":
+			multi = true
+		case "system-prompt":
+			single = true
+		}
+		if fenced {
+			inFence = true
+		}
+	}
+	switch {
+	case multi:
+		return "system-prompt-multi"
+	case single:
+		return "system-prompt"
+	}
+	return ""
+}
+
+// bakeCharacterPrompt rewrites the stored system instruction with the
+// settings dialog's name and age: the persona's "your name is ..." sentence
+// is updated in place and everything else stays as the user wrote it.
+// Without an existing prompt key, system-prompt-multi is created from the
+// built-in persona plus an identity sentence.
+func bakeCharacterPrompt(path, name string, age int) error {
+	key := existingPromptKey(path)
+	cur := ""
+	if key == "" {
+		key = "system-prompt-multi"
+	} else {
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			return err
+		}
+		cur = cfg.SystemPrompt
+		if key == "system-prompt-multi" {
+			cur = cfg.SystemPromptFull
+		}
+	}
+	// Section "": the prompt is conceptually top-level, so a brand-new key
+	// is appended at the end of the file rather than inside [character].
+	return SetConfigValue(path, "", key, withCharacterSettings(cur, name, age))
+}
+
+// writeConfigLines joins and atomically replaces the INI file.
+func writeConfigLines(path string, lines []string) error {
+	out := strings.Join(lines, "\n")
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n" // INI files always end with a newline
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(out), 0o644); err != nil {
+		return fmt.Errorf("write config %s: %w", path, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("replace config %s: %w", path, err)
+	}
+	return nil
 }

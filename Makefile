@@ -1,7 +1,14 @@
-.PHONY: build run preview clean
+.PHONY: build run preview clean agentctl pack
+.PHONY: test
+test:
+	go test -count=1 ./...
+
 
 build:
 	go build -trimpath -ldflags="-s -w" -o chat-app .
+
+agentctl:
+	go build -trimpath -ldflags="-s -w" -o agentctl ./cmd/agentctl
 
 run:
 	./chat-app
@@ -20,3 +27,19 @@ test-api:
 
 clean:
 	rm -f chat-app chat_ui_*.png
+	rm -rf dist
+
+# Zip every shippable agent in agents/<name> into dist/agents/<name>.zip
+# for distribution and agentctl install. Skips template/private folders
+# (leading "_", same rule as discovery) and tolerates an empty agents dir.
+pack:
+	@mkdir -p dist/agents
+	@for d in agents/*/ ; do \
+		[ -d "$$d" ] || continue ; \
+		case "$$d" in */_*) continue ;; esac ; \
+		n=$$(basename $$d) ; \
+		( cd agents && zip -qr ../dist/agents/$$n.zip $$n ) ; \
+		echo "dist/agents/$$n.zip" ; \
+	done
+
+

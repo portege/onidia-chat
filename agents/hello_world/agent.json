@@ -1,0 +1,21 @@
+{
+  "id": "hello_world",
+  "version": "1.0.0",
+  "description": "The reference agent: greets you by name. Install it, then ask the chat to say hello through hello_world.",
+  "exec": ["./hello_world.sh"],
+  "timeout_ms": 5000,
+  "params": [
+    {
+      "name": "name",
+      "description": "who to greet",
+      "default": "world"
+    },
+    {
+      "name": "style",
+      "type": "string",
+      "description": "greeting tone",
+      "enum": ["friendly", "formal"],
+      "default": "friendly"
+    }
+  ]
+}

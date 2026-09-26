@@ -1,0 +1,14 @@
+{
+  "id": "my_agent",
+  "version": "0.1.0",
+  "description": "RENAME ME: one sentence for the LLM on what this agent does and when to use it.",
+  "exec": ["./my_agent.sh"],
+  "timeout_ms": 15000,
+  "params": [
+    {
+      "name": "query",
+      "description": "RENAME ME: what the model should pass in",
+      "required": true
+    }
+  ]
+}

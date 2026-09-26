@@ -1,0 +1,158 @@
+# chat-app configuration file (INI format)
+# Load it with: ./chat-app -config chat-app.ini
+#
+# Precedence:
+#   1. explicitly-set CLI flag
+#   2. environment variable (for api-key only)
+#   3. value in this file
+#   4. built-in default constant
+
+# LLM providers:
+#   - gemini    -> [gemini] section: api-key / api-url / model.
+#                  Credentials: api-key (config, or $GEMINI_API_KEY).
+#   - bedrock   -> [bedrock] section: aws-profile / aws-region / model.
+#                  Credentials: AWS SDK chain (~/.aws/credentials, ~/.aws/config,
+#                  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars) by profile.
+#                  The actual key is NEVER stored in this file.
+#   - ollama    -> [ollama] section: api-url / model. No API key.
+#   - openrouter -> [openrouter] section: api-key / api-url / model. OpenAI-
+#                   compatible gateway: OpenRouter by default (one key, any
+#                   vendor - DeepSeek, Kimi/Moonshot, ...). Also run against a
+#                   vendor's native /chat/completions endpoint (e.g.
+#                   https://api.deepseek.com) by pointing api-url at it.
+#                   Credentials: api-key (config, or $OPENROUTER_API_KEY).
+#
+# The provider key picks which section the app reads. Each section is named
+# after its provider so the mapping is obvious: provider = bedrock reads
+# [bedrock], provider = ollama reads [ollama], etc.
+
+# LLM backend: "gemini" (default), "bedrock", "ollama", or "openrouter".
+provider = bedrock
+
+[gemini]
+api-key = <GEMINI_API_KEY>
+model = gemini-3.6-flash
+api-url = https://generativelanguage.googleapis.com
+
+[bedrock]
+# AWS profile and region for Bedrock. The default profile is used when empty.
+aws-profile = default
+aws-region = us-east-1
+
+[ollama]
+# ollama-compatible /api/chat server (Ollama or the hailo llama.cpp server).
+# Default: http://localhost:8000  (override with -api-url or here)
+api-url = http://localhost:8000
+# Server-side model tag. Default: qwen2:1.5b  (override with -model or here)
+model = qwen2:1.5b
+
+# [openrouter] example (commented out). Set `provider = openrouter` and uncomment
+# to use OpenRouter or any OpenAI-compatible gateway:
+#   - Key: export $OPENROUTER_API_KEY, or put it in api-key below (the api-key
+#     field is shared across providers, so use a separate launch / -api-key
+#     when switching providers rather than relying on chat-app.ini's gemini key).
+#   - Endpoint: default https://openrouter.ai/api/v1; point api-url at a
+#     vendor's native /chat/completions endpoint to skip OpenRouter
+#     (e.g. https://api.deepseek.com, https://api.moonshot.cn/v1).
+#   - Streaming: default on - replies arrive over SSE and fill the chat
+#     bubble word-by-word while the model generates. Set stream = false
+#     for the old single-shot behavior.
+# [openrouter]
+# api-key = <your OpenRouter key>
+# api-url = https://openrouter.ai/api/v1
+# model = deepseek/deepseek-chat-v3-0324
+# stream = true
+
+
+[ui]
+# Buddy say-pipe: auto-detected from $DISPLAY by default.
+# Use "off" to disable forwarding, or set an absolute path.
+pet-pipe = auto
+
+# System instruction / persona sent to Gemini with every request.
+# Use a single line:
+# system-prompt = You are a terse Linux expert. No markdown, no emoji.
+
+# Or a multi-line fenced block (preserves newlines):
+system-prompt-multi = ```
+You are Buddy, a tiny cheerful chat companion living in a chat window on a Linux desktop, your name is Onidia, a desktop-pet chibi girl.
+Keep every reply detail and playful: 1-3 plain sentences, no markdown, use emoji, no lists.
+speak like gen z kids.
+If an emotion fits the answer, START it with exactly one mood tag from [happy] [wink] [sad] [thinking] [anxious] [angry] [surprised] [sleepy] [fear] [disgust] [contempt] [confused] [skeptical] [embarrassed];
+the tag is stripped before display.
+```
+
+# Alternatively, point system-file to a separate prompt file:
+# system-file = /home/boi/.config/chat-app/prompt.txt
+
+# Image replies: when the user's prompt is about something visual (place,
+# landmark, animal, famous person, object...), Buddy emits an [IMG: ...] tag.
+# The app then fetches a real photo from Pixabay (image-source = pixabay,
+# default) or Wikipedia (image-source = wiki), or generates an illustration
+# via Gemini (image-source = gemini). Use "off" to disable image replies
+# entirely. The legacy "images = true/false" key is still accepted.
+image-source = pixabay
+
+# Pixabay API key (only used when image-source = pixabay). A free shared key
+# is built in; set your own here or via $PIXABAY_API_KEY.
+# pixabay-key =
+
+# Force a specific image keyword for every reply (useful for testing the UI).
+# Example: force-image = Bali
+# force-image =
+
+# Text-to-speech: every reply is also spoken aloud via the Typecast API
+# while its bubble shows (requires aplay/paplay/ffplay on PATH). Readers
+# of replies double as voice notes for the desktop-pet bridge.
+tts = on
+
+# Typecast API key and voice. A bundled demo key/voice are used when empty;
+# set your own here or via $TYPECAST_API_KEY.
+tts-key = <TYPECAST_API_KEY>
+tts-voice = tc_6359e7f6467f9e240b68292c
+
+[character]
+# Everything in this section is owned by the settings (gear) dialog: SAVE
+# rewrites these keys in place. Sections are not enforced by the parser, but
+# keeping the dialog-managed keys together makes them easy to find.
+
+# Name and age of the chat character (NAME / AGE rows of the dialog). The
+# stored persona below has its "your name is ..." sentence rewritten to match.
+character-name = Onidia
+character-age = 7
+
+# Buddy character picked by the CHARACTER row's buttons (ONIDIA = the chibi
+# girl, KAMA = the boy in the red hoodie). A running buddy keeps its character
+# until it is quit with the pink Haiya! button and launched again.
+character-gender = girl
+
+# Sleep and busy windows, "HH:MM-HH:MM", set with the FROM/TO dropdowns.
+sleep-time = 22:00-07:00
+busy-time = 09:00-17:00
+
+# Mute checkbox: while true replies are shown as bubbles but never spoken.
+mute = false
+
+# Agents: pluggable abilities the model invokes with [AGENT: ...] reply tags.
+# Each agent is a folder (agent.json + executable) in agents-dir; install new
+# ones with `agentctl install <folder|zip|url>` - no rebuild, restart to pick
+# up. See agents/README.md for the authoring guide.
+# agents-dir = /home/boi/.config/chat-app/agents
+# agents-off = false
+
+# Media folders for the built-in play_song / play_movie agents (flag names:
+# -music-dir / -video-dir). Unset = the agents use ~/Music and ~/Videos.
+# music-dir = ~/Music
+# video-dir = ~/Videos
+
+# Demo mode checkbox (the row directly below MUTE SPEECH): OFF (the default)
+# keeps the buddy "planted" - it never wanders and never starts talking
+# on its own, though it still blinks, idles and answers what you send it.
+# Either way the buddy enters with its launch flourish (parachute /
+# poof-in) and then walks - never running - to its parking spot three character widths in from the
+# right edge, where its speech bubble is not clipped by the screen; planted
+# mode then stays there. ON restores the classic demo behavior: the pet roams
+# the screen and chatters randomly. Saving the dialog rewrites this key in
+# place and restarts the buddy so the mode takes effect immediately.
+demo-mode = false
+

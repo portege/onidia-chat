@@ -20,7 +20,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"github.com/portege/chat-app/agent"
 )
 
 // defaultConfigPath returns the conventional chat-app.ini to auto-load when
@@ -39,6 +42,41 @@ func defaultConfigPath() string {
 	return ""
 }
 
+// firstNonEmpty returns the first non-blank argument (flag > config).
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// cfgStr safely reads a field from a possibly-nil config.
+func cfgStr(cfg *Config, get func(*Config) string) string {
+	if cfg == nil {
+		return ""
+	}
+	return get(cfg)
+}
+
+// expandHome resolves a leading ~/ to the user's home directory (config
+// paths are commonly written that way); anything else passes through.
+func expandHome(p string) string {
+	if p == "~" {
+		if h, err := os.UserHomeDir(); err == nil {
+			return h
+		}
+		return p
+	}
+	if strings.HasPrefix(p, "~/") {
+		if h, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(h, p[2:])
+		}
+	}
+	return p
+}
+
 // pickModel resolves the effective model ID for a provider and returns an
 // optional warning. Precedence: explicit -model flag > config-file model >
 // provider default. A config-file/default model that clearly belongs to the
@@ -52,8 +90,11 @@ func pickModel(flagVal string, flagSet bool, cfgModel, provider string) (string,
 		model = strings.TrimSpace(cfgModel)
 	}
 	if model == "" {
-		if provider == "bedrock" {
+		switch provider {
+		case "bedrock":
 			return defaultBedrockModelID, ""
+		case "openrouter":
+			return defaultOpenRouterModel, ""
 		}
 		return defaultModel, ""
 	}
@@ -67,6 +108,14 @@ func pickModel(flagVal string, flagSet bool, cfgModel, provider string) (string,
 			return defaultModel, fmt.Sprintf(
 				"provider=gemini but model %q is a Bedrock ID (from config) - using %q; set -model to a Gemini model",
 				model, defaultModel)
+		case provider == "openrouter" && isGeminiModel(model):
+			return defaultOpenRouterModel, fmt.Sprintf(
+				"provider=openrouter but model %q is a Gemini ID (from config) - using %q; set model in chat-app.ini or -model to an OpenRouter ID (e.g. deepseek/deepseek-chat)",
+				model, defaultOpenRouterModel)
+		case provider == "openrouter" && isBedrockModel(model):
+			return defaultOpenRouterModel, fmt.Sprintf(
+				"provider=openrouter but model %q is a Bedrock ID (from config) - using %q; set model in chat-app.ini or -model to an OpenRouter ID (e.g. deepseek/deepseek-chat)",
+				model, defaultOpenRouterModel)
 		}
 	}
 	if provider == "bedrock" && !isBedrockModel(model) {
@@ -101,17 +150,17 @@ func resolvePetPipe(flagVal, cfgVal string) string {
 func main() {
 	log.SetPrefix("[chat] ")
 	var (
-		w       = flag.Int("w", 380, "initial window width")
-		h       = flag.Int("h", 520, "initial window height")
+		w       = flag.Int("w", defaultWinW, "initial window width")
+		h       = flag.Int("h", defaultWinH, "initial window height")
 		preview = flag.Bool("preview", false,
 			"render chat_ui_*.png previews and exit (no display needed)")
 		apiKey = flag.String("api-key", "",
-			`Google Gemini API key (default: $GEMINI_API_KEY, $GOOGLE_API_KEY, or the built-in key; "off" = stub mode)`)
-		model  = flag.String("model", "", "model ID (Gemini or Bedrock; default depends on -provider)")
+			`LLM API key (default: env or built-in for the selected provider; "off" = stub mode)`)
+		model  = flag.String("model", "", "model ID (Gemini, Bedrock, or OpenRouter; default depends on -provider)")
 		apiURL = flag.String("api-url", "",
-			"Gemini endpoint base for relays/mirrors (default: "+defaultAPIURL+")")
+			"LLM endpoint base (default depends on -provider: Gemini, OpenRouter, or localhost for ollama)")
 		provider = flag.String("provider", "",
-			`LLM backend: "gemini" (default) or "bedrock"`)
+			`LLM backend: "gemini" (default), "bedrock", "ollama", or "openrouter"`)
 		awsProfile = flag.String("aws-profile", "",
 			"AWS shared profile name for Bedrock (default: default, or $AWS_PROFILE)")
 		awsRegion = flag.String("aws-region", "",
@@ -134,6 +183,20 @@ func main() {
 		forceImage = flag.String("force-image", "", "always fetch/generate an image for this keyword (testing)")
 		pixabayKey = flag.String("pixabay-key", "",
 			"Pixabay API key for image replies (default: $PIXABAY_API_KEY, config pixabay-key, or built-in)")
+		ttsFlag = flag.String("tts", "",
+			`speech replies: "on" (default, needs Typecast + aplay/paplay/ffplay) | "off"`)
+		ttsKey = flag.String("tts-key", "",
+			"Typecast API key for spoken replies (default: $TYPECAST_API_KEY, config tts-key, or built-in)")
+		ttsVoice = flag.String("tts-voice", "",
+			"Typecast voice id for spoken replies (default: config tts-voice, or built-in)")
+		agentsDirFlag = flag.String("agents-dir", "",
+			"directory of downloadable agents (default: $XDG_CONFIG_HOME/chat-app/agents or ~/.config/chat-app/agents)")
+		agentsOffFlag = flag.Bool("agents-off", false,
+			"disable agent discovery and [AGENT: ...] reply tags")
+		musicDirFlag = flag.String("music-dir", "",
+			"music folder for the play_song agent (default: config music-dir, or ~/Music inside the agent)")
+		videoDirFlag = flag.String("video-dir", "",
+			"video folder for the play_movie agent (default: config video-dir, or ~/Videos inside the agent)")
 	)
 	flag.Parse()
 
@@ -199,7 +262,7 @@ func main() {
 		providerVal = "gemini"
 	}
 	switch providerVal {
-	case "gemini", "bedrock":
+	case "gemini", "bedrock", "ollama", "openrouter":
 		// ok
 	default:
 		log.Printf("warning: unknown provider %q, using gemini", providerVal)
@@ -224,7 +287,14 @@ func main() {
 		urlVal = strings.TrimSpace(cfg.APIURL)
 	}
 	if urlVal == "" {
-		urlVal = defaultAPIURL
+		switch providerVal {
+		case "openrouter":
+			urlVal = defaultOpenRouterURL
+		case "ollama":
+			urlVal = defaultOllamaURL
+		default:
+			urlVal = defaultAPIURL
+		}
 	}
 
 	// Pet pipe: explicit flag > config file > auto-detect > off
@@ -236,6 +306,9 @@ func main() {
 	if pipe != "" && !filepath.IsAbs(pipe) {
 		log.Printf("warning: pet-pipe %q is not an absolute path - say writes will fail silently; use auto, off, or an absolute FIFO path", pipe)
 	}
+	// The pet's command FIFO (actions/events, and "quit" for the Haiya!
+	// button) sits next to the say-FIFO with a .cmd suffix.
+	petCmdPath := petCmdPathFor(pipe)
 
 	// System instruction: -system-prompt flag > -system-file flag > config file
 	sysPrompt := *systemPrompt
@@ -287,6 +360,86 @@ func main() {
 	forceImg := *forceImage
 	if forceImg == "" && cfg != nil {
 		forceImg = cfg.ForceImage
+	}
+
+	// TTS: explicit -tts flag > config file > on by default. Key/voice:
+	// explicit flag > $TYPECAST_API_KEY > config file > built-in default.
+	ttsVal := strings.ToLower(strings.TrimSpace(*ttsFlag))
+	if ttsVal == "" && cfg != nil {
+		ttsVal = strings.ToLower(strings.TrimSpace(cfg.TTS))
+	}
+	ttsOn := ttsVal != "off"
+	ttsKeyVal := strings.TrimSpace(*ttsKey)
+	if ttsKeyVal == "" {
+		if envKey := os.Getenv("TYPECAST_API_KEY"); envKey != "" {
+			ttsKeyVal = strings.TrimSpace(envKey)
+		} else if cfg != nil {
+			ttsKeyVal = strings.TrimSpace(cfg.TTSKey)
+		}
+	}
+	ttsVoiceVal := strings.TrimSpace(*ttsVoice)
+	if ttsVoiceVal == "" && cfg != nil {
+		ttsVoiceVal = strings.TrimSpace(cfg.TTSVoice)
+	}
+
+	// Agents: downloadable pluggable abilities. Discovery is startup-only
+	// (drop a new folder into the dir and restart, or use agentctl run to
+	// test it standalone). Built-ins could Register() here before Discover
+	// so a download can never shadow them. Placed before the headless probe
+	// exits so `-preview` and friends exercise the same wiring.
+	agentsDir := strings.TrimSpace(*agentsDirFlag)
+	if agentsDir == "" && cfg != nil {
+		agentsDir = strings.TrimSpace(cfg.AgentsDir)
+	}
+	if agentsDir == "" {
+		agentsDir = agent.DefaultDir()
+	}
+	agentsOff := *agentsOffFlag
+	if !explicitFlags["agents-off"] && cfg != nil {
+		agentsOff = cfg.AgentsOff
+	}
+	// Media folders flow to the play_* agents as CHAT_APP_* env vars
+	// (flag > config > unset -> the agent falls back to ~/Music / ~/Videos).
+	// CHAT_APP_STATE_DIR is where the media agents record the player they
+	// started and where the chat window reads the transport strip from, so
+	// both halves of that contract always point at the same directory.
+	agent.SetExtraEnv(map[string]string{
+		"CHAT_APP_MUSIC_DIR": expandHome(firstNonEmpty(
+			*musicDirFlag, cfgStr(cfg, func(c *Config) string { return c.MusicDir }))),
+		"CHAT_APP_VIDEO_DIR": expandHome(firstNonEmpty(
+			*videoDirFlag, cfgStr(cfg, func(c *Config) string { return c.VideoDir }))),
+		"CHAT_APP_STATE_DIR": mediaStateDir(),
+	})
+	if agentsOff {
+		log.Printf("agents: disabled by config")
+	} else {
+		// Built-ins register BEFORE discovery so a downloaded folder can
+		// never shadow them (first registration wins).
+		if err := agent.Register(story); err != nil {
+			log.Printf("agents: %v", err)
+		}
+		if agentsDir != "" {
+			var pol agent.Policy
+			if cfg != nil {
+				pol.RequireSignature = cfg.AgentsRequireSig
+				if cfg.AgentsKey != "" {
+					if pk, err := agent.ParsePublicKey(cfg.AgentsKey); err == nil {
+						pol.Key = pk
+					} else {
+						log.Printf("agents: invalid agents-key in config: %v", err)
+					}
+				}
+			}
+			ids, problems := agent.DiscoverWithPolicy(agentsDir, pol)
+			for _, p := range problems {
+				log.Printf("%s", p)
+			}
+			if len(ids) > 0 {
+				log.Printf("agents: %d discovered: %s", len(ids), strings.Join(ids, ", "))
+			} else {
+				log.Printf("agents: none in %s (agentctl install <dir|zip|url> to add)", agentsDir)
+			}
+		}
 	}
 
 	// -fetch-image tests the resolved source's fetch path (the gemini source
@@ -344,9 +497,101 @@ func main() {
 	ui.Bot.APIURL = urlVal
 	ui.Bot.PetPipe = pipe
 	ui.Bot.SystemInstruction = resolveSystemPrompt(sysPrompt, sysFile)
+	// Haiya! button lifecycle: pink whenever a pet is listening on the cmd
+	// FIFO (launched by us or adopted), teal when none is. The click launches
+	// (teal) or gracefully quits with the poof-out animation (pink).
+	petRunning := func(path string) bool { return path != "" && petPipeReady(path) }
+	if petRunning(petCmdPath) {
+		log.Printf("pet: onidia already running - Haiya! button will quit it")
+		ui.SetPetRunning(true)
+	}
+	petGoneCh := make(chan struct{}, 1)
+	var petQuitting atomic.Bool
+	var petRestartPending atomic.Bool
+	petTick := time.NewTicker(2 * time.Second)
+	defer petTick.Stop()
+	// Haiya! click: launch when teal, gracefully quit (poof-out) when pink.
+	onHaiya := func() {
+		if ui.PetRunning() {
+			if !petQuitting.CompareAndSwap(false, true) {
+				return // a quit is already in flight
+			}
+			log.Printf("pet: quit requested via Haiya! button")
+			QuitPet(petCmdPath, petGoneCh)
+			return
+		}
+		if err := LaunchPet(ui.PetCharacter(), ui.PetDemo()); err != nil {
+			log.Printf("pet: %v", err)
+			return
+		}
+		petQuitting.Store(false)
+		ui.SetPetRunning(true)
+	}
 	ui.Bot.ImageSource = imgSource
 	ui.Bot.PixabayKey = pxKey
 	ui.Bot.ForceImageKeyword = forceImg
+	// Settings dialog wiring: saves go to the loaded INI file (or a
+	// conventional ./chat-app.ini when none was loaded), and a character-age
+	// from the config seeds the dialog and the persona.
+	ui.savePath = configPath
+	if ui.savePath == "" {
+		ui.savePath = "chat-app.ini"
+	}
+	if cfg != nil && cfg.CharacterName != "" {
+		ui.name = cfg.CharacterName
+		ui.Bot.Name = cfg.CharacterName
+		ui.Bot.CharacterName = cfg.CharacterName
+	}
+	if cfg != nil && cfg.CharacterAge > 0 {
+		ui.age = cfg.CharacterAge
+		ui.Bot.CharacterAge = cfg.CharacterAge
+	}
+	if cfg != nil && cfg.SleepSet {
+		ui.sleepFrom, ui.sleepTo = cfg.SleepFrom, cfg.SleepTo
+		ui.sleepFromMin, ui.sleepToMin = cfg.SleepFromM, cfg.SleepToM
+		ui.Bot.SleepSet = true
+		ui.Bot.SleepFromH, ui.Bot.SleepToH = cfg.SleepFromH, cfg.SleepToH
+		ui.Bot.SleepFromM, ui.Bot.SleepToM = cfg.SleepFromM, cfg.SleepToM
+		ui.Bot.SleepFrom, ui.Bot.SleepTo = cfg.SleepFrom, cfg.SleepTo
+	}
+	if cfg != nil && cfg.BusySet {
+		ui.busyFrom, ui.busyTo = cfg.BusyFrom, cfg.BusyTo
+		ui.busyFromMin, ui.busyToMin = cfg.BusyFromM, cfg.BusyToM
+		ui.Bot.BusySet = true
+		ui.Bot.BusyFromH, ui.Bot.BusyToH = cfg.BusyFromH, cfg.BusyToH
+		ui.Bot.BusyFromM, ui.Bot.BusyToM = cfg.BusyFromM, cfg.BusyToM
+		ui.Bot.BusyFrom, ui.Bot.BusyTo = cfg.BusyFrom, cfg.BusyTo
+	}
+	if cfg != nil && cfg.Mute {
+		ui.mute = true // the dialog's MUTE SPEECH checkbox starts checked
+	}
+	// Demo mode defaults to OFF (planted pet): only an explicit
+	// demo-mode = true in the INI turns autonomous roaming/chatter on.
+	if cfg != nil {
+		ui.demo = cfg.DemoMode
+	}
+	// OpenRouter (and other OpenAI-compatible gateways) auth: explicit
+	// -api-key flag > $OPENROUTER_API_KEY > config api-key. There is no
+	// built-in default key, so a missing key makes GenerateText fail loud.
+	var openrouterKey string
+	if providerVal == "openrouter" {
+		openrouterKey = strings.TrimSpace(*apiKey)
+		if !explicitFlags["api-key"] {
+			if e := os.Getenv("OPENROUTER_API_KEY"); e != "" {
+				openrouterKey = strings.TrimSpace(e)
+			} else if cfg != nil && cfg.APIKey != "" {
+				openrouterKey = cfg.APIKey
+			}
+		}
+	}
+
+	// SSE streaming for the openrouter provider: default on, the config key
+	// `stream = false` switches back to single-shot replies.
+	streamVal := true
+	if cfg != nil && cfg.StreamSet {
+		streamVal = cfg.Stream
+	}
+
 	// Build the selected provider.
 	var botProvider Provider
 	switch providerVal {
@@ -367,11 +612,19 @@ func main() {
 			log.Fatalf("bedrock provider: %v", err)
 		}
 		botProvider = p
+	case "ollama":
+		botProvider = newOllamaProvider(urlVal, modelVal)
+	case "openrouter":
+		botProvider = newOpenRouterProvider(openrouterKey, urlVal, modelVal, streamVal)
 	default: // gemini
 		botProvider = &geminiProvider{apiKey: key, apiURL: urlVal, model: modelVal, http: &http.Client{Timeout: imageTimeout + geminiTimeout}}
 	}
 
 	ui.Bot.Provider = botProvider
+	story.bot = ui.Bot // wire the native read_story agent to this provider
+	// SSE deltas fire on the reply goroutine; hand them to the main loop over
+	// a channel so only the main loop ever touches UI state (mirrors Replies).
+	ui.Bot.OnDelta = func(accumulated string) { ui.Stream <- accumulated }
 
 	if sysPrompt != "" || (sysFile != "" && sysFile != "off") {
 		log.Printf("system-instruction custom (from flag or config)")
@@ -380,11 +633,24 @@ func main() {
 	}
 	if providerVal == "bedrock" {
 		log.Printf("bedrock: model=%s", modelVal)
+	} else if providerVal == "ollama" {
+		log.Printf("ollama: model=%s, api-url=%s", modelVal, urlVal)
+	} else if providerVal == "openrouter" {
+		if openrouterKey == "" {
+			log.Printf("openrouter: no API key (set $OPENROUTER_API_KEY or -api-key) - replies will fail")
+		} else {
+			log.Printf("openrouter: model=%s, api-url=%s, stream=%t", modelVal, urlVal, streamVal)
+		}
 	} else if key == "" {
 		log.Printf("gemini: no API key (set GEMINI_API_KEY or -api-key) - running in stub mode")
 	} else {
 		log.Printf("gemini: model=%s", modelVal)
 	}
+	demoState := "off (planted)"
+	if ui.PetDemo() {
+		demoState = "on (roams + chatters)"
+	}
+	log.Printf("pet: demo mode %s", demoState)
 	log.Printf("images: source=%s", imgSource)
 	if pipe == "" {
 		log.Printf("pet: say-pipe forwarding disabled")
@@ -392,11 +658,84 @@ func main() {
 		log.Printf("pet: replies go to %s", pipe)
 	}
 
+	// Text-to-speech: the bubble shows immediately; the reply text is queued
+	// and spoken (via Typecast -> aplay/paplay/ffplay) as soon as it's ready.
+	tts := NewTTS(ttsOn, ttsKeyVal, ttsVoiceVal)
+	tts.Start()
+	defer tts.Close()
+	if tts.Enabled() {
+		log.Printf("tts: on (voice %s, player %s)", tts.voiceID, filepath.Base(tts.player))
+	} else if ttsOn {
+		log.Printf("tts: on but no audio player available - speech disabled")
+	} else {
+		log.Printf("tts: off")
+	}
+
+	// Apply the busy window to the bubble label right away so the name is
+	// correct from the first frame.
+	ui.updateBusyState()
+
 	dirty := true
 	caret := time.NewTicker(530 * time.Millisecond)
 	defer caret.Stop()
 
+	// busyTicker re-checks the busy window once a minute so the bubble
+	// sender label flips to "Busy/Work" (and back) without a manual refresh.
+	busyTicker := time.NewTicker(1 * time.Minute)
+	defer busyTicker.Stop()
+
+	// mediaTick re-reads the media agents' session files once a second: that
+	// is what makes the transport strip appear when an agent starts a player,
+	// flip to PAUSED when the pause took, and vanish when the player is gone
+	// (or the last song ended). The buttons themselves never poll - a click
+	// runs media_control once and the next tick paints the result.
+	mediaTick := time.NewTicker(time.Second)
+	defer mediaTick.Stop()
+
+	// Header-drag state: pressing the frameless header and moving beyond a
+	// small threshold hands the drag to the WM via _NET_WM_MOVERESIZE; a
+	// plain click (no movement) still toggles collapse on release.
+	const dragThreshold = 4 // px of movement that turns a click into a drag
+	var (
+		pressW                 Widget
+		pressX, pressY         int // window-relative press point
+		pressRootX, pressRootY int // root-relative press point
+		dragging               bool
+	)
+
 	log.Printf("ui ready - type in the textarea, press enter or SEND")
+
+	// Startup greeting: once the pet's entrance animation (skate / parachute /
+	// poof-in, a few seconds) has finished, have the LLM open the day with a
+	// warm hello plus one short did-you-know fact. The result arrives on the
+	// regular Replies channel, so it gets the same bubble/TTS/pet pipeline as
+	// a user-prompted answer. Skipped when the character should be asleep or
+	// busy right now (checked again inside Bot.Greeting).
+	//
+	// It also waits for the pet's say-FIFO to actually be listening before
+	// firing: a fixed timer can fire before the desktop-pet has even created
+	// its pipe (or before its reader is ready), which would silently drop the
+	// greeting's bubble. The grace period then covers the entrance animation.
+	go func() {
+		const (
+			entranceGrace = 7 * time.Second // leave the entrance room to play
+			petWait       = 90 * time.Second
+			pollEvery     = 250 * time.Millisecond
+		)
+		if pipe != "" {
+			deadline := time.Now().Add(petWait)
+			for !petPipeReady(pipe) && time.Now().Before(deadline) {
+				time.Sleep(pollEvery)
+			}
+		}
+		time.Sleep(entranceGrace)
+		ui.Thinking = true
+		go func() {
+			result := ui.Bot.Greeting()
+			ui.Replies <- result
+		}()
+	}()
+
 	for {
 		select {
 		case ev, ok := <-win.Events():
@@ -409,10 +748,24 @@ func main() {
 			case EvKey:
 				if ui.Key(ev.Key, ev.Sym) {
 					dirty = true
+					// Enter/Escape in the settings modal can restore the
+					// pre-modal window size.
+					if cw, ch := win.windowSize(); cw != ui.W || ch != ui.H {
+						win.Resize(ui.W, ui.H)
+					}
 				}
 			case EvMouse:
 				if ev.Pressed {
-					ui.Press(ui.HitTest(ev.X, ev.Y))
+					pressW = ui.HitTest(ev.X, ev.Y)
+					pressX, pressY = ev.X, ev.Y
+					pressRootX, pressRootY = ev.RootX, ev.RootY
+					dragging = false
+					ui.Press(pressW)
+				} else if dragging {
+					// Release that ended a WM drag: not a click, so no
+					// collapse toggle. (The WM consumes the real release;
+					// this is the synthetic one from our UngrabPointer.)
+					ui.press = WNone
 				} else {
 					if ui.Release(ui.HitTest(ev.X, ev.Y)) {
 						// Header clicked: collapse/expand and resize the
@@ -422,15 +775,49 @@ func main() {
 					if ui.WantClose() { // header close button clicked
 						return
 					}
+					if ui.WantPet() { // header "Haiya!" button clicked
+						onHaiya() // launch when teal, poof-out quit when pink
+					}
+					// Settings SAVE flipped DEMO MODE while a pet is
+					// running: quit it now and relaunch the new mode as
+					// soon as the old process is confirmed gone (see the
+					// petGoneCh case), so the toggle takes effect at once
+					// instead of waiting for the next manual Haiya! click.
+					if ui.WantPetRestart() {
+						log.Printf("pet: demo mode changed - restarting the pet")
+						petRestartPending.Store(true)
+						petQuitting.Store(true)
+						QuitPet(petCmdPath, petGoneCh)
+					}
+					if ui.WantCopy() { // a message's COPY pill was clicked
+						if err := win.SetClipboard(ui.TakeCopiedText()); err != nil {
+							log.Printf("clipboard: %v", err)
+						}
+					}
+					// Transport button clicked (play/pause or stop): run the
+					// media_control agent in the background - a click must not
+					// block the window - and let the next tick repaint.
+					if cmd := ui.TakeMedia(); cmd != "" {
+						go applyMediaControl(cmd)
+					}
 				}
 				dirty = true
 			case EvMotion:
+				if pressW == WHeader && !dragging {
+					dx, dy := ev.X-pressX, ev.Y-pressY
+					if dx*dx+dy*dy >= dragThreshold*dragThreshold {
+						dragging = true
+						win.StartMove(pressRootX, pressRootY)
+					}
+				}
 				if wd := ui.HitTest(ev.X, ev.Y); wd != ui.hover {
 					ui.SetHover(wd)
 					switch wd {
-					case WInput:
+					case WInput, WName:
 						win.SetCursor(win.cursorText)
-					case WButton, WHeader, WClose:
+					case WButton, WHeader, WClose, WHaiya, WSettings, WAbout, WToggle,
+						WAboutOK, WCopy, WMediaPlay, WMediaStop,
+						WDrop, WDropFrom, WDropTo, WMute, WOption, WSave, WCancel:
 						win.SetCursor(win.cursorHand)
 					default:
 						win.SetCursor(win.cursorDefault)
@@ -438,7 +825,9 @@ func main() {
 					dirty = true
 				}
 			case EvScroll:
-				ui.ScrollBy(ev.N * 40)
+				if !ui.ScrollHourList(ev.N) && !ui.ScrollMinuteList(ev.N) {
+					ui.ScrollBy(ev.N * 40)
+				}
 				dirty = true
 			case EvResize:
 				if ev.W > 0 && ev.H > 0 && (ev.W != ui.W || ev.H != ui.H) {
@@ -449,18 +838,87 @@ func main() {
 			case EvExpose:
 				dirty = true
 			}
+		case accumulated := <-ui.Stream:
+			ui.SetStreamText(accumulated)
+			dirty = true
 		case reply := <-ui.Replies:
 			ui.Thinking = false
-			if reply.Image != nil {
-				ui.AddMsgWithImage(ui.Bot.Name, reply.Text, reply.Image)
-			} else {
-				ui.AddMsg(ui.Bot.Name, reply.Text)
+			ui.streamText = ""    // drop the preview; AddMsg shows the final text
+			if reply.Text != "" { // empty = skipped greeting (quiet hours)
+				if reply.Image != nil {
+					ui.AddMsgWithImage(ui.Bot.Name, reply.Text, reply.Image)
+				} else {
+					ui.AddMsg(ui.Bot.Name, reply.Text)
+				}
+			}
+			// Pet bubble + TTS, kept in sync: the bubble appears only once the
+			// audio is ready to play and closes as soon as playback ends. With
+			// no audio (muted, no engine, or no pet running) the bubble shows
+			// immediately and the pet dismisses it by its normal reading-time
+			// duration.
+			audioOn := !ui.Muted() && tts.Enabled()
+			if reply.petPipe != "" && reply.petLine != "" {
+				if audioOn {
+					tts.SpeakLine(reply.Text,
+						func() { petSayLine(reply.petPipe, reply.petLine) },
+						func() { petClear(reply.petPipe) })
+				} else {
+					petSayLine(reply.petPipe, reply.petLine)
+				}
+			} else if audioOn {
+				tts.SpeakLine(reply.Text, nil, nil) // speak aloud even without a pet
+			}
+			// Pet action/event command from [ACTION: ...] / [EVENT: ...]: acted
+			// out on the sibling cmd-FIFO, independent of TTS/bubble timing.
+			if reply.petCmdPipe != "" && reply.petCmdLine != "" {
+				petCmd(reply.petCmdPipe, reply.petCmdLine)
 			}
 			dirty = true
 		case <-caret.C:
 			ui.caret = !ui.caret
-			if ui.focused {
+			if ui.focused || (ui.settingsOpen && ui.nameFocused) {
 				dirty = true
+			}
+		case <-busyTicker.C:
+			if ui.updateBusyState() {
+				dirty = true
+			}
+		case <-mediaTick.C:
+			// Reflect what the media agents recorded. The strip is part of
+			// the layout, so the X window has to grow/shrink with it.
+			if active := ui.MediaActive(); ui.SetMedia(currentMedia()) {
+				if active != ui.MediaActive() {
+					win.Resize(ui.W, ui.H)
+				}
+				dirty = true
+			}
+		case <-petTick.C:
+			// Keep the Haiya! button honest: pink only while a pet is really
+			// listening, so a pet that died on its own flips the button back
+			// to teal (click relaunches) instead of sending quit into the void.
+			if r := petRunning(petCmdPath); r != ui.PetRunning() {
+				ui.SetPetRunning(r)
+				if !r {
+					petQuitting.Store(false)
+				}
+				dirty = true
+			}
+		case petGone := <-petGoneCh:
+			// The graceful quit was confirmed (or escalated): drop the
+			// running state so the button turns teal for the next launch.
+			_ = petGone
+			petQuitting.Store(false)
+			ui.SetPetRunning(false)
+			dirty = true
+			// A quit we made only to pick up a demo-mode flip: bring the
+			// pet straight back with the new -demo setting.
+			if petRestartPending.CompareAndSwap(true, false) {
+				if err := LaunchPet(ui.PetCharacter(), ui.PetDemo()); err != nil {
+					log.Printf("pet: restart: %v", err)
+				} else {
+					ui.SetPetRunning(true)
+					dirty = true
+				}
 			}
 		}
 
