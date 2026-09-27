@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/portege/chat-app/agent"
+	"github.com/portege/chat-app/internal/preflight"
 )
 
 // defaultConfigPath returns the conventional chat-app.ini to auto-load when
@@ -79,51 +80,12 @@ func expandHome(p string) string {
 
 // pickModel resolves the effective model ID for a provider and returns an
 // optional warning. Precedence: explicit -model flag > config-file model >
-// provider default. A config-file/default model that clearly belongs to the
-// other provider family (a leftover Gemini ID while provider=bedrock, or a
-// Bedrock ID with provider=gemini) is replaced by the provider's default and
-// flagged: sending it would fail with a confusing API error (e.g. Bedrock
-// "ValidationException: the provided model identifier is invalid").
+// provider default. The rules live in internal/preflight.ResolveModel so the
+// startup gate and the standalone cmd/preflight CLI resolve the exact same
+// model from the same inputs (wrong-family IDs get auto-swapped + warned,
+// which is what keeps a leftover Gemini ID from reaching Bedrock).
 func pickModel(flagVal string, flagSet bool, cfgModel, provider string) (string, string) {
-	model := strings.TrimSpace(flagVal)
-	if !flagSet && cfgModel != "" {
-		model = strings.TrimSpace(cfgModel)
-	}
-	if model == "" {
-		switch provider {
-		case "bedrock":
-			return defaultBedrockModelID, ""
-		case "openrouter":
-			return defaultOpenRouterModel, ""
-		}
-		return defaultModel, ""
-	}
-	if !flagSet {
-		switch {
-		case provider == "bedrock" && isGeminiModel(model):
-			return defaultBedrockModelID, fmt.Sprintf(
-				"provider=bedrock but model %q is a Gemini ID (from config) - using %q; set model in chat-app.ini or -model to a Bedrock ID",
-				model, defaultBedrockModelID)
-		case provider == "gemini" && isBedrockModel(model):
-			return defaultModel, fmt.Sprintf(
-				"provider=gemini but model %q is a Bedrock ID (from config) - using %q; set -model to a Gemini model",
-				model, defaultModel)
-		case provider == "openrouter" && isGeminiModel(model):
-			return defaultOpenRouterModel, fmt.Sprintf(
-				"provider=openrouter but model %q is a Gemini ID (from config) - using %q; set model in chat-app.ini or -model to an OpenRouter ID (e.g. deepseek/deepseek-chat)",
-				model, defaultOpenRouterModel)
-		case provider == "openrouter" && isBedrockModel(model):
-			return defaultOpenRouterModel, fmt.Sprintf(
-				"provider=openrouter but model %q is a Bedrock ID (from config) - using %q; set model in chat-app.ini or -model to an OpenRouter ID (e.g. deepseek/deepseek-chat)",
-				model, defaultOpenRouterModel)
-		}
-	}
-	if provider == "bedrock" && !isBedrockModel(model) {
-		return model, fmt.Sprintf(
-			"model %q does not look like a Bedrock model ID (e.g. %s) - requests will likely be rejected",
-			model, defaultBedrockModelID)
-	}
-	return model, ""
+	return preflight.ResolveModel(provider, flagVal, flagSet, cfgModel)
 }
 
 // resolvePetPipe combines the -pet-pipe flag and the config-file pet-pipe
@@ -197,6 +159,8 @@ func main() {
 			"music folder for the play_song agent (default: config music-dir, or ~/Music inside the agent)")
 		videoDirFlag = flag.String("video-dir", "",
 			"video folder for the play_movie agent (default: config video-dir, or ~/Videos inside the agent)")
+		preflightFlag = flag.String("preflight", "",
+			`startup requirements check: "strict" (default; block before the window opens) | "warn" (log only) | "off"`)
 	)
 	flag.Parse()
 
@@ -480,6 +444,108 @@ func main() {
 		return
 	}
 
+	// Build the brain BEFORE the window opens: the preflight gate must be
+	// able to report a backend that cannot work - and exit - before any X11
+	// surface appears. (These statements moved here unchanged from after the
+	// window setup; the provider logs moved with them.)
+	// OpenRouter (and other OpenAI-compatible gateways) auth: explicit
+	// -api-key flag > $OPENROUTER_API_KEY > config api-key. There is no
+	// built-in default key, so a missing key makes GenerateText fail loud.
+	var openrouterKey string
+	if providerVal == "openrouter" {
+		openrouterKey = strings.TrimSpace(*apiKey)
+		if !explicitFlags["api-key"] {
+			if e := os.Getenv("OPENROUTER_API_KEY"); e != "" {
+				openrouterKey = strings.TrimSpace(e)
+			} else if cfg != nil && cfg.APIKey != "" {
+				openrouterKey = cfg.APIKey
+			}
+		}
+	}
+
+	// SSE streaming for the openrouter provider: default on, the config key
+	// `stream = false` switches back to single-shot replies.
+	streamVal := true
+	if cfg != nil && cfg.StreamSet {
+		streamVal = cfg.Stream
+	}
+
+	// AWS profile/region for Bedrock: flag > config > "default" (hoisted out
+	// of the provider switch: the gate below reads the same values).
+	awsProfileVal := *awsProfile
+	if awsProfileVal == "" && cfg != nil {
+		awsProfileVal = cfg.AWSProfile
+	}
+	if awsProfileVal == "" {
+		awsProfileVal = "default"
+	}
+	awsRegionVal := *awsRegion
+	if awsRegionVal == "" && cfg != nil {
+		awsRegionVal = cfg.AWSRegion
+	}
+
+	// Build the selected provider.
+	var botProvider Provider
+	switch providerVal {
+	case "bedrock":
+		p, err := newBedrockProvider(awsProfileVal, awsRegionVal, modelVal)
+		if err != nil {
+			log.Fatalf("bedrock provider: %v", err)
+		}
+		botProvider = p
+	case "ollama":
+		botProvider = newOllamaProvider(urlVal, modelVal)
+	case "openrouter":
+		botProvider = newOpenRouterProvider(openrouterKey, urlVal, modelVal, streamVal)
+	default: // gemini
+		botProvider = &geminiProvider{apiKey: key, apiURL: urlVal, model: modelVal, http: &http.Client{Timeout: imageTimeout + geminiTimeout}}
+	}
+
+	if sysPrompt != "" || (sysFile != "" && sysFile != "off") {
+		log.Printf("system-instruction custom (from flag or config)")
+	} else {
+		log.Printf("system-instruction default persona")
+	}
+	if providerVal == "bedrock" {
+		log.Printf("bedrock: model=%s", modelVal)
+	} else if providerVal == "ollama" {
+		log.Printf("ollama: model=%s, api-url=%s", modelVal, urlVal)
+	} else if providerVal == "openrouter" {
+		if openrouterKey == "" {
+			log.Printf("openrouter: no API key (set $OPENROUTER_API_KEY or -api-key) - replies will fail")
+		} else {
+			log.Printf("openrouter: model=%s, api-url=%s, stream=%t", modelVal, urlVal, streamVal)
+		}
+	} else if key == "" {
+		log.Printf("gemini: no API key (set GEMINI_API_KEY or -api-key) - running in stub mode")
+	} else {
+		log.Printf("gemini: model=%s", modelVal)
+	}
+
+	// Requirements gate: verify the resolved brain and environment BEFORE the
+	// X window opens. preflight = strict (default) prints the failed checks
+	// and exits 2; warn logs them and continues; off skips the gate. The same
+	// checks run standalone via ./preflight (cmd/preflight).
+	brainKey := key
+	if providerVal == "openrouter" {
+		brainKey = openrouterKey // no built-in token for this backend
+	}
+	runStartupPreflight(preflight.Spec{
+		Provider:   providerVal,
+		APIURL:     urlVal,
+		Model:      modelVal,
+		APIKey:     brainKey,
+		AWSProfile: awsProfileVal,
+		AWSRegion:  awsRegionVal,
+	}, preflight.Env{
+		Pipe:        pipe,
+		AgentsDir:   agentsDir,
+		AgentsOff:   agentsOff,
+		ImageSource: imgSource,
+		PixabayKey:  pxKey,
+		TTSOn:       ttsOn,
+	}, resolvePreflightMode(*preflightFlag, cfg))
+
 	expandedH := max(*h, 260)
 	collapsedH := headerH + inputH
 
@@ -570,82 +636,12 @@ func main() {
 	if cfg != nil {
 		ui.demo = cfg.DemoMode
 	}
-	// OpenRouter (and other OpenAI-compatible gateways) auth: explicit
-	// -api-key flag > $OPENROUTER_API_KEY > config api-key. There is no
-	// built-in default key, so a missing key makes GenerateText fail loud.
-	var openrouterKey string
-	if providerVal == "openrouter" {
-		openrouterKey = strings.TrimSpace(*apiKey)
-		if !explicitFlags["api-key"] {
-			if e := os.Getenv("OPENROUTER_API_KEY"); e != "" {
-				openrouterKey = strings.TrimSpace(e)
-			} else if cfg != nil && cfg.APIKey != "" {
-				openrouterKey = cfg.APIKey
-			}
-		}
-	}
-
-	// SSE streaming for the openrouter provider: default on, the config key
-	// `stream = false` switches back to single-shot replies.
-	streamVal := true
-	if cfg != nil && cfg.StreamSet {
-		streamVal = cfg.Stream
-	}
-
-	// Build the selected provider.
-	var botProvider Provider
-	switch providerVal {
-	case "bedrock":
-		awsProfile := *awsProfile
-		if awsProfile == "" && cfg != nil {
-			awsProfile = cfg.AWSProfile
-		}
-		if awsProfile == "" {
-			awsProfile = "default"
-		}
-		awsRegion := *awsRegion
-		if awsRegion == "" && cfg != nil {
-			awsRegion = cfg.AWSRegion
-		}
-		p, err := newBedrockProvider(awsProfile, awsRegion, modelVal)
-		if err != nil {
-			log.Fatalf("bedrock provider: %v", err)
-		}
-		botProvider = p
-	case "ollama":
-		botProvider = newOllamaProvider(urlVal, modelVal)
-	case "openrouter":
-		botProvider = newOpenRouterProvider(openrouterKey, urlVal, modelVal, streamVal)
-	default: // gemini
-		botProvider = &geminiProvider{apiKey: key, apiURL: urlVal, model: modelVal, http: &http.Client{Timeout: imageTimeout + geminiTimeout}}
-	}
-
 	ui.Bot.Provider = botProvider
 	story.bot = ui.Bot // wire the native read_story agent to this provider
 	// SSE deltas fire on the reply goroutine; hand them to the main loop over
 	// a channel so only the main loop ever touches UI state (mirrors Replies).
 	ui.Bot.OnDelta = func(accumulated string) { ui.Stream <- accumulated }
 
-	if sysPrompt != "" || (sysFile != "" && sysFile != "off") {
-		log.Printf("system-instruction custom (from flag or config)")
-	} else {
-		log.Printf("system-instruction default persona")
-	}
-	if providerVal == "bedrock" {
-		log.Printf("bedrock: model=%s", modelVal)
-	} else if providerVal == "ollama" {
-		log.Printf("ollama: model=%s, api-url=%s", modelVal, urlVal)
-	} else if providerVal == "openrouter" {
-		if openrouterKey == "" {
-			log.Printf("openrouter: no API key (set $OPENROUTER_API_KEY or -api-key) - replies will fail")
-		} else {
-			log.Printf("openrouter: model=%s, api-url=%s, stream=%t", modelVal, urlVal, streamVal)
-		}
-	} else if key == "" {
-		log.Printf("gemini: no API key (set GEMINI_API_KEY or -api-key) - running in stub mode")
-	} else {
-		log.Printf("gemini: model=%s", modelVal)
-	}
 	demoState := "off (planted)"
 	if ui.PetDemo() {
 		demoState = "on (roams + chatters)"

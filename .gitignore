@@ -3,6 +3,7 @@
 *.test
 chat-app
 /agentctl
+/preflight
 chat_live_test.go
 e2e_test*.go
 repro*_test.go

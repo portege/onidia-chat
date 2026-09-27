@@ -29,6 +29,13 @@
 # LLM backend: "gemini" (default), "bedrock", "ollama", or "openrouter".
 provider = bedrock
 
+# Startup requirements check (chat-app runs it before the window opens, and
+# `preflight` / `make preflight` runs the same checks standalone):
+#   strict (default) - a fatal failure prints the checks + fixes and exits 2
+#   warn             - failures are logged, the app launches anyway
+#   off              - no checks at startup
+preflight = strict
+
 [gemini]
 api-key = <GEMINI_API_KEY>
 model = gemini-3.6-flash

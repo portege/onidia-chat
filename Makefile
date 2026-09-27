@@ -6,9 +6,21 @@ test:
 
 build:
 	go build -trimpath -ldflags="-s -w" -o chat-app .
+	go build -trimpath -ldflags="-s -w" -o preflight ./cmd/preflight
 
 agentctl:
 	go build -trimpath -ldflags="-s -w" -o agentctl ./cmd/agentctl
+
+# Requirements check (the standalone preflight): is the selected LLM backend
+# reachable/credentialed and the environment sane BEFORE launching? Runs the
+# same checks chat-app's startup gate runs (strict by default there).
+# Exit codes: 0 ok, 1 warnings only, 2 blocked. Extras via ARGS, e.g.:
+#   make preflight ARGS="-all -json"    # probe every backend, machine-readable
+preflight:
+	go run ./cmd/preflight $(ARGS)
+
+# Alias: same checks, "doctor" naming.
+doctor: preflight
 
 run:
 	./chat-app
@@ -26,7 +38,7 @@ test-api:
 	go run ./cmd/geminitest $(ARGS)
 
 clean:
-	rm -f chat-app chat_ui_*.png
+	rm -f chat-app preflight chat_ui_*.png
 	rm -rf dist
 
 # Zip every shippable agent in agents/<name> into dist/agents/<name>.zip

@@ -118,7 +118,7 @@ Names come from the pet's own tables - the same ones the model may use:
 
 | actions | events |
 |---|---|
-| `skip` `juggle` `dance` `eat` `work` `guitar` `sneeze` `sixseven` `basketball` `drive` `ride` `kitten` `wave` | `love` `idea` `celebration` `sleep` `peace` `halloween` `matrix` `magic` |
+| `skip` `juggle` `dance` `eat` `work` `guitar` `sneeze` `sixseven` `basketball` `drive` `ride` `kitten` `wave` | `love` `idea` `celebration` `sleep` `peace` `halloween` `matrix` `magic` `robot` |
 
 (`disappear`/`appear` are internal pet states - never use them.)
 

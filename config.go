@@ -37,6 +37,7 @@ type Config struct {
 	Mute             bool   `ini:"mute"`                // true = never speak replies (settings dialog checkbox)
 	DemoMode         bool   `ini:"demo-mode"`           // true = pet roams & chatters on its own (settings dialog checkbox; default off = planted)
 	Provider         string `ini:"provider"`            // "gemini" (default) | "bedrock" | "ollama" | "openrouter"
+	Preflight        string `ini:"preflight"`           // startup check: "strict" (default; block before the window opens) | "warn" | "off"
 	Stream           bool   `ini:"stream"`              // openrouter: SSE streaming reply (default on)
 	StreamSet        bool   // stream key was present in the config (absent = default on)
 	AWSProfile       string `ini:"aws-profile"`      // AWS shared profile name
@@ -176,6 +177,8 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.Gender = normalizeGender(val)
 	case "provider":
 		cfg.Provider = val
+	case "preflight":
+		cfg.Preflight = val
 	case "stream":
 		cfg.Stream = parseBool(val)
 		cfg.StreamSet = true

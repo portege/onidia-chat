@@ -124,6 +124,52 @@ confusing API error.
 -tts-voice vc_xxx             Typecast voice id (default: config tts-voice, or built-in)
 -w 380 -h 520                window width and expanded height (starts collapsed)
 -preview                      headless PNG previews, no display needed
+-preflight strict|warn|off     startup requirements gate (default: strict - a fatal
+                               check fails the launch before the window opens)
+```
+
+## Preflight: requirements check (before launch)
+
+`chat-app` verifies its own requirements **before the X window opens**: is the
+selected LLM backend actually usable, and is the environment sane? The checks
+live in `internal/preflight` and run in two places:
+
+1. **the startup gate** (built in, `preflight = strict` by default): a *fatal*
+   failure prints the failed checks with fixes to stderr and exits `2` before
+   any window appears;
+2. **the standalone CLI**: the same checks with the same exit codes, for
+   humans and scripts - `./preflight`, `make preflight`, `go run ./cmd/preflight`.
+
+| Check | Severity | What it probes |
+|---|---|---|
+| `config.provider` | fatal | the `provider` name is one of the four backends |
+| `ollama.server` / `ollama.model` | fatal / warn | `GET <api-url>/api/tags` answers; the configured model tag exists on it |
+| `gemini.key` / `gemini.api` | warn / fatal | key present (missing = the documented stub mode, which still launches); the free `GET /v1beta/models` listing accepts it |
+| `bedrock.credentials` (plus `bedrock.invoke` with `-deep`) | fatal | the AWS SDK chain resolves credentials for profile/region (`-deep` adds a real 1-token Converse call) |
+| `openrouter.key` / `openrouter.api` | fatal / fatal | token present (there is no built-in key for this backend); `GET /models` accepts it |
+| `env.display`, `env.audio-player`, `env.pet-pipe`, `env.agents-dir`, `env.images` | warn | `$DISPLAY`, an audio player on `PATH`, the pet's say-FIFO, `agents-dir`, the image-source key |
+
+```sh
+./preflight                     # exactly what ./chat-app would launch with
+./preflight -all                # ...plus the other backends (informational)
+./preflight -quick              # config + environment only: no network probes
+./preflight -deep               # bedrock: also fire a real 1-token Converse
+./preflight -json               # machine-readable report
+./preflight -provider ollama -model qwen2:1.5b   # test an alternative setup
+make preflight ARGS="-all"      # go run ./cmd/preflight -all
+```
+
+Exit codes (both surfaces): `0` = all good, `1` = warnings only,
+`2` = blocked (a fatal check failed). Warn-level failures - stub mode, a
+missing ollama model tag, no audio player, no pet pipe - are reported but
+never block.
+
+**Gate modes** - `chat-app.ini`, overridable per run with `-preflight`:
+
+```ini
+preflight = strict   # default: failed fatal check -> report + exit 2, no window
+# preflight = warn   # log the failures and launch anyway (the pre-gate behavior)
+# preflight = off     # no startup checks at all
 ```
 
 ## Configuration file (`chat-app.ini`)
@@ -398,6 +444,9 @@ you ──▶ textarea ──▶ SEND/Enter ──▶ UI appends your bubble, sh
 ```
 .
 ├── main.go        flags, config, window lifecycle, event loop
+├── preflight_gate.go  startup requirements gate (strict/warn/off, exit 2 pre-window)
+├── internal/preflight/ shared checks: provider reachability + environment
+│                  (the startup gate and cmd/preflight run the same registry)
 ├── ui.go          layout, state, hit-testing and software rendering
 ├── font.go        5×7 bitmap font (+true lowercase) and draw primitives
 ├── about_art.go   the About modal's hand-drawn character badge + sparkles
@@ -419,6 +468,8 @@ you ──▶ textarea ──▶ SEND/Enter ──▶ UI appends your bubble, sh
 ├── x11draw.go     frame upload (chunked PutImage)
 ├── x11events.go   event pump + keycode→keysym decoding
 ├── cmd/geminitest standalone Gemini API probe (see debugging section)
+├── cmd/preflight/ the standalone requirements check (same checks + exit
+│                  codes as the startup gate; see the Preflight section)
 ├── Makefile
 └── go.mod
 ```
@@ -506,6 +557,8 @@ mpv/cvlc/vlc/ffplay fallback). Install the latter two with
 | Symptom | Fix |
 |---|---|
 | Window still has a titlebar/border | WM ignores `_MOTIF_WM_HINTS` (rare); use Alt+F4 or the header ✕ |
+| Exits with `preflight: BLOCKED` before the window opens | run `make preflight` for the full report + fix hints; launch anyway with `-preflight warn` (or `preflight = warn` in chat-app.ini) |
+| Want to know if the backend works before launching | `make preflight` (or `./preflight -quick` for config/env only) |
 | Replies say "set GEMINI_API_KEY..." | export the key (or pass `-api-key`) and restart |
 | "gemini call failed: ..." bubbles | check network, key validity, or pick another `-model` |
 | Buddy doesn't speak | start the desktop-pet first (it creates the FIFO); check `-pet-pipe` |
