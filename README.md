@@ -510,6 +510,39 @@ make run
 Or without make: `go build -trimpath -ldflags="-s -w" -o chat-app .`
 `make` targets: `build`, `run`, `preview`, `clean`.
 
+### One instance only
+
+A second `chat-app` refuses to start:
+
+```
+chat-app: another chat-app is already running (pid 12345); close it first
+```
+
+This is a `flock` on `$XDG_RUNTIME_DIR/chat-app.lock` (falling back to
+`/tmp/chat-app-<uid>.lock`), taken before the window opens. A second window
+would fight the first over the pet's say-FIFO, and would sit invisibly behind
+it accepting keystrokes nobody can see.
+
+The lock is a kernel `flock`, not a PID file, so a crash or `kill -9` cannot
+leave the app permanently unlaunchable — the lock dies with the process and
+the next launch just works. The file itself can survive; only the lock on it
+matters, and you can delete it freely while nothing is running.
+
+The read-only diagnostic modes deliberately do **not** take the lock, because
+they are most useful *while* the app is running:
+
+```sh
+chat-app -stt-test     # diagnose the microphone while the app is open
+chat-app -preview      # render PNGs
+```
+
+To run a second copy on purpose (two accounts, two chats), give one of them
+its own runtime directory — they will not see each other:
+
+```sh
+XDG_RUNTIME_DIR=/tmp/chat-b chat-app
+```
+
 ## Controls
 
 | Input | Action |
@@ -556,6 +589,7 @@ you ──▶ textarea ──▶ SEND/Enter ──▶ UI appends your bubble, sh
 .
 ├── main.go        flags, config, window lifecycle, event loop
 ├── preflight_gate.go  startup requirements gate (strict/warn/off, exit 2 pre-window)
+├── singleton.go   the one-instance flock (taken before the window opens)
 ├── internal/preflight/ shared checks: provider reachability + environment
 │                  (the startup gate and cmd/preflight run the same registry)
 ├── ui.go          layout, state, hit-testing and software rendering

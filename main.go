@@ -186,6 +186,18 @@ func main() {
 		explicitFlags[f.Name] = true
 	})
 
+	// One instance per user session, taken before anything with a side effect
+	// (the pet FIFO, the config, the window) so a second launch cannot
+	// interfere with the first. The read-only modes are exempt: -stt-test has
+	// to keep working WHILE the app is running - that is the whole point of
+	// it - and -preview only writes PNGs.
+	if !*preview && !*sttTestFlag {
+		if _, err := acquireInstanceLock(); err != nil {
+			log.Fatalf("chat-app: %v", err)
+		}
+		defer releaseInstanceLock()
+	}
+
 	// Load INI config file. `-config` wins; otherwise a conventional
 	// chat-app.ini is auto-loaded from the working directory or the binary's
 	// directory so edits to it take effect without extra flags. Precedence
