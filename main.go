@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/portege/chat-app/agent"
+	"github.com/portege/chat-app/internal/mic"
 	"github.com/portege/chat-app/internal/preflight"
 )
 
@@ -161,6 +162,20 @@ func main() {
 			"video folder for the play_movie agent (default: config video-dir, or ~/Videos inside the agent)")
 		preflightFlag = flag.String("preflight", "",
 			`startup requirements check: "strict" (default; block before the window opens) | "warn" (log only) | "off"`)
+		sttFlag = flag.String("stt", "",
+			`speech input backend: "transcribe" (default, AWS) | "whisper" (local faster-whisper) | "off"`)
+		sttLangFlag = flag.String("stt-language", "",
+			"spoken language hint for transcription (default: config stt-language, or en-US)")
+		sttDeviceFlag = flag.String("stt-device", "",
+			"microphone device for arecord/ffmpeg (default: config stt-device, or the system default)")
+		sttWhisperModelFlag = flag.String("stt-whisper-model", "",
+			"faster-whisper model size: tiny | base (default) | small | medium | large")
+		sttWhisperCmdFlag = flag.String("stt-whisper-cmd", "",
+			"python interpreter that has faster-whisper installed (default: ./venv, ~/.venv, then python3)")
+		sttDebugFlag = flag.Bool("stt-debug", false,
+			"log the full speech-input trace: wav file, level, backend command, diagnostics and result")
+		sttTestFlag = flag.Bool("stt-test", false,
+			"headless speech-input self test: record a take, transcribe it, print every step and exit")
 	)
 	flag.Parse()
 
@@ -346,6 +361,85 @@ func main() {
 		ttsVoiceVal = strings.TrimSpace(cfg.TTSVoice)
 	}
 
+	// Speech input settings, same precedence as everything else:
+	// flag > config file > built-in default. The backend is constructed a
+	// little further down, so a misconfiguration is reported at startup next
+	// to the other config problems rather than on the first mic click.
+	sttBackend := strings.TrimSpace(*sttFlag)
+	if sttBackend == "" && cfg != nil {
+		sttBackend = strings.TrimSpace(cfg.STT)
+	}
+	sttLang := strings.TrimSpace(*sttLangFlag)
+	if sttLang == "" && cfg != nil {
+		sttLang = strings.TrimSpace(cfg.STTLanguage)
+	}
+	sttDevice := strings.TrimSpace(*sttDeviceFlag)
+	if sttDevice == "" && cfg != nil {
+		sttDevice = strings.TrimSpace(cfg.STTDevice)
+	}
+	sttWhisperModel := strings.TrimSpace(*sttWhisperModelFlag)
+	if sttWhisperModel == "" && cfg != nil {
+		sttWhisperModel = strings.TrimSpace(cfg.STTWhisperModel)
+	}
+	sttWhisperCmd := strings.TrimSpace(*sttWhisperCmdFlag)
+	if sttWhisperCmd == "" && cfg != nil {
+		sttWhisperCmd = strings.TrimSpace(cfg.STTWhisperCmd)
+	}
+	// VAD is off by default: it discards quiet takes wholesale, which looks
+	// exactly like a broken microphone. Opt in only for a genuinely noisy room.
+	sttWhisperVAD := cfg != nil && cfg.STTWhisperVAD
+	// -stt-debug (or CHAT_APP_STT_DEBUG=1) traces the whole take: the wav
+	// file, its level, the backend command, the backend's own diagnostics
+	// and the text it returned.
+	sttDebug := *sttDebugFlag || os.Getenv("CHAT_APP_STT_DEBUG") != ""
+
+	awsProfileVal := strings.TrimSpace(*awsProfile)
+	if awsProfileVal == "" && cfg != nil {
+		awsProfileVal = strings.TrimSpace(cfg.AWSProfile)
+	}
+	if awsProfileVal == "" {
+		awsProfileVal = "default"
+	}
+	awsRegionVal := strings.TrimSpace(*awsRegion)
+	if awsRegionVal == "" && cfg != nil {
+		awsRegionVal = strings.TrimSpace(cfg.AWSRegion)
+	}
+	if awsRegionVal == "" {
+		awsRegionVal = "us-east-1"
+	}
+
+	// Speech input is built last, so it can reuse the resolved AWS profile and
+	// region: the transcribe backend talks to the same account as Bedrock.
+	sttEngine, sttErr := NewSTT(STTOptions{
+		Backend:      sttBackend,
+		Language:     sttLang,
+		Device:       sttDevice,
+		AWSProfile:   awsProfileVal,
+		AWSRegion:    awsRegionVal,
+		WhisperModel: sttWhisperModel,
+		WhisperCmd:   sttWhisperCmd,
+		WhisperVAD:   sttWhisperVAD,
+		Debug:        sttDebug,
+	})
+	switch {
+	case sttErr != nil:
+		log.Printf("stt: %v - the microphone button stays hidden", sttErr)
+		sttEngine = nil
+	case sttEngine != nil && findSTTRecorder() == "":
+		log.Printf("stt: %s backend ready but no audio recorder found (tried pw-record, parecord, "+
+			"arecord, ffmpeg) - install pipewire-utils or alsa-utils, or set stt = off", sttEngine.Name())
+		sttEngine = nil
+	case sttEngine != nil:
+		log.Printf("stt: speech input on (%s, %s)", sttEngine.Name(), micLabel(sttDevice))
+	}
+
+	// -stt-test runs the whole chain once, prints every step and exits, so a
+	// speech-input failure is visible without clicking the mic and reading a
+	// one-line message in the input bar.
+	if *sttTestFlag {
+		os.Exit(runSTTSelfTest(sttEngine, findSTTRecorder(), sttDevice, sttDebug))
+	}
+
 	// Agents: downloadable pluggable abilities. Discovery is startup-only
 	// (drop a new folder into the dir and restart, or use agentctl run to
 	// test it standalone). Built-ins could Register() here before Discover
@@ -470,19 +564,9 @@ func main() {
 		streamVal = cfg.Stream
 	}
 
-	// AWS profile/region for Bedrock: flag > config > "default" (hoisted out
-	// of the provider switch: the gate below reads the same values).
-	awsProfileVal := *awsProfile
-	if awsProfileVal == "" && cfg != nil {
-		awsProfileVal = cfg.AWSProfile
-	}
-	if awsProfileVal == "" {
-		awsProfileVal = "default"
-	}
-	awsRegionVal := *awsRegion
-	if awsRegionVal == "" && cfg != nil {
-		awsRegionVal = cfg.AWSRegion
-	}
+	// AWS profile/region for Bedrock are already resolved above (flag > config
+	// file > "default"/"us-east-1"); the provider switch and the preflight gate
+	// both read those two values, as does the transcribe speech backend.
 
 	// Build the selected provider.
 	var botProvider Provider
@@ -544,6 +628,9 @@ func main() {
 		ImageSource: imgSource,
 		PixabayKey:  pxKey,
 		TTSOn:       ttsOn,
+		// The mic button only appears when a backend AND a recorder were both
+		// found, so the recorder check is only meaningful then.
+		STTOn: sttEngine != nil,
 	}, resolvePreflightMode(*preflightFlag, cfg))
 
 	expandedH := max(*h, 260)
@@ -557,6 +644,10 @@ func main() {
 
 	ui := NewUI(win.windowSize())
 	ui.expandedH = expandedH // restore this height when the conversation expands
+	// Speech input: nil backend means no mic button, and the input bar keeps
+	// its original width (see micSpace).
+	ui.STT = sttEngine
+	ui.sttDevice = sttDevice
 	ui.Bot = NewBot()
 	ui.Bot.APIKey = key
 	ui.Bot.Model = modelVal
@@ -918,9 +1009,39 @@ func main() {
 			}
 		}
 
+		// Pick up a finished recording: the transcript is dropped into the
+		// textarea, and a mic error is shown in the input bar. DrainSTT is
+		// non-blocking, so this is safe to call every iteration.
+		ui.DrainSTT()
+		if ui.Recording() || ui.Busy() {
+			dirty = true // the mic halo and the status line animate
+		}
+
 		if dirty {
 			win.DrawFrame(ui.Render())
 			dirty = false
 		}
 	}
+}
+
+// micLabel names the capture device speech input will use, resolving an empty
+// stt-device to whatever the system currently defaults to. Logging it at
+// startup means "the mic is not recognised" is answerable from the log alone.
+func micLabel(device string) string {
+	rec := findSTTRecorder()
+	if rec == "" {
+		return "no recorder"
+	}
+	mics, err := mic.List(rec)
+	if err != nil {
+		return err.Error()
+	}
+	d, ok := mic.Pick(mics, device)
+	if !ok {
+		return "no microphone found"
+	}
+	if device != "" && d.Device != device {
+		return fmt.Sprintf("stt-device %q not found, using %s", device, d.Desc)
+	}
+	return d.Desc
 }

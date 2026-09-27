@@ -67,6 +67,13 @@ type Config struct {
 	AgentsRequireSig bool   `ini:"agents-require-sig"` // reject unsigned agents if true
 	AgentsRegistry   string `ini:"agents-registry"`    // registry index URL or path ("" = default/none)
 
+	// Speech-to-text (the microphone button in the input bar).
+	STT             string `ini:"stt"`               // backend: "transcribe" (default) | "whisper" | "off"
+	STTLanguage     string `ini:"stt-language"`      // language hint, e.g. en-US
+	STTDevice       string `ini:"stt-device"`        // capture device for arecord/ffmpeg ("" = system default)
+	STTWhisperModel string `ini:"stt-whisper-model"` // faster-whisper size: tiny | base | small | ...
+	STTWhisperCmd   string `ini:"stt-whisper-cmd"`   // python interpreter running faster-whisper ("" = auto)
+	STTWhisperVAD   bool   `ini:"stt-whisper-vad"`   // faster-whisper voice-activity filter (default OFF: it discards quiet takes)
 }
 
 // LoadConfig reads a simple INI file and returns populated Config.
@@ -169,6 +176,17 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.TTSKey = val
 	case "tts-voice":
 		cfg.TTSVoice = val
+	case "stt":
+		cfg.STT = val
+	case "stt-language":
+		cfg.STTLanguage = val
+	case "stt-device":
+		cfg.STTDevice = val
+	case "stt-whisper-model":
+		cfg.STTWhisperModel = val
+	case "stt-whisper-cmd":
+		cfg.STTWhisperCmd = val
+		cfg.STTWhisperVAD = parseBool(val)
 	case "mute":
 		cfg.Mute = parseBool(val)
 	case "demo-mode":

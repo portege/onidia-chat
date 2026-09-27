@@ -9,6 +9,7 @@ package main
 // like one family.
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -65,6 +66,8 @@ const (
 	// toggle and the stop button of whatever a media agent is playing.
 	WMediaPlay
 	WMediaStop
+
+	WMic // input-bar microphone button (drawn only when speech input is on)
 )
 
 // Msg is one chat entry.
@@ -236,6 +239,19 @@ type UI struct {
 
 	expandedH int // last non-collapsed height; restored when expanding
 
+	// Speech input (see stt.go). STT is the configured backend, nil when
+	// speech input is off. STTSess is the take in flight, sttBusy the
+	// transcription that follows it, and sttErr/sttNote the message shown in
+	// the input bar - the note persists as "the transcript is ready" until
+	// the user edits or sends it.
+	STT       STT
+	STTSess   *STTSession
+	sttBusy   bool
+	sttErr    string
+	sttNote   string
+	sttSince  time.Time
+	sttDevice string // capture device ("" = system default)
+
 	hover Widget
 	press Widget
 
@@ -377,8 +393,31 @@ func (u *UI) msgArea() (y, h int) {
 	return headerH, u.H - headerH - inputH - u.mediaBarH()
 }
 
+// micW is the side of the square microphone button in the input bar. It only
+// takes space when speech input is enabled, so a default install looks
+// exactly as before.
+const micW = 44
+
+// micEnabled reports whether the microphone button is shown at all.
+func (u *UI) micEnabled() bool { return u.STT != nil }
+
+// micRect is the microphone button, parked to the left of the SEND button.
+// The textarea and the SEND button both shrink by micW to make room.
+func (u *UI) micRect() image.Rectangle {
+	top := u.H - inputH + (inputH-btnH)/2
+	return image.Rect(u.W-btnW-btnGap-micW-padX, top, u.W-btnW-btnGap-padX, top+btnH)
+}
+
+// micSpace is the width the input bar reserves for the mic, 0 when off.
+func (u *UI) micSpace() int {
+	if u.micEnabled() {
+		return micW + btnGap
+	}
+	return 0
+}
+
 func (u *UI) inputRect() image.Rectangle {
-	return image.Rect(padX, u.H-inputH+inputPad, u.W-btnW-btnGap-padX, u.H-inputPad)
+	return image.Rect(padX, u.H-inputH+inputPad, u.W-btnW-btnGap-u.micSpace()-padX, u.H-inputPad)
 }
 
 func (u *UI) buttonRect() image.Rectangle {
@@ -784,6 +823,11 @@ func (u *UI) HitTest(x, y int) Widget {
 		if x >= br.Min.X && x < br.Max.X && y >= br.Min.Y && y < br.Max.Y {
 			return WButton
 		}
+		// The mic sits to the left of SEND and is its own widget, so a click
+		// on it must not fall through and focus the textarea.
+		if u.micEnabled() && inRect(x, y, u.micRect()) {
+			return WMic
+		}
 		return WInput
 	}
 	if !u.collapsed {
@@ -985,6 +1029,8 @@ func (u *UI) Release(w Widget) bool {
 		case WButton:
 			u.focused = true
 			u.Submit()
+		case WMic:
+			u.ToggleMic()
 		case WClose:
 			// The app is frameless, so this button is the way out besides
 			// Alt+F4; main() polls WantClose and exits.
@@ -1585,8 +1631,16 @@ func (u *UI) Key(r rune, sym uint32) bool {
 		}
 		return false
 	case ksEscape:
+		// Escape abandons a take in flight before it falls through to
+		// clearing the textarea: a live recording is the more urgent thing
+		// to stop.
+		if u.STTSess != nil {
+			u.CancelMic()
+			return true
+		}
 		if len(u.input) > 0 {
 			u.input = nil
+			u.sttNote = "" // a discarded transcript note is no longer true
 			return true
 		}
 		return false
@@ -1620,6 +1674,113 @@ func (u *UI) SetStreamText(s string) {
 		u.scroll = u.maxScroll()
 	}
 }
+
+// drawCircle fills a circle of radius rad centred on (cx, cy). The mic
+// button is the only round widget, so this stays local to the UI file.
+func drawCircle(frame *image.NRGBA, cx, cy, rad int, col color.RGBA) {
+	for y := -rad; y <= rad; y++ {
+		for x := -rad; x <= rad; x++ {
+			if x*x+y*y <= rad*rad {
+				px, py := cx+x, cy+y
+				if image.Pt(px, py).In(frame.Bounds()) {
+					frame.Set(px, py, col)
+				}
+			}
+		}
+	}
+}
+
+// ---- speech input -----------------------------------------------------------
+
+// ToggleMic starts a take, or finishes the one in flight. It is the whole
+// mic interaction: no mode flags beyond the session itself, which already
+// knows whether it is recording.
+func (u *UI) ToggleMic() {
+	switch {
+	case u.STT == nil:
+		return
+	case u.STTSess != nil:
+		// Recording: stop and hand the audio to the backend.
+		u.STTSess.Stop()
+		u.sttBusy = true
+		u.sttNote = "Transcribing…"
+		u.sttErr = ""
+		u.focused = true
+	case u.sttBusy:
+		// A transcription is already in flight; starting a second recorder
+		// alongside it would talk over the first.
+		return
+	default:
+		u.startMic()
+	}
+}
+
+// startMic begins a fresh take, reporting a failure in the input bar rather
+// than silently doing nothing.
+func (u *UI) startMic() {
+	sess, err := StartSTTSession(u.STT, findSTTRecorder(), u.sttDevice)
+	if err != nil {
+		u.sttErr, u.sttNote = err.Error(), ""
+		return
+	}
+	if err := sess.Record(); err != nil {
+		u.sttErr, u.sttNote = err.Error(), ""
+		return
+	}
+	u.STTSess = sess
+	u.sttErr, u.sttNote = "", "Recording… (press again to stop)"
+	u.sttSince = time.Now()
+}
+
+// CancelMic abandons a take in flight (Escape). Safe to call when idle.
+func (u *UI) CancelMic() {
+	if u.STTSess != nil {
+		u.STTSess.Cancel()
+		u.STTSess = nil
+		u.sttNote = ""
+	}
+}
+
+// DrainSTT collects a finished take. It is non-blocking: a take that is still
+// transcribing has nothing on the channel yet, so the next poll picks it up.
+// Call it every frame from main.
+func (u *UI) DrainSTT() {
+	if u.STTSess == nil || !u.sttBusy {
+		return
+	}
+	select {
+	case res := <-u.STTSess.Done:
+		u.STTSess = nil
+		u.sttBusy = false
+		switch {
+		case errors.Is(res.Err, errSTTCanceled):
+			// Abandoned on purpose: no message, no text.
+		case res.Err != nil:
+			u.sttErr, u.sttNote = res.Err.Error(), ""
+		default:
+			// The words go straight into the textarea, so there is nothing
+			// to announce: the text appearing IS the confirmation, and a
+			// "transcript ready" line would only sit on top of it.
+			u.sttErr, u.sttNote = "", ""
+			// Land the words in the textarea instead of sending them: a
+			// misheard sentence is far cheaper to fix here than to re-record.
+			if len(u.input) > 0 && !strings.HasSuffix(string(u.input), " ") {
+				u.input = append(u.input, ' ')
+			}
+			u.input = append(u.input, []rune(res.Text)...)
+			u.focused = true
+		}
+	default:
+		// Still transcribing.
+	}
+}
+
+// Recording reports whether a take is in flight (for the live mic state).
+func (u *UI) Recording() bool { return u.STTSess != nil && u.STTSess.Recording() }
+
+// Busy reports whether a transcription is in flight. The main loop uses it to
+// keep redrawing the animated mic while the backend works.
+func (u *UI) Busy() bool { return u.sttBusy }
 
 // Submit sends the current input: the message is appended to the history and
 // the bot answers asynchronously (Gemini can take seconds; the UI shows a
@@ -2638,9 +2799,80 @@ func (u *UI) drawInputBar(frame *image.NRGBA) {
 	}
 	drawRoundRect(frame, ta.Min.X, ta.Min.Y, ta.Dx(), ta.Dy(), 7, border)
 	drawRoundRect(frame, ta.Min.X+2, ta.Min.Y+2, ta.Dx()-4, ta.Dy()-4, 5, colWhite)
-	u.drawInputText(frame, ta.Min.X+10, ta.Min.Y+7, ta.Dx()-20)
+	// The status line replaces the placeholder, so a recording or a finished
+	// transcript is visible without stealing a chat row. Both lines are cut
+	// to the textarea's column count: a fixed character cap would overflow
+	// the border on a narrow window.
+	cols := max(4, (ta.Dx()-20)/cellW)
+	if u.sttNote != "" {
+		drawText(frame, ta.Min.X+10, ta.Min.Y+7, fitCols(u.sttNote, cols), uiFontScale, colMuted)
+	} else {
+		u.drawInputText(frame, ta.Min.X+10, ta.Min.Y+7, ta.Dx()-20)
+	}
+	if u.sttErr != "" {
+		drawText(frame, ta.Min.X+10, ta.Min.Y+ta.Dy()/2, fitCols("mic: "+u.sttErr, cols), uiFontScale, colError)
+	}
+	if u.sttErr != "" {
+		drawText(frame, ta.Min.X+10, ta.Min.Y+ta.Dy()/2, truncate("mic: "+u.sttErr, 42), uiFontScale, colError)
+	}
 
 	u.drawButton(frame)
+	u.drawMic(frame)
+}
+
+// fitCols trims s to at most n columns, marking the cut with an ellipsis, so
+// a status line never spills past the textarea border.
+func fitCols(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n <= 1 {
+		return string(r[:n])
+	}
+	return string(r[:n-1]) + "…"
+}
+
+// drawMic paints the microphone button: a round mic glyph that turns into a
+// stop square while recording, with a pulsing halo so a live take is obvious
+// even when the app is not focused.
+func (u *UI) drawMic(frame *image.NRGBA) {
+	if !u.micEnabled() {
+		return
+	}
+	r := u.micRect()
+	cx, cy := r.Min.X+r.Dx()/2, r.Min.Y+r.Dy()/2
+
+	fill, label, outline := colBtn, colWhite, colPlum
+	switch {
+	case u.Recording():
+		fill, label, outline = colError, colWhite, colPlum
+	case u.sttBusy:
+		fill, label, outline = colBtnOff, colMuted, colInputBorder
+	case u.press == WMic:
+		fill = colTealShade
+	case u.hover == WMic:
+		fill, label = colHairLight, colPlum
+	}
+	if u.Recording() {
+		// A slow breathing halo, one full cycle per second.
+		if phase := int(time.Since(u.sttSince).Milliseconds()/125) % 2; phase == 0 {
+			drawCircle(frame, cx, cy, micW/2+3, colError)
+		}
+	}
+	drawCircle(frame, cx, cy, micW/2, outline)
+	drawCircle(frame, cx, cy, micW/2-2, fill)
+
+	// Glyph: a capsule mic with its stand, or a stop square while recording.
+	if u.Recording() {
+		s := 6
+		drawRoundRect(frame, cx-s/2, cy-s/2, s, s, 2, label)
+	} else {
+		w, h := 8, 13
+		drawRoundRect(frame, cx-w/2, cy-h/2-2, w, h, 4, label)
+		fillRect(frame, cx-1, cy+2, 2, 5, label)  // stand
+		fillRect(frame, cx-5, cy+6, 10, 2, label) // base
+	}
 }
 
 func (u *UI) drawInputText(frame *image.NRGBA, x, y, w int) {

@@ -21,11 +21,16 @@ type Env struct {
 	ImageSource string // "pixabay" | "wiki" | "gemini" | "off"
 	PixabayKey  string // resolved key ("" = none configured)
 	TTSOn       bool   // speech replies requested
+	STTOn       bool   // speech input (microphone) requested
 }
 
 // ttsPlayerCandidates mirrors chat-app's tts.go player preference list
 // (findTTSPlayer: pw-play/paplay first on PipeWire, then aplay/paplay/ffplay).
 var ttsPlayerCandidates = []string{"pw-play", "paplay", "aplay", "ffplay"}
+
+// sttRecorderCandidates mirrors chat-app's stt.go recorder preference list
+// (findSTTRecorder: pw-record/parecord first on PipeWire, then arecord/ffmpeg).
+var sttRecorderCandidates = []string{"pw-record", "parecord", "arecord", "ffmpeg"}
 
 // EnvChecks returns the environment requirement checks for the given context.
 func EnvChecks(e Env) []Check {
@@ -58,6 +63,23 @@ func EnvChecks(e Env) []Check {
 				}
 				return Fail("no audio player on PATH (tried "+fmt.Sprint(ttsPlayerCandidates)+")",
 					"install one: alsa-utils (aplay), pulseaudio-utils (paplay) or ffmpeg (ffplay) - or tts = off")
+			},
+		},
+		{
+			ID:       "env.audio-recorder",
+			Kind:     KindEnv,
+			Severity: SeverityWarn,
+			Run: func(context.Context) Outcome {
+				if !e.STTOn {
+					return Skip("speech input off")
+				}
+				for _, p := range sttRecorderCandidates {
+					if path, err := exec.LookPath(p); err == nil {
+						return Pass(fmt.Sprintf("%s (%s)", p, path))
+					}
+				}
+				return Fail("no audio recorder on PATH (tried "+fmt.Sprint(sttRecorderCandidates)+")",
+					"install one: pipewire-utils (pw-record), alsa-utils (arecord) or ffmpeg - or stt = off")
 			},
 		},
 		{

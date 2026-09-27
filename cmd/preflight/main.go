@@ -29,11 +29,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/portege/chat-app/agent"
+	"github.com/portege/chat-app/internal/mic"
 	"github.com/portege/chat-app/internal/preflight"
 )
 
@@ -69,6 +72,8 @@ func run(args []string, out io.Writer) int {
 		deepFlag     = fs.Bool("deep", false, "bedrock: also fire a real 1-token Converse call")
 		jsonFlag     = fs.Bool("json", false, "write the machine-readable report to stdout")
 		timeoutFlag  = fs.Duration("timeout", 3*time.Second, "budget for the whole run")
+		micFlag      = fs.Bool("mic", false, "list the microphones you can point stt-device at, and exit")
+		micTestFlag  = fs.Bool("mic-test", false, "record ~2s from the selected microphone and report its level")
 	)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -91,6 +96,13 @@ func run(args []string, out io.Writer) int {
 			fmt.Fprintf(out, "preflight: %v\n", err)
 			return 2
 		}
+	}
+
+	// -mic / -mic-test answer "why is my microphone not recognised?". They
+	// short-circuit the requirement checks: the listing says what stt-device
+	// can be set to, and the probe says whether that device carries signal.
+	if *micFlag || *micTestFlag {
+		return runMicReport(out, preflight.Get(kv, "stt-device"), *micFlag, *micTestFlag)
 	}
 
 	spec := resolveSpec(kv, explicit, *providerFlag, *modelFlag, *apiURLFlag, *apiKeyFlag,
@@ -300,6 +312,9 @@ func resolveEnv(kv map[string]string) preflight.Env {
 	}
 
 	ttsOn := strings.ToLower(preflight.Get(kv, "tts")) != "off"
+	// "off" hides the mic button, exactly as NewSTT does in the app.
+	stt := strings.ToLower(strings.TrimSpace(preflight.Get(kv, "stt")))
+	sttOn := stt != "off" && stt != "none" && stt != "disabled"
 
 	return preflight.Env{
 		Pipe:        pipe,
@@ -308,6 +323,7 @@ func resolveEnv(kv map[string]string) preflight.Env {
 		ImageSource: imageSource,
 		PixabayKey:  pxKey,
 		TTSOn:       ttsOn,
+		STTOn:       sttOn,
 	}
 }
 
@@ -325,4 +341,80 @@ func petPipePath() string {
 		return r
 	}, disp)
 	return "/tmp/desktop-pet-" + tag + ".say"
+}
+
+// runMicReport prints the microphone listing and/or the level probe for the
+// configured stt-device. It is the diagnostic for the "mic is not
+// recognised" case: the listing shows what there is to choose from, and the
+// probe separates "no device" from "a device that records only silence"
+// (a mute button, a wrong input, or a gain turned down).
+func runMicReport(out io.Writer, want string, list, probe bool) int {
+	recorder := micRecorder()
+	if recorder == "" {
+		fmt.Fprintln(out, "no audio recorder found (tried pw-record, parecord, arecord, ffmpeg)")
+		fmt.Fprintln(out, "  install pipewire-utils (pw-record) or alsa-utils (arecord), or set stt = off")
+		return 2
+	}
+
+	mics, err := mic.List(recorder)
+	if err != nil {
+		fmt.Fprintf(out, "microphones: %v\n", err)
+		if list {
+			return 2
+		}
+		mics = nil
+	}
+	selected, found := mic.Pick(mics, want)
+	if list {
+		fmt.Fprintf(out, "recorder: %s\n", recorder)
+		if len(mics) == 0 {
+			fmt.Fprintln(out, "no microphones found")
+			return 2
+		}
+		fmt.Fprintf(out, "microphones (* = in use):%s\n", mic.Describe(mics))
+		fmt.Fprintf(out, "  set stt-device = <value above> in chat-app.ini to pin one\n")
+		if want != "" && !found {
+			fmt.Fprintf(out, "  note: stt-device = %q does not match any device; falling back to the default\n", want)
+		}
+	}
+	if !probe {
+		return 0
+	}
+
+	fmt.Fprintf(out, "recording %.0fs from %s - say something now...\n", mic.ProbeSeconds, selected.Device)
+	lvl, err := mic.Probe(recorder, selected.Device)
+	if err != nil {
+		fmt.Fprintf(out, "probe failed: %v\n", err)
+		return 2
+	}
+	fmt.Fprintf(out, "level: %s\n", lvl)
+	fmt.Fprintf(out, "  -> %s\n", lvl.Hint())
+	if lvl.Silent {
+		return 1
+	}
+	return 0
+}
+
+// micRecorder is the recorder chat-app would pick (see stt.go findSTTRecorder).
+func micRecorder() string {
+	if r, err := exec.LookPath("pw-record"); err == nil {
+		if pipewireUp() {
+			return r
+		}
+	}
+	for _, c := range []string{"pw-record", "parecord", "arecord", "ffmpeg"} {
+		if r, err := exec.LookPath(c); err == nil {
+			return r
+		}
+	}
+	return ""
+}
+
+// pipewireUp reports whether a PipeWire server socket exists, mirroring
+// chat-app's tts.go: on a PipeWire desktop the raw ALSA device is held by the
+// server, so the native pw-record must win.
+func pipewireUp() bool {
+	dir := fmt.Sprintf("/run/user/%d", os.Getuid())
+	m, err := filepath.Glob(filepath.Join(dir, "pipewire*"))
+	return err == nil && len(m) > 0
 }

@@ -32,6 +32,9 @@ reply is shown inside her speech bubble as well.
   turns as context, and parses an optional `[mood]` tag out of each answer.
 - ✅ **The buddy bridge**: `pet.go` writes `[mood] [image pic.png] text` to the pet's
   say-FIFO — best-effort and non-blocking; no buddy running? It just skips.
+- ✅ **Speech-to-text**: a mic button in the input bar records a take and drops
+  the transcript into the textarea — Amazon Transcribe streaming by default, or
+  local `faster-whisper` via `stt = whisper`.
 - ✅ **Text-to-speech**: each reply is spoken aloud via the Typecast API
   (`tts.go` → `aplay`/`paplay`/`ffplay`; async + queued). The buddy bubble is
   shown only once the audio is ready to play and closes the moment playback
@@ -122,11 +125,109 @@ confusing API error.
 -tts on|off                   speak replies aloud via Typecast (default: on)
 -tts-key KEY                  Typecast API key (default: $TYPECAST_API_KEY, config tts-key, or built-in)
 -tts-voice vc_xxx             Typecast voice id (default: config tts-voice, or built-in)
+-stt transcribe|whisper|off   speech input backend for the mic button (default: transcribe)
+-stt-language en-US           spoken language hint passed to the backend
+-stt-device NAME            capture device (default: system default; list them with `preflight -mic`)
+-stt-mic                    (preflight) list the microphones you can point stt-device at
+-stt-mic-test               (preflight) record 2s and report the microphone level
+-stt-test                   headless speech self test: record, transcribe, print every step
+-stt-debug                  log the full speech-input trace (file, level, backend, result)
+-stt-whisper-vad=true       enable faster-whisper VAD (default off: it eats quiet takes)
+-stt-whisper-model base       faster-whisper size: tiny|base|small|medium|large
+-stt-whisper-cmd ./venv/bin/python3   interpreter that has faster-whisper installed
 -w 380 -h 520                window width and expanded height (starts collapsed)
 -preview                      headless PNG previews, no display needed
 -preflight strict|warn|off     startup requirements gate (default: strict - a fatal
                                check fails the launch before the window opens)
 ```
+
+## Speech-to-text (the mic button)
+
+The input bar carries a microphone button. Press it to start a take, press it
+again to stop: the audio is transcribed and the words are typed into the
+textarea for you to edit (or press **Esc** to discard the take). Nothing is
+sent to the model until you press SEND, because a misheard sentence is much
+cheaper to fix in the textarea than to re-record.
+
+Backends are pluggable behind the `STT` interface in `stt.go`, chosen by the
+`stt` key:
+
+| `stt` | How it works | Needs |
+|---|---|---|
+| `transcribe` (default) | Amazon Transcribe streaming, over the same AWS credentials and profile/region as Bedrock | the IAM user must be allowed `transcribe:StartStreamTranscription` |
+| `whisper` | local `faster-whisper` (CPU, int8) through a small generated python helper | `pip install faster-whisper` |
+| `off` | no microphone button at all | — |
+
+Recording itself is the same for both: the first available of
+`pw-record`, `parecord`, `arecord`, `ffmpeg` is used to capture **16 kHz mono
+s16 WAV**, which is the native input format of both backends, so nothing ever
+needs resampling. The WAV header is parsed rather than assumed at 44 bytes,
+because recorders pad their chunk lists differently and Transcribe is given
+headerless PCM.
+
+**On a machine with no cloud permission, use whisper:**
+
+```bash
+pip install faster-whisper          # once; the first run also downloads the model
+./chat-app -stt whisper
+```
+
+A `tiny` model transcribes a sentence in a few seconds on a Pi; `base` (the
+default) is more accurate, `small` and up are slower still.
+
+### "My mic is not recognised"
+
+Three different problems look identical from the app, so there is a command
+for each:
+
+```bash
+./preflight -mic        # list the microphones, with the one in use marked *
+./preflight -mic-test   # record 2s and report the level in dBFS
+```
+
+`-mic` prints values you can paste straight into `stt-device` in
+`chat-app.ini`. The spelling depends on the recorder: a PipeWire node name for
+`pw-record`/`parecord`, an ALSA device (`plughw:2,0`) for `arecord`/`ffmpeg`.
+Leaving `stt-device` empty uses whatever the system defaults to.
+
+`-mic-test` is the one that actually diagnoses it. A take can be recognised as
+*silence* rather than as a missing device, and the two need opposite fixes:
+
+| Result | Meaning | Fix |
+|---|---|---|
+| no microphones found | nothing is plugged in / no source node | plug one in |
+| `DIGITAL SILENCE` (peak never leaves 0) | the device recorded, but every sample is zero | the mic's own mute switch, then input gain, then a different `stt-device` |
+| `signal present but quiet` | low RMS, but a real peak — it will transcribe | move closer, or raise the gain if recognition suffers |
+| `signal present`, nothing recognised | level is healthy | run the self test below; it shows whether the backend or the audio is at fault |
+
+When the level is healthy but transcription still fails, run the whole chain
+headless and read every step:
+
+```bash
+go run . -stt-test            # record ~4s, transcribe, print each step
+go run . -stt-test -stt-debug # also print the backend's own diagnostics
+```
+
+It reports the backend, the recorder, the resolved device, the captured file
+and its level, and then either the transcript or the exact failure. The same
+trace goes to the app log with `-stt-debug` (or `CHAT_APP_STT_DEBUG=1`).
+
+**VAD is off by default.** faster-whisper's voice-activity filter classifies
+speech against a fixed threshold and on a quiet headset it can discard the
+whole take — `duration_after_vad = 0.00` — which surfaces as "nothing
+recognised" no matter how healthy the level probe was. Enable it only for a
+genuinely noisy room:
+
+```ini
+stt-whisper-vad = true
+```
+
+Mute is judged on the **peak**, not the RMS. A working mic in a quiet room
+sits far below -50 dBFS RMS while still carrying speech, so an RMS-based test
+reports a healthy microphone as dead.
+
+PipeWire's virtual `Dummy-Driver` is filtered out of the listing: it is always
+present, it is never a microphone, and recording it yields pure silence.
 
 ## Preflight: requirements check (before launch)
 
@@ -213,6 +314,14 @@ pet-pipe = auto
 tts = on
 # tts-key = your-typecast-key
 # tts-voice = tc_6359e7f6467f9e240b68292c
+
+# Speech-to-text: the microphone button in the input bar (press to record,
+# press again to stop; the transcript lands in the textarea for you to edit).
+# transcribe = Amazon Transcribe streaming (reuses aws-profile/aws-region);
+# whisper = local faster-whisper; off = no mic button.
+stt = transcribe
+# stt-language = en-US
+# stt-whisper-model = base
 
 # Single-line system instruction:
 # system-prompt = You are a terse Linux expert.
@@ -407,7 +516,9 @@ Or without make: `go build -trimpath -ldflags="-s -w" -o chat-app .`
 |---|---|
 | typing | insert into the textarea (printable ASCII, ≤ 280 chars) |
 | **Enter** | submit — your bubble appears, Buddy answers via Gemini |
-| **Esc** | clear the textarea |
+| **Esc** | cancel a recording in flight, else clear the textarea |
+| click **mic** (input bar, left of SEND) | start recording; click again to stop and transcribe. The button only appears when `stt` is not `off` and a recorder is installed. A live take pulses red; "Recording…" then "Transcribing…" shows in the textarea, and the transcript replaces it as soon as it arrives |
+| transcript arrives | the words are typed into the textarea for you to edit before sending — a misheard sentence is cheaper to fix than to re-record |
 | click **SEND** | submit (only enabled while the textarea has text) |
 | click textarea | focus it (border turns teal, caret blinks) |
 | click **+ / −** (header, left of ⚙) | show/hide the conversation history (starts collapsed) |
@@ -452,6 +563,11 @@ you ──▶ textarea ──▶ SEND/Enter ──▶ UI appends your bubble, sh
 ├── about_art.go   the About modal's hand-drawn character badge + sparkles
 ├── chat.go        the brain: Gemini client, persona, mood-tag handling
 ├── pet.go         desktop-pet say-FIFO bridge (non-blocking writes)
+├── stt.go         speech-to-text: mic take -> transcribe -> textarea
+├── stt_transcribe.go  Amazon Transcribe streaming backend
+├── stt_whisper.go     local faster-whisper backend
+├── internal/mic/     microphone listing + level probe (used by the app and preflight)
+├── stt_selftest.go   -stt-test: the whole speech chain, headless and verbose
 ├── tts.go         Typecast text-to-speech (async fetch + aplay/paplay/ffplay)
 ├── preview.go     -preview PNG renderer (like the buddy's -debug mode)
 ├── agentbridge.go [AGENT: ...] bridge + the multi-round agent loop

@@ -118,6 +118,44 @@ tts = on
 tts-key = <TYPECAST_API_KEY>
 tts-voice = tc_6359e7f6467f9e240b68292c
 
+# Speech-to-text: the microphone button in the input bar. Press it to record,
+# press again to stop; the transcript lands in the textarea for you to edit
+# (or press Escape to discard the take).
+#   transcribe (default) - Amazon Transcribe streaming. Reuses the aws-profile
+#                          and aws-region above; the IAM user must also be
+#                          allowed transcribe:StartStreamTranscription.
+#   whisper              - local faster-whisper, no cloud and no key. Install
+#                          it with:  pip install faster-whisper
+#   off                  - no microphone button at all.
+# Recording needs one of pw-record / parecord / arecord / ffmpeg on PATH.
+stt = transcribe
+
+# Spoken language hint passed to the backend (AWS codes, e.g. en-US).
+# stt-language = en-US
+
+# Capture device. Leave empty to use the system default, or list the
+# available ones with:  ./preflight -mic
+# The spelling depends on the recorder in use:
+#   pw-record / parecord - the PipeWire node name shown by -mic
+#   arecord / ffmpeg     - the ALSA device ("plughw:2,0")
+# ./preflight -mic-test records 2s and reports the level, which is how you
+# tell "no microphone" apart from "microphone, but it is muted or too quiet".
+# stt-device =
+
+# faster-whisper model size: tiny (fastest) | base (default) | small | medium
+# | large (most accurate, slowest on a Pi). Only used by stt = whisper.
+# stt-whisper-model = base
+
+# faster-whisper's voice-activity filter. OFF by default: it classifies speech
+# against a fixed threshold and on a quiet headset it can discard the whole
+# take, which looks exactly like a broken microphone. Only enable it for a
+# genuinely noisy room. Diagnose with:  go run . -stt-test [-stt-debug]
+# stt-whisper-vad = false
+
+# Python interpreter that has faster-whisper installed, when it is not the
+# system python (e.g. a project virtualenv).
+# stt-whisper-cmd = ./venv/bin/python3
+
 [character]
 # Everything in this section is owned by the settings (gear) dialog: SAVE
 # rewrites these keys in place. Sections are not enforced by the parser, but
