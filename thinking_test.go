@@ -93,8 +93,9 @@ func TestTagsInsideThinkingCannotFireAnything(t *testing.T) {
 	}
 }
 
-// Reasoning must not reach the pet or the text the user reads. The pet would
-// speak it aloud, which is the whole reason the two are separate fields.
+// Reasoning must not be SPOKEN or shown in the chat. It is now deliberately on
+// the pet say-line - that is how the pet learns to draw it in her own cloud -
+// so the assertion is about the caption and the TTS line, not the pipe payload.
 func TestThinkingIsNotSpokenOrDisplayed(t *testing.T) {
 	fp := &fakeProvider{canned: "<THINKING>secret internal reasoning here</THINKING>[happy] hi there"}
 	bot := &Bot{Provider: fp, SystemInstruction: "You are Buddy.",
@@ -106,8 +107,14 @@ func TestThinkingIsNotSpokenOrDisplayed(t *testing.T) {
 	if strings.Contains(res.Text, "secret internal") {
 		t.Errorf("the reasoning leaked into Text: %q", res.Text)
 	}
-	if strings.Contains(res.petLine, "secret internal") {
-		t.Errorf("the reasoning leaked into the pet say-line: %q", res.petLine)
+	// It IS forwarded, inside its own tag, so the pet can render a cloud. What
+	// matters is that it is tagged as reasoning and not glued onto the caption
+	// the pet speaks.
+	if !strings.Contains(res.petLine, thinkTagOpen+"secret internal reasoning here"+thinkTagClose) {
+		t.Errorf("petLine = %q, want the reasoning forwarded inside a <THINKING> tag", res.petLine)
+	}
+	if !strings.HasSuffix(res.petLine, "hi there") {
+		t.Errorf("petLine = %q, want it to end with the spoken caption", res.petLine)
 	}
 }
 

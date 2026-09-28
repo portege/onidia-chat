@@ -302,8 +302,8 @@ func petPipeReady(path string) bool {
 // to a temp PNG and the assembled line is pushed via petSayLine. Best-effort -
 // the FIFO write never hangs the chat: with no pet listening, the open fails
 // with ENXIO and we quietly skip.
-func petSay(path, mood, text string, img image.Image) {
-	petSayLine(path, buildPetSayLine(path, mood, text, img))
+func petSay(path, mood, text, thinking string, img image.Image) {
+	petSayLine(path, buildPetSayLine(path, mood, text, thinking, img))
 }
 
 // buildPetSayLine prepares the say-pipe line for a reply: the image is encoded
@@ -311,7 +311,7 @@ func petSay(path, mood, text string, img image.Image) {
 // order. Returns "" when there is nothing to show. The line is handed to
 // petSayLine later (possibly by the TTS worker, synchronised with audio
 // playback), so building and writing are kept separate.
-func buildPetSayLine(path, mood, text string, img image.Image) string {
+func buildPetSayLine(path, mood, text, thinking string, img image.Image) string {
 	if path == "" || (text == "" && img == nil) {
 		return ""
 	}
@@ -325,7 +325,7 @@ func buildPetSayLine(path, mood, text string, img image.Image) string {
 			imgPath = p
 		}
 	}
-	return buildSayLine(mood, text, imgPath)
+	return buildSayLine(mood, text, thinking, imgPath)
 }
 
 // petSayLine writes one pre-built line to the say-FIFO. Best-effort and
@@ -407,16 +407,31 @@ func petTryRemoveSayImage(line string) {
 }
 
 // buildSayLine assembles the line the pet expects, in its parse order: mood
-// tag, then image tag, then the caption text.
-func buildSayLine(mood, text, imgPath string) string {
+// tag, then the thinking block, then image tag, then the caption text.
+//
+// The thinking block is FORWARDED to the pet so she can show it in her own
+// small thought cloud (onidia parses <THINKING>...</THINKING> out of the
+// say-line and renders it above the speech bubble). It is deliberately not
+// part of the caption: the caption is what she speaks, and the reasoning is
+// not said out loud.
+func buildSayLine(mood, text, thinking, imgPath string) string {
 	line := text
 	if imgPath != "" {
 		line = "[image " + imgPath + "] " + line
+	}
+	if t := sanitizeThinking(thinking); t != "" {
+		line = thinkTagOpen + t + thinkTagClose + " " + line
 	}
 	if mood != "" {
 		line = "[" + mood + "] " + line
 	}
 	return line
+}
+
+// sanitizeThinking keeps the block on ONE line: the say-pipe is line-oriented,
+// so a newline here would be read by the pet as a second message.
+func sanitizeThinking(s string) string {
+	return strings.TrimSpace(strings.Join(strings.Fields(s), " "))
 }
 
 // sayImagePath extracts the path from an "[image <path>]" say-tag.

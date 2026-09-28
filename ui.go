@@ -2637,7 +2637,7 @@ func (u *UI) blockFor(m Msg, cols, maxW int) msgBlock {
 		for _, l := range b.thinkLines {
 			tw = max(tw, textWidth(l, thinkScale))
 		}
-		b.thinkH = len(b.thinkLines)*thinkLineH + 2*thinkPadY
+		b.thinkH = len(b.thinkLines)*thinkLineH + 2*thinkPadY + thinkArc
 		// Width carries the lobe allowance, so it must be measured with the
 		// same radius the cloud will be drawn with.
 		b.thinkW = min(tw+2*thinkCloudR(b.thinkH)+2*thinkPadX, maxW*thinkMaxW/4)
@@ -2701,15 +2701,19 @@ func drawThinkCloud(layer *image.NRGBA, x, y, w, h int) {
 	if w <= 0 || h <= 0 {
 		return
 	}
+	// h is the BODY height and the lobe arc adds thinkArc px above y, so the
+	// caller has to reserve that in the block height. Skipping it clips the roof
+	// and the first line of text - which is exactly what the first rendered
+	// frame did, and no field-level test would have noticed.
 	r := thinkCloudR(h)
-	lobes := thinkLobeCenters(x, y, w, r)
+	lobes := thinkLobeCenters(x, y+thinkArc, w, r)
 	// Rim pass.
-	drawRoundRect(layer, x, y+r, w, h-r, r, colCloudEdge)
+	drawRoundRect(layer, x, y+thinkArc+r, w, h-r, r, colCloudEdge)
 	for _, l := range lobes {
 		fillDisc(layer, l[0], l[1], r, colCloudEdge)
 	}
 	// Fill pass, inset 1px so a 1px rim shows all the way round.
-	drawRoundRect(layer, x+1, y+r+1, w-2, h-r-1, r, colCloudFill)
+	drawRoundRect(layer, x+1, y+thinkArc+r+1, w-2, h-r-1, r, colCloudFill)
 	for _, l := range lobes {
 		fillDisc(layer, l[0], l[1], r-1, colCloudFill)
 	}
@@ -2760,7 +2764,7 @@ func (u *UI) drawMsgBlock(layer *image.NRGBA, b msgBlock, y int, copyPill, copyF
 		drawThinkCloud(layer, cx, y, b.thinkW, b.thinkH)
 		r := thinkCloudR(b.thinkH)
 		tx := cx + r + thinkPadX
-		ty := y + r + thinkPadY
+		ty := y + thinkArc + thinkPadY
 		for _, l := range b.thinkLines {
 			drawText(layer, tx, ty, l, thinkScale, colMuted)
 			ty += thinkLineH

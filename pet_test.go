@@ -182,17 +182,29 @@ func TestQuitPet(t *testing.T) {
 
 func TestBuildSayLine(t *testing.T) {
 	cases := []struct {
-		name, mood, text, imgPath, want string
+		name, mood, text, thinking, imgPath, want string
 	}{
-		{"text only", "", "hello", "", "hello"},
-		{"mood first", "happy", "hello", "", "[happy] hello"},
-		{"image then caption", "wink", "look!", "/tmp/p.png", "[wink] [image /tmp/p.png] look!"},
-		{"image with empty caption", "", "", "/tmp/p.png", "[image /tmp/p.png] "},
+		{"text only", "", "hello", "", "", "hello"},
+		{"mood first", "happy", "hello", "", "", "[happy] hello"},
+		{"image then caption", "wink", "look!", "", "/tmp/p.png", "[wink] [image /tmp/p.png] look!"},
+		{"image with empty caption", "", "", "", "/tmp/p.png", "[image /tmp/p.png] "},
+		// The thinking block rides the say-pipe so the pet can show it in her
+		// own cloud. It sits after the mood tag and before the caption, and it
+		// is NOT part of what she speaks.
+		{"thinking", "happy", "hi", "hmm", "", "[happy] <THINKING>hmm</THINKING> hi"},
+		{"thinking only, no mood", "", "hi", "hmm", "", "<THINKING>hmm</THINKING> hi"},
+		{"thinking before image", "wink", "ok", "hmm", "/tmp/p.png",
+			"[wink] <THINKING>hmm</THINKING> [image /tmp/p.png] ok"},
+		// Newlines would be read by the pet as a second message.
+		{"multiline thinking collapses", "", "hi", "a\nb\nc", "", "<THINKING>a b c</THINKING> hi"},
+		{"blank thinking is dropped", "happy", "hi", "   ", "", "[happy] hi"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := buildSayLine(tc.mood, tc.text, tc.imgPath); got != tc.want {
-				t.Errorf("buildSayLine(%q, %q, %q) = %q, want %q", tc.mood, tc.text, tc.imgPath, got, tc.want)
+			got := buildSayLine(tc.mood, tc.text, tc.thinking, tc.imgPath)
+			if got != tc.want {
+				t.Errorf("buildSayLine(%q, %q, %q, %q) = %q, want %q",
+					tc.mood, tc.text, tc.thinking, tc.imgPath, got, tc.want)
 			}
 		})
 	}
@@ -249,7 +261,7 @@ func TestPetSayFIFODeliversImageLine(t *testing.T) {
 	}()
 	time.Sleep(50 * time.Millisecond) // let the reader open first (petSay retries ENXIO anyway)
 
-	petSay(fifo, "happy", "look at this", image.NewRGBA(image.Rect(0, 0, 3, 2)))
+	petSay(fifo, "happy", "look at this", "", image.NewRGBA(image.Rect(0, 0, 3, 2)))
 
 	select {
 	case line := <-lines:
@@ -288,7 +300,7 @@ func TestPetSayFailureCleansTempImage(t *testing.T) {
 	}
 	before := count()
 	// No FIFO at that path -> open fails -> the temp image must not linger.
-	petSay(filepath.Join(dir, "missing.say"), "happy", "hi", image.NewRGBA(image.Rect(0, 0, 2, 2)))
+	petSay(filepath.Join(dir, "missing.say"), "happy", "hi", "", image.NewRGBA(image.Rect(0, 0, 2, 2)))
 	if after := count(); after > before {
 		t.Errorf("failed say write leaked %d temp image(s)", after-before)
 	}
@@ -335,15 +347,15 @@ func TestPetClearWritesToken(t *testing.T) {
 // TestBuildPetSayLineEmpty verifies nothing is built when forwarding is off or
 // there is no content to show ("" text without an image).
 func TestBuildPetSayLineEmpty(t *testing.T) {
-	if got := buildPetSayLine("", "happy", "hi", image.NewRGBA(image.Rect(0, 0, 2, 2))); got != "" {
+	if got := buildPetSayLine("", "happy", "hi", "", image.NewRGBA(image.Rect(0, 0, 2, 2))); got != "" {
 		t.Errorf("buildPetSayLine with empty pipe returned %q, want \"\"", got)
 	}
-	if got := buildPetSayLine("/tmp/x.say", "happy", "", nil); got != "" {
+	if got := buildPetSayLine("/tmp/x.say", "happy", "", "", nil); got != "" {
 		t.Errorf("buildPetSayLine with empty text returned %q, want \"\"", got)
 	}
 	// Whitespace-only text is still a mood-only line (the pet shows the face
 	// without a bubble) - kept for compatibility with petSay.
-	if got := buildPetSayLine("/tmp/x.say", "happy", "  ", nil); got != "[happy]   " {
+	if got := buildPetSayLine("/tmp/x.say", "happy", "  ", "", nil); got != "[happy]   " {
 		t.Errorf("buildPetSayLine with blank text returned %q, want a mood-only line", got)
 	}
 }

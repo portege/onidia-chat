@@ -660,7 +660,7 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 		Text:        text,
 		Thinking:    thinking,
 		Image:       img,
-		petLine:     buildPetSayLine(b.PetPipe, mood, text, img),
+		petLine:     buildPetSayLine(b.PetPipe, mood, text, thinking, img),
 		petPipe:     b.PetPipe,
 		petCmdLine:  cmdLine,
 		petCmdPipe:  petCmdPathFor(b.PetPipe),
@@ -762,6 +762,15 @@ func userDataBlock(text string) string {
 // -> page-break conversion downstream still sees them. agentCalls holds the
 // raw payload of every header-position [AGENT: ...] tag, in order (empty when
 // none) - Phase 2 executes all of them.
+// thinkTagOpen / thinkTagClose are the literal markers the pet recognises.
+// They are spelled out rather than derived from the regex, so the tag the pet
+// is told to look for and the tag the pet actually parses are the same two
+// strings.
+const (
+	thinkTagOpen  = "<THINKING>"
+	thinkTagClose = "</THINKING>"
+)
+
 // thinkingRe matches a whole <THINKING>...</THINKING> block, case-insensitively
 // and across lines: providers wrap the reasoning freely. The non-greedy body
 // stops at the first closing tag, so a second block is handled by the caller's
