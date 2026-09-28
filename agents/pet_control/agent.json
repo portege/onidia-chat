@@ -7,14 +7,13 @@
   "params": [
     {
       "name": "kind",
-      "enum": ["expression", "event", "action", "move"],
       "required": true,
-      "description": "expression = her face only. event = a timed effect (hearts, confetti, poof). action = a full-body animation she performs. move = where she goes."
+      "description": "Which part of her to drive: expression (her face only), event (a timed effect like hearts or confetti), action (a full-body animation she performs), or move (where she goes). Informal spellings work too: expr/face/mood, fx/effect, act/pose, motion."
     },
     {
       "name": "name",
       "required": true,
-      "description": "For expression: happy, wink, sad, thinking, anxious, angry, surprised, sleepy, fear, disgust, contempt, confused, skeptical, embarrassed, neutral, adore. For event: love, idea, celebration, sleep, peace, disappear, appear, halloween, matrix, magic, robot. For action: skip, juggle, dance, eat, work, guitar, sneeze, sixseven, basketball, drive, ride, kitten, wave. For move: 'walk left', 'walk right', 'jump', 'stand', 'idle', 'skateboard', 'parachute'."
+      "description": "What to do. expression: happy, wink, sad, thinking, anxious, angry, surprised, sleepy, fear, disgust, contempt, confused, skeptical, embarrassed, neutral, adore. event: love, idea, celebration, sleep, peace, disappear, appear, halloween, matrix, magic, robot. action: skip, juggle, dance, eat, work, guitar, sneeze, sixseven, basketball, drive, ride, kitten, wave. move: 'left', 'right', 'walk', 'jump', 'stand', 'idle', 'skateboard', 'parachute'. Informal words are fine (hearts, yay, poof, rope, sleepy) and underscores work instead of spaces (walk_left)."
     }
   ]
 }

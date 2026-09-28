@@ -149,10 +149,21 @@ def norm(s):
     return re.sub(r"[^a-z0-9]+", " ", str(s).lower()).strip()
 
 
+def canon_kind(raw):
+    """Fold an informal kind spelling onto its canonical name.
+
+    main() calls this BEFORE anything else and uses the result everywhere, so
+    the kind that is validated, turned into a PET verb and described in the OK
+    line is always the same string. Passing the raw one to describe() was a
+    KeyError for every alias - the script crashed after printing a perfectly
+    good PET line, and the run was reported as a failure.
+    """
+    k = norm(raw).replace(" ", "")
+    return KIND_ALIASES.get(k, k)
+
+
 def resolve(kind, raw):
-    """kind + the user's words -> (pet_line, canonical_name, error)."""
-    kind = norm(kind).replace(" ", "")
-    kind = KIND_ALIASES.get(kind, kind)
+    """canonical kind + the user's words -> (pet_line, canonical_name, error)."""
     if kind not in KINDS:
         return "", "", "unknown kind %r - use expression, event, action or move" % kind
 
@@ -228,7 +239,7 @@ def main():
         out("ERR bad RUN payload: %s" % e)
         return 1
 
-    kind = str(args.get("kind", "")).strip()
+    kind = canon_kind(str(args.get("kind", "")).strip())
     name = str(args.get("name", "")).strip()
     if not kind and not name:
         # Nothing to go on: list the catalogue rather than shrugging, so the

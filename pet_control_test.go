@@ -21,6 +21,10 @@ import (
 
 const petControlAgent = "agents/pet_control"
 
+// petControlAgentsDir is the directory the app actually scans: the one that
+// HOLDS agent folders, not the agent folder itself.
+const petControlAgentsDir = "agents"
+
 // runPetControl feeds one RUN payload to the agent and returns its stdout.
 func runPetControl(t *testing.T, args string) string {
 	t.Helper()
@@ -125,6 +129,122 @@ func TestModelActionStillBeatsAnAgentExpression(t *testing.T) {
 	}
 }
 
+// The real thing, end to end: the bundled Python agent, discovered from disk,
+// invoked by the model through the [AGENT: ...] tag, and its PET line landing
+// on the right pipe. Every other pet_control test talks to the script
+// directly and every other routing test uses a stub ability - this is the one
+// that would catch the two halves drifting apart.
+func TestPetControlEndToEndThroughTheLoop(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not installed")
+	}
+	agent.Reset()
+	defer agent.Reset()
+	// The app scans the DIRECTORY that holds agent folders, so the path is
+	// the parent of pet_control, not the folder itself.
+	if _, problems := agent.DiscoverWithPolicy(petControlAgentsDir, agent.Policy{}); len(problems) > 0 {
+		t.Fatalf("discovery problems: %v", problems)
+	}
+
+	for _, c := range []struct {
+		tag     string // what the model emits
+		wantCmd string
+		wantSay string
+	}{
+		{`[AGENT: pet_control kind=expression name=happy]`, "", "[happy]"},
+		{`[AGENT: pet_control kind=action name=rope]`, "action skip", ""},
+		{`[AGENT: pet_control kind=event name=hearts]`, "event love", ""},
+		{`[AGENT: pet_control kind=move name="walk to the left"]`, "walk left", ""},
+	} {
+		agent.Reset()
+		if _, problems := agent.DiscoverWithPolicy(petControlAgentsDir, agent.Policy{}); len(problems) > 0 {
+			t.Fatalf("discovery problems: %v", problems)
+		}
+		fp := &fakeProvider{canned: c.tag + "\nsure thing"}
+		bot := &Bot{Provider: fp, SystemInstruction: "You are Buddy.",
+			ImageSource: "off", PetPipe: "/tmp/desktop-pet--0.say"}
+		res := bot.Reply([]Msg{{From: "you", Text: "go"}}, "go")
+		if res.petCmdLine != c.wantCmd || res.petExpr != c.wantSay {
+			t.Errorf("%s -> cmd=%q say=%q, want cmd=%q say=%q (reply: %s)",
+				c.tag, res.petCmdLine, res.petExpr, c.wantCmd, c.wantSay, res.Text)
+		}
+	}
+}
+
+// The kinds the manifest advertises must not be narrower than the ones the
+// script accepts. This is not the same as the round-trip tests above: an
+// unrecognised value never reaches the script at all, because the brain
+// validates params BEFORE spawning anything. An enum that is narrower than
+// the script's aliases makes those aliases dead code - the model writes
+// "expr", validation fails, and the reply carries an error instead of a face.
+// The fix is to leave kind unconstrained and let the script answer.
+func TestPetControlManifestDoesNotStrangleTheKinds(t *testing.T) {
+	m, err := agent.LoadManifest(petControlAgent)
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	for _, p := range m.Params {
+		if p.Name != "kind" {
+			continue
+		}
+		if len(p.Enum) == 0 {
+			return // unconstrained: the script gets to answer, as intended
+		}
+		inEnum := map[string]bool{}
+		for _, e := range p.Enum {
+			inEnum[e] = true
+		}
+		for _, alias := range []string{"expr", "face", "mood", "fx", "effect", "act", "pose"} {
+			if !inEnum[alias] {
+				t.Errorf("the script understands kind=%q but the manifest enum %v "+
+					"rejects it before the script runs - drop the enum so the "+
+					"script can answer instead", alias, p.Enum)
+			}
+		}
+		return
+	}
+	t.Fatal("manifest has no kind param")
+}
+
+// The tag the model really emits. The [AGENT: ...] format splits arguments on
+// spaces, so anything with a space in it has to arrive quoted or underscored -
+// this is the path that actually runs in the app, and the one that was
+// broken when the manifest carried an enum narrower than the script.
+func TestPetControlThroughTheRealTagFormat(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not installed")
+	}
+	agent.Reset()
+	defer agent.Reset()
+	for _, c := range []struct {
+		tag     string
+		wantCmd string
+		wantSay string
+	}{
+		// Underscored, because a space would split the argument.
+		{`[AGENT: pet_control kind=move name=walk_left]`, "walk left", ""},
+		{`[AGENT: pet_control kind=expression name=happy]`, "", "[happy]"},
+		// An informal kind, the case the enum used to reject outright.
+		{`[AGENT: pet_control kind=expr name=happy]`, "", "[happy]"},
+		{`[AGENT: pet_control kind=pose name=dance]`, "action dance", ""},
+		// A real multi-word value, quoted.
+		{`[AGENT: pet_control kind=move name="walk to the left"]`, "walk left", ""},
+	} {
+		agent.Reset()
+		if _, problems := agent.DiscoverWithPolicy(petControlAgentsDir, agent.Policy{}); len(problems) > 0 {
+			t.Fatalf("discovery problems: %v", problems)
+		}
+		fp := &fakeProvider{canned: c.tag + "\nokay"}
+		bot := &Bot{Provider: fp, SystemInstruction: "You are Buddy.",
+			ImageSource: "off", PetPipe: "/tmp/desktop-pet--0.say"}
+		res := bot.Reply([]Msg{{From: "you", Text: "go"}}, "go")
+		if res.petCmdLine != c.wantCmd || res.petExpr != c.wantSay {
+			t.Errorf("%s -> cmd=%q say=%q, want cmd=%q say=%q (reply: %s)",
+				c.tag, res.petCmdLine, res.petExpr, c.wantCmd, c.wantSay, res.Text)
+		}
+	}
+}
+
 func TestPetControlCoversEveryKnownName(t *testing.T) {
 	for name := range petMoods {
 		if got := petLineOf(t, `{"kind":"expression","name":"`+name+`"}`); got != "expr "+name {
@@ -183,6 +303,14 @@ func TestPetControlResolvesAliases(t *testing.T) {
 		{`{"kind":"move","name":"go right"}`, "walk right"},
 		{`{"kind":"move","name":"stand still"}`, "stand"},
 		{`{"kind":"move","name":"skateboard"}`, "skateboard"},
+		// The [AGENT: ...] tag splits on spaces, so a model can rarely send a
+		// multi-word value. These are the shapes it actually produces.
+		{`{"kind":"move","name":"left"}`, "left"},
+		{`{"kind":"move","name":"right"}`, "right"},
+		{`{"kind":"move","name":"walk_left"}`, "walk left"},
+		{`{"kind":"move","name":"go-left"}`, "walk left"},
+		{`{"kind":"action","name":"happy dance"}`, "action dance"},
+		{`{"kind":"expression","name":"happy_face"}`, "expr happy"},
 	}
 	for _, c := range cases {
 		if got := petLineOf(t, c.args); got != c.want {

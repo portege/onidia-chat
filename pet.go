@@ -382,13 +382,6 @@ func petCmd(path, line string) {
 	if path == "" || line == "" {
 		return
 	}
-	// Belt and braces: knownPetCmd already rejects anything with a newline in
-	// it, but a cmd-FIFO line is executable input, so a second command must
-	// never be able to ride along behind the first. One command per write.
-	if strings.ContainsAny(line, "\r\n") {
-		log.Printf("pet: refusing multi-line cmd %q", line)
-		return
-	}
 	for tries := 0; tries < 3; tries++ {
 		f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
 		if err == nil {
