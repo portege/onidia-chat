@@ -942,13 +942,10 @@ func main() {
 			dirty = true
 		case reply := <-ui.Replies:
 			ui.Thinking = false
-			ui.streamText = ""    // drop the preview; AddMsg shows the final text
-			if reply.Text != "" { // empty = skipped greeting (quiet hours)
-				if reply.Image != nil {
-					ui.AddMsgWithImageUsed(ui.Bot.Name, reply.Text, reply.Image, reply.UsedAbility)
-				} else {
-					ui.AddMsgUsed(ui.Bot.Name, reply.Text, reply.UsedAbility)
-				}
+			ui.streamText = ""                            // drop the preview; AddMsg shows the final text
+			if reply.Text != "" || reply.Thinking != "" { // empty = skipped greeting (quiet hours)
+				ui.AddThinking(ui.Bot.Name, reply.Text, reply.Thinking,
+					reply.Image, reply.UsedAbility)
 			}
 			// Pet bubble + TTS, kept in sync: the bubble appears only once the
 			// audio is ready to play and closes as soon as playback ends. With

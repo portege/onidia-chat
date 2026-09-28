@@ -494,6 +494,7 @@ make preview     # renders chat_ui_*.png sample states and exits
 | `chat_ui_convo.png`    | conversation, typed text + caret, hovered SEND |
 | `chat_ui_sent.png`     | after submit: your bubble + the bot's answer |
 | `chat_ui_thinking.png` | the "..." bubble while the Gemini call is in flight |
+| `chat_ui_cloud.png`     | a `<THINKING>` cloud above the answer bubble (long + one-liner) |
 | `chat_ui_settings.png` | the settings dialog over a conversation |
 | `chat_ui_settings_open.png` | settings dialog with the age dropdown expanded |
 | `chat_ui_settings_sleep.png` | settings dialog with the sleep FROM hour list scrolled open |
@@ -542,6 +543,26 @@ its own runtime directory — they will not see each other:
 ```sh
 XDG_RUNTIME_DIR=/tmp/chat-b chat-app
 ```
+
+### Thinking clouds (`<THINKING>`)
+
+When the provider returns its reasoning inline, wrapped in
+`<THINKING>...</THINKING>`, it gets its own bubble — a small, muted thought
+cloud drawn **above** the answer, with the answer in the normal speech bubble
+below it. The cloud is deliberately understated: half the font size, a pale
+lilac instead of the pet's plum-outlined white, and capped at 6 lines with an
+ellipsis, so a long ramble can never crowd out what the character actually
+said. See `chat_ui_cloud.png`.
+
+The reasoning is **never** spoken by the pet and never enters the reply — only
+the answer is. It is also peeled off **before** any tag parsing, so a `[mood]`,
+`[ACTION:]` or `[AGENT: ...]` tag written while the model is thinking cannot
+reach the pet, the pager or an ability. A model that muses "I could use
+`play_song` here" has not asked for a song.
+
+The cloud fills live while the reply streams: an unclosed `<THINKING>` counts
+as open, so mid-stream text lands in the cloud rather than flashing into the
+answer.
 
 ## Controls
 

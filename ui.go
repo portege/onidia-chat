@@ -89,6 +89,11 @@ type Msg struct {
 	// can see the ability worked. Without it, the only evidence in history is
 	// the model's own past refusals, and it stops offering the ability at all.
 	UsedAbility bool
+
+	// Thinking is the model's reasoning, drawn as a thought cloud ABOVE the
+	// speech bubble. Kept out of Text on purpose: Text is what gets copied,
+	// paginated and sent onward, and none of that should carry the reasoning.
+	Thinking string
 }
 
 // Palette - shared with the desktop-pet (plum outlines, pastel teal).
@@ -106,6 +111,12 @@ var (
 	colInputBorder = color.RGBA{216, 210, 226, 255}
 	colWhite       = color.RGBA{255, 255, 255, 255}
 	colError       = color.RGBA{196, 60, 74, 255} // save-failure text in the modal
+
+	// Thought cloud (the model's <THINKING> reasoning). Deliberately muted
+	// against the speech bubble so the two never read as the same thing: the
+	// cloud is a quiet aside, the bubble is what the character actually says.
+	colCloudFill = color.RGBA{236, 232, 246, 255} // pale lilac
+	colCloudEdge = color.RGBA{186, 178, 208, 255} // soft grey-lilac rim
 
 	// Haiya! button while the onidia pet is running: bubblegum pink so the
 	// state change is obvious at a glance (teal = launch, pink = click quits).
@@ -148,7 +159,21 @@ const (
 
 	// Pagination: a reply with 2+ paragraphs becomes a paged bubble.
 	pagStrip = 20 // height of the pager strip at the bubble's foot
-	pagBtn   = 14 // prev/next page button side
+
+	// Thought-cloud metrics. The reasoning is drawn at scale 1 (half the
+	// speech bubble's size) so a long ramble cannot crowd out the answer, and
+	// capped to a few lines so one turn's thinking can never fill the window.
+	thinkScale = 1
+	thinkLineH = (glyphH + 2) * thinkScale // tighter pitch than the bubble's
+	thinkPadX  = 7
+	thinkPadY  = 6
+	thinkLobe  = 7 // nominal lobe size, used to size the wrap width; the drawn
+	// radius comes from thinkCloudR, which scales with the cloud's height
+	thinkArc   = 3  // px the middle lobe rises above the outer ones
+	thinkGap   = 6  // vertical gap between the cloud and the block below it
+	thinkMaxW  = 3  // the cloud is narrower than a bubble: 3/4 of the same max
+	thinkMaxLn = 6  // lines kept before the reasoning is elided
+	pagBtn     = 14 // prev/next page button side
 
 	// "Copy" pill on a bubble's sender-label row.
 	copyBtnPad   = 4 // padding around the Copy label inside its pill
@@ -234,10 +259,11 @@ type UI struct {
 	Stream   chan string      // accumulated partial bot text while SSE streams in
 	Thinking bool             // true while a Gemini call is in flight
 
-	msgs       []Msg
-	streamText string // preview shown in the synthetic bubble ("" = "...")
-	input      []rune
-	scroll     int // scrollTop in content px (clamped; 0 = oldest visible)
+	msgs        []Msg
+	streamText  string // preview shown in the synthetic bubble ("" = "...")
+	streamThink string // <THINKING> preview for the synthetic thought cloud
+	input       []rune
+	scroll      int // scrollTop in content px (clamped; 0 = oldest visible)
 
 	focused   bool // the textarea owns the keyboard
 	caret     bool // caret blink phase
@@ -882,6 +908,15 @@ func (u *UI) AddMsgWithImage(from, text string, img image.Image) {
 func (u *UI) AddMsgUsed(from, text string, used bool) {
 	m := newMsg(from, text, nil)
 	m.UsedAbility = used
+	u.msgs = append(u.msgs, m)
+	u.scroll = u.maxScroll()
+}
+
+// AddThinking appends a bot message with a separate thought cloud above it.
+func (u *UI) AddThinking(from, text, thinking string, img image.Image, used bool) {
+	m := newMsg(from, text, img)
+	m.UsedAbility = used
+	m.Thinking = thinking
 	u.msgs = append(u.msgs, m)
 	u.scroll = u.maxScroll()
 }
@@ -1689,11 +1724,17 @@ var streamNewlines = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ", `\\n
 // only if the user was already there.
 func (u *UI) SetStreamText(s string) {
 	follow := u.scroll >= u.maxScroll()
-	_, _, _, _, _, txt := stripTags(s)
+	// Same split as the final bubble: reasoning goes to the cloud, the answer
+	// to the speech bubble. A half-arrived <THINKING> block counts as open, so
+	// mid-stream text lands in the cloud instead of flashing in the answer.
+	think, answer := splitThinking(s)
+	_, _, _, _, _, txt := stripTags(answer)
 	if i := strings.LastIndex(txt, "["); i >= 0 && !strings.Contains(txt[i:], "]") {
 		txt = txt[:i]
 	}
-	u.streamText = strings.TrimSpace(streamNewlines.Replace(txt))
+	oneLine := func(s string) string { return strings.TrimSpace(streamNewlines.Replace(s)) }
+	u.streamText = oneLine(txt)
+	u.streamThink = oneLine(think)
 	if follow {
 		u.scroll = u.maxScroll()
 	}
@@ -2522,6 +2563,13 @@ type msgBlock struct {
 	img       image.Image // scaled image to draw above the bubble (may be nil)
 	paginated bool        // bubble has a pager strip (m.Pages > 1)
 	pageCount int         // number of pages (len m.Pages)
+
+	// Thought cloud (m.Thinking). Laid out above the label strip, as its own
+	// little block: the cloud is the reasoning, the bubble is the answer, and
+	// they are different things at different sizes.
+	thinkLines []string
+	thinkW     int
+	thinkH     int
 }
 
 func (u *UI) blocks() []msgBlock {
@@ -2532,13 +2580,14 @@ func (u *UI) blocks() []msgBlock {
 		bs = append(bs, u.blockFor(m, cols, maxW))
 	}
 	if u.Thinking {
-		// Synthetic bubble while the call is in flight: "..." until the
-		// first SSE delta arrives, then the streaming preview.
-		txt := "..."
+		// Synthetic bubble while the call is in flight: "..." until the first
+		// SSE delta arrives, then the streaming preview. The <THINKING> half
+		// goes to its own cloud, exactly where it lands in the final bubble.
+		txt, think := "...", u.streamThink
 		if u.streamText != "" {
 			txt = u.streamText
 		}
-		bs = append(bs, u.blockFor(Msg{From: u.Bot.Name, Text: txt}, cols, maxW))
+		bs = append(bs, u.blockFor(Msg{From: u.Bot.Name, Text: txt, Thinking: think}, cols, maxW))
 	}
 	return bs
 }
@@ -2578,7 +2627,23 @@ func (u *UI) blockFor(m Msg, cols, maxW int) msgBlock {
 	if imgH > 0 {
 		h += imgGapTop + imgH + imgGapBot
 	}
-	return msgBlock{m: m, lines: lines, bubW: bubW, bubH: bubH, h: h, img: img, paginated: paginated, pageCount: len(m.Pages)}
+	b := msgBlock{m: m, lines: lines, bubW: bubW, bubH: bubH, h: h, img: img, paginated: paginated, pageCount: len(m.Pages)}
+	// The thought cloud is measured at the smaller font and stacks on top of
+	// everything else, so the block's total height grows by the cloud's height
+	// plus the gap that keeps it off the label strip.
+	if t := strings.TrimSpace(m.Thinking); t != "" {
+		b.thinkLines = capLines(wrapText(t, thinkCols()), thinkMaxLn)
+		tw := 0
+		for _, l := range b.thinkLines {
+			tw = max(tw, textWidth(l, thinkScale))
+		}
+		b.thinkH = len(b.thinkLines)*thinkLineH + 2*thinkPadY
+		// Width carries the lobe allowance, so it must be measured with the
+		// same radius the cloud will be drawn with.
+		b.thinkW = min(tw+2*thinkCloudR(b.thinkH)+2*thinkPadX, maxW*thinkMaxW/4)
+		b.h += b.thinkH + thinkGap
+	}
+	return b
 }
 
 func (u *UI) contentHeight() int {
@@ -2597,13 +2662,113 @@ func (u *UI) maxScroll() int {
 	return max(0, u.contentHeight()-areaH)
 }
 
+// thinkCols is the wrap width for the reasoning: at scale 1 each glyph is half
+// as wide, so the cloud fits about twice the characters a bubble line does.
+func thinkCols() int {
+	w := (defaultWinW-2*padX)*3/4/thinkMaxW*3 - 2*thinkLobe - 2*thinkPadX
+	return max(12, w/(advW*thinkScale))
+}
+
+// capLines keeps at most n lines, marking the cut with an ellipsis on the last
+// one. The reasoning is an aside; an unbounded monologue must not push the
+// answer out of view.
+func capLines(lines []string, n int) []string {
+	if n <= 0 || len(lines) <= n {
+		return lines
+	}
+	out := append([]string(nil), lines[:n]...)
+	out[n-1] = strings.TrimRight(out[n-1], " .,;:") + "..."
+	return out
+}
+
+// thinkCloudR scales the bumps to the cloud's height. A fixed radius makes a
+// one-line cloud look like a row of beads (the lobes would be most of the
+// shape) while a tall one gets a suspiciously flat roof. One third of the
+// height, clamped so it never swallows the text.
+func thinkCloudR(h int) int {
+	return max(4, min(10, h/3))
+}
+
+// drawThinkCloud paints a thought cloud: a flat-bottomed run of overlapping
+// discs, the classic comic-strip shape. It is built from discs rather than a
+// rounded rect so the silhouette is lumpy, and it is drawn twice (rim, then
+// fill inset by 1px) so it has the same outlined look as a speech bubble.
+//
+// The disc radius scales with the height (thinkCloudR), which is what keeps a
+// one-line cloud from looking like a row of beads and a tall one from having a
+// suspiciously flat roof.
+func drawThinkCloud(layer *image.NRGBA, x, y, w, h int) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	r := thinkCloudR(h)
+	lobes := thinkLobeCenters(x, y, w, r)
+	// Rim pass.
+	drawRoundRect(layer, x, y+r, w, h-r, r, colCloudEdge)
+	for _, l := range lobes {
+		fillDisc(layer, l[0], l[1], r, colCloudEdge)
+	}
+	// Fill pass, inset 1px so a 1px rim shows all the way round.
+	drawRoundRect(layer, x+1, y+r+1, w-2, h-r-1, r, colCloudFill)
+	for _, l := range lobes {
+		fillDisc(layer, l[0], l[1], r-1, colCloudFill)
+	}
+}
+
+// thinkLobeCenters returns the disc centers forming a cloud's top edge. The
+// count follows the width so a wide cloud undulates instead of running as one
+// long bar, and the middle lobes sit higher than the ends, so the roof has the
+// lumpy, slightly asymmetric shape of a drawn cloud rather than a flat top.
+func thinkLobeCenters(x, y, w, r int) [][2]int {
+	// One lobe per ~2.5 diameters, never fewer than 3.
+	n := max(3, min(7, (w-2*r)/(r*5/2)))
+	cy := y + r
+	out := make([][2]int, 0, n)
+	for i := 0; i < n; i++ {
+		cx := x + r + (w-2*r)*i/max(1, n-1)
+		// Rise towards the middle, in integer steps of at most thinkArc.
+		dist := absInt(i - (n-1)/2)
+		rise := thinkArc * (max((n-1)/2-dist, 0) * 2 / max(n-1, 1))
+		out = append(out, [2]int{cx, cy - rise})
+	}
+	return out
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
 func (u *UI) drawMsgBlock(layer *image.NRGBA, b msgBlock, y int, copyPill, copyFlash, copyHover, copyPress bool) {
 	isBot := b.m.From != "you"
 	imgH := 0
 	if b.img != nil {
 		imgH = b.img.Bounds().Dy()
 	}
-	bubH := b.h - labelH
+	// The cloud sits at the very top of the block, above the label strip. It is
+	// left-aligned with the bubble (bot) or right-aligned (user) so the two read
+	// as one stack rather than two unrelated shapes.
+	if len(b.thinkLines) > 0 {
+		var cx int
+		if isBot {
+			cx = padX
+		} else {
+			cx = u.W - padX - b.thinkW
+		}
+		drawThinkCloud(layer, cx, y, b.thinkW, b.thinkH)
+		r := thinkCloudR(b.thinkH)
+		tx := cx + r + thinkPadX
+		ty := y + r + thinkPadY
+		for _, l := range b.thinkLines {
+			drawText(layer, tx, ty, l, thinkScale, colMuted)
+			ty += thinkLineH
+		}
+		y += b.thinkH + thinkGap
+	}
+
+	bubH := b.h - labelH - b.thinkH - thinkGap
 	if imgH > 0 {
 		bubH -= imgGapTop + imgH + imgGapBot
 	}

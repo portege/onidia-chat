@@ -147,6 +147,13 @@ type ReplyResult struct {
 	Text  string
 	Image image.Image
 
+	// Thinking is the model's <THINKING>...</THINKING> reasoning, shown in the
+	// UI as its own thought-cloud bubble ABOVE the speech bubble. It is
+	// deliberately absent from Text: the answer is what the pet speaks and what
+	// goes into the reply, and reasoning must not be read aloud. Empty when the
+	// provider sends no reasoning.
+	Thinking string
+
 	petLine    string // assembled say-pipe line ("" = nothing to forward)
 	petPipe    string // say-FIFO path it should be written to ("" = disabled)
 	petCmdLine string // command line for the cmd-FIFO ("action dance", "event love", "jump")
@@ -571,7 +578,15 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 	// the pet gets the mood plus an optional action/event command, and the
 	// image tag drives the picture (if enabled). Leftover [AGENT: ...] tags
 	// (the loop's step limit was hit) are stripped from the display here.
-	mood, imgDesc, action, event, _, text := stripTags(rawReply)
+	// Peels the <THINKING> block off FIRST, so a tag inside the reasoning can
+	// never drive the pet, the pager or an ability - a model that writes
+	// "[AGENT: play_song ...]" while thinking has not asked for anything.
+	thinking, answer := splitThinking(rawReply)
+	// Split off the mood, image, action and event tags: chat shows bare text,
+	// the pet gets the mood plus an optional action/event command, and the
+	// image tag drives the picture (if enabled). Leftover [AGENT: ...] tags
+	// (the loop's step limit was hit) are stripped from the display here.
+	mood, imgDesc, action, event, _, text := stripTags(answer)
 	// The model sometimes skips the [mood] tag entirely (the replies come back
 	// as plain text), leaving the pet with a blank neutral face. Fall back to
 	// a keyword guess so the pet's expression still matches the reply.
@@ -643,6 +658,7 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 	}
 	return ReplyResult{
 		Text:        text,
+		Thinking:    thinking,
 		Image:       img,
 		petLine:     buildPetSayLine(b.PetPipe, mood, text, img),
 		petPipe:     b.PetPipe,
@@ -746,6 +762,92 @@ func userDataBlock(text string) string {
 // -> page-break conversion downstream still sees them. agentCalls holds the
 // raw payload of every header-position [AGENT: ...] tag, in order (empty when
 // none) - Phase 2 executes all of them.
+// thinkingRe matches a whole <THINKING>...</THINKING> block, case-insensitively
+// and across lines: providers wrap the reasoning freely. The non-greedy body
+// stops at the first closing tag, so a second block is handled by the caller's
+// loop rather than swallowing everything between the outermost pair.
+var thinkingRe = regexp.MustCompile(`(?is)<thinking>(.*?)</thinking>`)
+
+// splitThinking separates a model's visible reasoning from its answer. The
+// reasoning is returned separately instead of being deleted, because the UI
+// shows it in its own thought-cloud bubble.
+//
+// It runs BEFORE stripTags so a tag inside the reasoning ([mood], [AGENT: ...])
+// can never reach the pet, the pager or an ability. That matters: a [AGENT:
+// ...] tag mentioned while "thinking" is not a request, and acting on it would
+// run something the user never asked for.
+//
+// An UNCLOSED <THINKING> (a stream caught mid-block) counts as open, so the
+// partial text is treated as reasoning rather than leaking into the answer
+// bubble. Anything before an unclosed tag is kept as the answer.
+func splitThinking(raw string) (thinking, rest string) {
+	loc := thinkingRe.FindStringSubmatchIndex(raw)
+	if loc == nil {
+		// No closed block. A dangling open tag means the answer has not
+		// started yet: everything after it is still reasoning.
+		if i := openThinkingIndex(raw); i >= 0 {
+			return strings.TrimSpace(raw[i+len("<thinking>"):]), strings.TrimSpace(raw[:i])
+		}
+		return "", strings.TrimSpace(raw)
+	}
+	var b strings.Builder
+	last := 0
+	for loc != nil {
+		// The segments either side of the block are concatenated VERBATIM, with
+		// no separator invented. Two reasons: a model that wrote "A</THINKING>B"
+		// means "AB", not "A B"; and inserting a newline here would create a
+		// page break, because in this app every newline is one.
+		b.WriteString(raw[last:loc[0]])
+		if thinking == "" {
+			thinking = strings.TrimSpace(raw[loc[2]:loc[3]])
+		}
+		last = loc[1]
+		// Continue the search in the remainder, then shift the indices back so
+		// they index the whole string again (submatch indices are 4 entries).
+		next := thinkingRe.FindStringSubmatchIndex(raw[last:])
+		if next == nil {
+			break
+		}
+		loc = []int{last + next[0], last + next[1], last + next[2], last + next[3]}
+	}
+	b.WriteString(raw[last:])
+	return thinking, collapseSpaces(b.String())
+}
+
+// collapseSpaces squashes runs of blank space to one space. It runs only on the
+// answer left after a reasoning block was removed, where the cut usually lands
+// next to a space the model wrote for the tag's sake.
+func collapseSpaces(s string) string {
+	var b strings.Builder
+	space := false
+	for _, r := range strings.TrimSpace(s) {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			space = true
+			continue
+		}
+		if space && b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		space = false
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// openThinkingIndex finds a "<thinking>" with no closing tag after it, in any
+// case, and returns its byte offset (-1 when there is none).
+func openThinkingIndex(raw string) int {
+	lower := strings.ToLower(raw)
+	open := strings.LastIndex(lower, "<thinking>")
+	if open < 0 {
+		return -1
+	}
+	if strings.Contains(lower[open:], "</thinking>") {
+		return -1 // a later close tag exists: the block is complete, not partial
+	}
+	return open
+}
+
 func stripTags(raw string) (mood, imgDesc, action, event string, agentCalls []string, text string) {
 	text = strings.TrimSpace(raw)
 	prevEnd, prevCounted := -1, false
