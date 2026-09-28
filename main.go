@@ -945,9 +945,9 @@ func main() {
 			ui.streamText = ""    // drop the preview; AddMsg shows the final text
 			if reply.Text != "" { // empty = skipped greeting (quiet hours)
 				if reply.Image != nil {
-					ui.AddMsgWithImage(ui.Bot.Name, reply.Text, reply.Image)
+					ui.AddMsgWithImageUsed(ui.Bot.Name, reply.Text, reply.Image, reply.UsedAbility)
 				} else {
-					ui.AddMsg(ui.Bot.Name, reply.Text)
+					ui.AddMsgUsed(ui.Bot.Name, reply.Text, reply.UsedAbility)
 				}
 			}
 			// Pet bubble + TTS, kept in sync: the bubble appears only once the

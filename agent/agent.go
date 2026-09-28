@@ -355,7 +355,7 @@ func splitTokens(s string) ([]string, error) {
 
 // agentCatalogIntro teaches the model the tag format before the list of
 // registered abilities (mirrors visualLanguageInstruction for pet tags).
-const agentCatalogIntro = ` You also control "agents" - special abilities this app can run for you (playing media, reading stories, ...). To perform one, START your reply with ONE "[AGENT: <id> <key>=<value> ...]" tag per ability, quoting values that contain spaces (example: title="some song"); use parameter names exactly as declared, never invent ids or keys, and only use listed abilities. The tag is stripped before display and the app appends the agent's result to your reply. Abilities you may use:`
+const agentCatalogIntro = ` You also control "agents" - special abilities this app can run for you (playing media, reading stories, animating the desktop pet, ...). To perform one, START your reply with ONE "[AGENT: <id> <key>=<value> ...]" tag per ability, quoting values that contain spaces (example: title="some song"); use parameter names exactly as declared, never invent ids or keys, and only use listed abilities. The tag is stripped before display and the app appends the agent's result to your reply. IMPORTANT: an ability listed below really runs on the user's machine and its effect is real, so use it rather than describing or apologising for the effect. Never tell the user an ability is "outside my capabilities" or "I cannot show that" - when an ability below covers the request, emit its tag. Abilities you may use:`
 
 // CatalogInstruction renders the system-prompt block listing every
 // registered agent with its declared parameters. Empty string when no

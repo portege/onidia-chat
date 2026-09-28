@@ -83,6 +83,12 @@ type Msg struct {
 	// Both stay nil for ordinary chat messages; the renderer ignores them.
 	Calls   []ToolCall
 	Results []ToolResult
+	// UsedAbility marks a bot turn that ran at least one ability. The renderer
+	// ignores it; the copy of history built for the model appends a short
+	// "an ability did this" note (agentbridge.historyEvidence) so the model
+	// can see the ability worked. Without it, the only evidence in history is
+	// the model's own past refusals, and it stops offering the ability at all.
+	UsedAbility bool
 }
 
 // Palette - shared with the desktop-pet (plum outlines, pastel teal).
@@ -868,6 +874,24 @@ func (u *UI) AddMsg(from, text string) {
 // AddMsgWithImage appends a message that may include an image.
 func (u *UI) AddMsgWithImage(from, text string, img image.Image) {
 	u.msgs = append(u.msgs, newMsg(from, text, img))
+	u.scroll = u.maxScroll()
+}
+
+// AddMsgUsed appends a plain text message and records whether an ability ran
+// for it, so the next turn's model-facing history can say so.
+func (u *UI) AddMsgUsed(from, text string, used bool) {
+	m := newMsg(from, text, nil)
+	m.UsedAbility = used
+	u.msgs = append(u.msgs, m)
+	u.scroll = u.maxScroll()
+}
+
+// AddMsgWithImageUsed appends a message that may include an image and records
+// whether an ability ran for it.
+func (u *UI) AddMsgWithImageUsed(from, text string, img image.Image, used bool) {
+	m := newMsg(from, text, img)
+	m.UsedAbility = used
+	u.msgs = append(u.msgs, m)
 	u.scroll = u.maxScroll()
 }
 

@@ -244,6 +244,33 @@ func agentPetCmd(runs []agentRun) string {
 	return ""
 }
 
+// historyEvidence is the marker folded into a bot turn that used an ability, so
+// the model can see in its own history that the ability really ran. It exists
+// because of a measured failure: the [AGENT: ...] tag is stripped before
+// display, so turn 2's history showed the model
+//
+//	you:    "can you play the guitar"
+//	Buddy:  "Sorry, I can't show that, it is outside of my capabilities."
+//
+// - its own refusal, replayed as a settled fact, with no trace that any ability
+// existed or that turn 1 had succeeded. That is few-shot learning on the
+// model's own prior output, and it compounds: every refusal makes the next one
+// likelier, which is exactly the "works once or twice, then never" curve. One
+// line of visible evidence per used ability breaks the loop, and the sentence
+// is deliberately capability-free so it cannot read as a person.
+const historyEvidence = " (I used an ability from the list above to do this - it worked.)"
+
+// anyRunSucceeded reports whether at least one ability ran cleanly, which is
+// what ReplyResult.UsedAbility means.
+func anyRunSucceeded(runs []agentRun) bool {
+	for _, r := range runs {
+		if r.Err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // foldAgentRuns merges the executed runs into the reply text. A success joins
 // as its own paragraph, skipped when the model already wrote the same line; a
 // failure is appended in parentheses - the Phase 1 rule: a silently swallowed

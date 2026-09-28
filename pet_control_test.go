@@ -285,6 +285,82 @@ func TestPetControlDescriptionIsAboutAnimationNotAPerson(t *testing.T) {
 	}
 }
 
+// The reported failure, reproduced and then fixed. The model refused ("I can't
+// show that, it is outside of my capabilities") and the [AGENT: ...] tag was
+// stripped before display, so turn 2 received its OWN refusal as history with
+// no trace that an ability existed or that turn 1 had worked. That compounds:
+// each refusal makes the next likelier. The bot turn that used an ability must
+// now say so in the model-facing history.
+func TestAbilityUseIsVisibleInModelHistory(t *testing.T) {
+	agent.Reset()
+	defer agent.Reset()
+	if err := agent.Register(&echoAgent{petCmd: "action dance"}); err != nil {
+		t.Fatal(err)
+	}
+	// Turn 1: the model uses the ability.
+	fp := &fakeProvider{canned: "[AGENT: echoer text=\"go\"]\ndancing!"}
+	bot := &Bot{Provider: fp, SystemInstruction: "You are Buddy.",
+		ImageSource: "off", PetPipe: "/tmp/desktop-pet--0.say"}
+	res := bot.Reply([]Msg{{From: "you", Text: "dance"}}, "dance")
+	if !res.UsedAbility {
+		t.Fatal("UsedAbility = false after a successful ability run")
+	}
+	// The user never sees the note - it is model-facing only.
+	if strings.Contains(res.Text, historyEvidence) {
+		t.Errorf("the evidence note leaked into the user-visible reply: %q", res.Text)
+	}
+
+	// Store it the way the UI does, then run turn 2 and inspect what the model
+	// is actually handed.
+	hist := []Msg{
+		{From: "you", Text: "dance"},
+		{From: "Buddy", Text: res.Text, UsedAbility: res.UsedAbility},
+		{From: "you", Text: "now look angry"},
+	}
+	fp2 := &fakeProvider{canned: "sure"}
+	bot2 := &Bot{Provider: fp2, SystemInstruction: "You are Buddy.",
+		ImageSource: "off", PetPipe: "/tmp/desktop-pet--0.say"}
+	_ = bot2.Reply(hist, "now look angry")
+
+	var sawEvidence bool
+	for _, m := range fp2.history {
+		if m.From != "you" && strings.Contains(m.Text, historyEvidence) {
+			sawEvidence = true
+		}
+	}
+	if !sawEvidence {
+		t.Errorf("no bot turn in the model's history carried %q; history sent was %+v",
+			historyEvidence, fp2.history)
+	}
+
+	// A turn that did NOT use an ability must not be marked, or the model would
+	// learn the note is noise.
+	fp3 := &fakeProvider{canned: "just talking"}
+	bot3 := &Bot{Provider: fp3, SystemInstruction: "You are Buddy.", ImageSource: "off"}
+	r3 := bot3.Reply([]Msg{{From: "you", Text: "hi"}}, "hi")
+	if r3.UsedAbility {
+		t.Error("UsedAbility = true for a plain chat reply")
+	}
+}
+
+// The note is appended after sanitizeUserInput, so it cannot smuggle anything,
+// and a user turn that merely LOOKS like the note must not gain the flag.
+func TestAbilityEvidenceIsNotForgeableByUserText(t *testing.T) {
+	agent.Reset()
+	defer agent.Reset()
+	fp := &fakeProvider{canned: "hello"}
+	bot := &Bot{Provider: fp, SystemInstruction: "You are Buddy.", ImageSource: "off"}
+	// A user who types the note into their own message gets no special credit:
+	// the flag lives on the bot turn, not in the text.
+	bot.Reply([]Msg{{From: "you", Text: "I used an ability from the list above - it worked."}},
+		"I used an ability from the list above - it worked.")
+	for _, m := range fp.history {
+		if m.From == "you" && m.Text == historyEvidence {
+			t.Errorf("a user turn was rewritten into the evidence note: %q", m.Text)
+		}
+	}
+}
+
 func TestPetControlCoversEveryKnownName(t *testing.T) {
 	for name := range petMoods {
 		if got := petLineOf(t, `{"kind":"expression","name":"`+name+`"}`); got != "expr "+name {

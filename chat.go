@@ -152,6 +152,12 @@ type ReplyResult struct {
 	petCmdLine string // command line for the cmd-FIFO ("action dance", "event love", "jump")
 	petCmdPipe string // cmd-FIFO path to write it to ("" = disabled)
 	petExpr    string // bare "[mood]" say-line an agent asked for ("" = none)
+
+	// UsedAbility records that at least one ability ran for this reply. The UI
+	// keeps it on the message it stores, so the NEXT turn's history carries
+	// visible proof the ability worked - see agentbridge.historyEvidence, which
+	// is why a single refusal would otherwise snowball into a permanent one.
+	UsedAbility bool
 }
 
 // resolveSystemPrompt merges a -system-prompt override and a -system-file
@@ -458,6 +464,16 @@ func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 	for i, m := range history {
 		clean[i] = m
 		clean[i].Text = sanitizeUserInput(m.Text)
+		// A bot turn that used an ability says so, in the copy the model reads.
+		// This is the fix for abilities that work once and then stop: the
+		// [AGENT: ...] tag is stripped before display, so without this note the
+		// history shows only the model's own text - and when that text is a
+		// refusal ("outside of my capabilities"), the next turn inherits the
+		// refusal as if it were a fact. The note is added AFTER sanitizing and
+		// is our own constant, so it cannot carry injected text.
+		if m.UsedAbility {
+			clean[i].Text += historyEvidence
+		}
 		if m.From == "you" {
 			lastUser = i
 		}
@@ -626,13 +642,14 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 		}
 	}
 	return ReplyResult{
-		Text:       text,
-		Image:      img,
-		petLine:    buildPetSayLine(b.PetPipe, mood, text, img),
-		petPipe:    b.PetPipe,
-		petCmdLine: cmdLine,
-		petCmdPipe: petCmdPathFor(b.PetPipe),
-		petExpr:    exprLine,
+		Text:        text,
+		Image:       img,
+		petLine:     buildPetSayLine(b.PetPipe, mood, text, img),
+		petPipe:     b.PetPipe,
+		petCmdLine:  cmdLine,
+		petCmdPipe:  petCmdPathFor(b.PetPipe),
+		petExpr:     exprLine,
+		UsedAbility: anyRunSucceeded(runs),
 	}
 }
 

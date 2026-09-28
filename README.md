@@ -688,6 +688,19 @@ love effect, "rope" -> skipping):
 #   (pet command: action skip)
 ```
 
+- **Why it might ignore you**: the system prompt is the *only* place the
+  catalog lives, and the model reads it alongside the whole conversation. If
+  it once answers "I can't show that, it is outside of my capabilities" for
+  something an ability actually does, that refusal goes into the chat
+  history like any other reply and the next turn inherits it — few-shot
+  learning on its own prior output, and it compounds until the ability is
+  never offered again. Two guards against that: a turn that ran an ability
+  is marked in the model-facing history (`(I used an ability from the list
+  above to do this - it worked.)`, never shown on screen), and the catalog
+  itself says an ability's effect is real and must not be apologised for.
+- Bundled: `pet_control` (animates the pet), `play_song`, `play_movie`,
+  `media_control`, `hello_world`, plus the native `read_story`.
+
 ### Transport strip (play / pause / stop)
 
 When a media agent (`play_song`, `play_movie`) starts a player, a **NOW
