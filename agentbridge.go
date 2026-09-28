@@ -59,8 +59,11 @@ func (r agentRun) label() string {
 }
 
 // agentTagRe matches one complete [AGENT: ...] tag. Used to remove tags that
-// are handed back to the model as conversation context.
-var agentTagRe = regexp.MustCompile(`\[AGENT:\s*[^\]]*\]`)
+// are handed back to the model as conversation context. The payload pattern is
+// shared with replyTag (agentPayloadPat) so both agree on where a tag ends: a
+// quoted value may carry a ']' of its own, and a regex that stopped at the
+// inner bracket would leave half a tag in the text it is stripping.
+var agentTagRe = regexp.MustCompile(`\[AGENT:\s*(?:` + agentPayloadPat + `)\]`)
 
 // stripAgentTags removes every [AGENT: ...] tag from s. The tags were
 // already dispatched (runAgentLoop) or deliberately skipped (step limit),

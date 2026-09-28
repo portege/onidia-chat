@@ -298,11 +298,22 @@ type geminiResponse struct {
 	} `json:"error,omitempty"`
 }
 
+// agentPayloadPat matches the inside of one [AGENT: ...] tag. The tag grammar
+// parses quoted values as units and allows anything but the closing quote in
+// them (agent.ParseCall, and the catalog tells the model to quote values with
+// spaces: title="Havana [live]"), so a value may contain a ']' of its own. The
+// naive [^\]]* the other tag families use stops at that inner bracket, which
+// leaves the tag's tail - the leftover '"]' of
+// [AGENT: play_song title="Havana [live]"] - in the middle of the reply and
+// hands the truncated payload to the parser, so a legal call came back as a
+// parse error. Quoted runs are matched as a unit instead.
+const agentPayloadPat = `(?:"[^"]*"|[^\]"])*`
+
 // replyTag matches one [IMG: ...], [action]/[event], [mood] or [AGENT: ...]
 // tag plus any blanks after it. Group 2 holds the image description, group 3
 // the action name, group 4 the event name, group 5 the mood word, and group 6
 // the raw agent payload (id + key=value args, parsed by agent.ParseCall).
-var replyTag = regexp.MustCompile(`(\[IMG:\s*([^\]]*)\]|\[ACTION:\s*([a-zA-Z]+)\]|\[EVENT:\s*([a-zA-Z]+)\]|\[([a-zA-Z]+)\]|\[AGENT:\s*([^\]]*)\])[ \t]*`)
+var replyTag = regexp.MustCompile(`(\[IMG:\s*([^\]]*)\]|\[ACTION:\s*([a-zA-Z]+)\]|\[EVENT:\s*([a-zA-Z]+)\]|\[([a-zA-Z]+)\]|\[AGENT:\s*(` + agentPayloadPat + `)\])[ \t]*`)
 
 // petMoods are the tags the pet understands (see desktop-pet docs).
 var petMoods = map[string]bool{
@@ -587,6 +598,18 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 	// image tag drives the picture (if enabled). Leftover [AGENT: ...] tags
 	// (the loop's step limit was hit) are stripped from the display here.
 	mood, imgDesc, action, event, _, text := stripTags(answer)
+	// stripTags removes every well-formed tag, but the bubble still showed the
+	// markup it could not match whole: a bracket inside a value, a tag cut off
+	// mid-flight, a tag written in another case, and a bare ability name the
+	// model cited ("[pet_control]") with no tag grammar around it. In the first
+	// case the truncated payload was also parsed, turning a legal call into a
+	// parse error. scrubTags is the second, nesting-aware and case-insensitive
+	// pass that hides bracket markup; it runs BEFORE the mood guess so leftover
+	// markup cannot skew it, and on the reasoning too, where a [AGENT: ...] the
+	// model merely mused about is markup rather than prose (it is inert either
+	// way - splitThinking saw to that before any tag parsing).
+	text = scrubTags(text)
+	thinking = scrubTags(thinking)
 	// The model sometimes skips the [mood] tag entirely (the replies come back
 	// as plain text), leaving the pet with a blank neutral face. Fall back to
 	// a keyword guess so the pet's expression still matches the reply.
@@ -897,6 +920,242 @@ func stripTags(raw string) (mood, imgDesc, action, event string, agentCalls []st
 		prevEnd, prevCounted = loc[1], counted
 	}
 	return mood, imgDesc, action, event, agentCalls, strings.TrimSpace(replyTag.ReplaceAllString(text, ""))
+}
+
+// tagNames are the tag names the reply grammar defines with a colon (see
+// replyTag). scrubTags reads them to recognise a tag head - the one unclosed
+// shape whose payload grammar can be read, so a tag cut off mid-flight goes as
+// far as it really reaches instead of to the end of the answer - and so leaves
+// a stray '[' in prose alone. "image" is here because models reach for it when
+// they misspell [IMG:.
+var tagNames = []string{"agent", "img", "image", "action", "event"}
+
+// isTagName reports whether name (the text before the colon) is a reply tag.
+func isTagName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, n := range tagNames {
+		if name == n {
+			return true
+		}
+	}
+	return false
+}
+
+// tagGroupEnd returns the index just past the ']' closing the '[' at i,
+// counting nested pairs, or -1 when the group is never closed. The nesting
+// matters because a tag may legitimately carry a bracket inside a quoted value
+// (title="Havana [live]"): the first ']' is not the end of the tag.
+func tagGroupEnd(s string, i int) int {
+	depth := 0
+	for j := i; j < len(s); j++ {
+		switch s[j] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return j + 1
+			}
+		}
+	}
+	return -1
+}
+
+// opensTag reports whether rest (the text after a '[') opens a tag, i.e. a tag
+// name followed by a ':' - the head of a tag that was never closed.
+func opensTag(rest string) bool {
+	c := firstColon(rest)
+	return c < len(rest) && isTagName(rest[:c])
+}
+
+// tagToken reads one whitespace-separated payload token at i, keeping a quoted
+// run together (key="a b" is one token). It returns the token, the index just
+// past it, and whether it ran off the end inside an unterminated quote - in
+// which case everything after it is still part of that value.
+func tagToken(s string, i int) (tok string, end int, openQuote bool) {
+	start := i
+	for i < len(s) {
+		switch s[i] {
+		case '"':
+			openQuote = !openQuote
+		case ' ', '\t':
+			if !openQuote {
+				return s[start:i], i, false
+			}
+		}
+		i++
+	}
+	return s[start:i], i, openQuote
+}
+
+// unclosedTagEnd returns the index just past the text an unclosed tag at i
+// still owns. An unclosed tag is normally a model cut off by its token limit,
+// so dropping to the end of the reply is right - but a model that simply
+// forgot the ']' and carried on writing would lose the rest of its answer that
+// way. The payload grammar decides instead: an id token, then key=value
+// parameters (quoted values allowed). The first token that is neither ends the
+// tag, and the prose after it is kept.
+func unclosedTagEnd(s string, i int) int {
+	j := i + 1 + firstColon(s[i+1:]) + 1 // just past "[<name>:"
+	for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+		j++
+	}
+	_, j, open := tagToken(s, j)
+	if open {
+		return len(s) // the id itself runs into an unterminated quoted value
+	}
+	for j < len(s) {
+		k := j
+		for k < len(s) && (s[k] == ' ' || s[k] == '\t') {
+			k++
+		}
+		if k >= len(s) {
+			return len(s)
+		}
+		tok, end, open := tagToken(s, k)
+		if open {
+			return len(s)
+		}
+		if key, _, ok := strings.Cut(tok, "="); !ok || key == "" {
+			return k // prose, not a parameter: the tag ended here
+		}
+		j = end
+	}
+	return len(s)
+}
+
+// scrubTags hides bracket markup in a reply, so the bubble (and the cloud, and
+// the pet's say-line) show the model's words and never the plumbing it wrote
+// for the app. stripTags removes every well-formed tag; four shapes reached the
+// bubble anyway, all of them seen in the chat:
+//
+//   - a tag whose payload holds a bracket of its own. [AGENT: play_song
+//     title="Havana [live]"] used to match only up to the inner ']' (see
+//     agentPayloadPat, which now keeps quoted values whole), leaving the tail
+//     (here '"]') in the text; an UNQUOTED value with a bracket
+//     ([AGENT: pet_control action=dance [fast]]) still matches only up to it,
+//     and leaves the same tail;
+//   - a tag the model was cut off inside of (its token limit), which has no
+//     closing ']' at all, so no pattern can match it;
+//   - a tag written in another case. replyTag is case-sensitive on the name,
+//     so [Agent: ...] never matched and the whole tag reached the bubble;
+//   - a bare ability name - "[pet_control] [read_story]" - which needs no tag
+//     grammar at all: the model cites the ability it used, or lists the ones it
+//     has, without the "AGENT:" the grammar looks for.
+//
+// The last shape is why the rule here is the blunt one: any bracketed group is
+// markup, not prose, and goes with its brackets. A reply is short spoken text
+// ("sure! here is one for you."), the catalog hands the model ability names
+// without brackets ("- play_song: ..."), and a bracketed aside of the reader's
+// own is rare enough that hiding one costs less than showing plumbing. Nesting
+// is counted, so a group carrying brackets of its own goes whole; a markdown
+// link is the one exception, because its label is written to be read.
+//
+// Two shapes still need a guess, because their '[' is gone or unmatched. A
+// closing bracket with no opening one before it is the tail of a match
+// truncated at a bracket inside an unquoted value, and prose does not use a
+// lone ']', so it goes. An opener that is never closed is a tag cut off
+// mid-flight or a stray '[': a tag head goes as far as its payload grammar
+// reaches (so an answer continued after a forgotten ']' is not eaten with the
+// tag), and a bare "[word" goes with its word, leaving the text after it.
+func scrubTags(s string) string {
+	out := make([]byte, 0, len(s))
+	skipSpace := false // swallow the blanks a removed group left next to it
+	for i := 0; i < len(s); {
+		c := s[i]
+		if skipSpace && (c == ' ' || c == '\t') {
+			i++
+			continue
+		}
+		skipSpace = false
+		switch {
+		case c == '[':
+			end := tagGroupEnd(s, i)
+			if end < 0 {
+				// Never closed: the '[' goes with whatever it owned.
+				end = unclosedGroupEnd(s, i)
+				skipSpace = true
+			} else if target, ok := markdownLink(s, end); ok {
+				// A markdown link is the one group written for the reader: its
+				// label stays (scrubbed in turn, since a label may carry
+				// brackets of its own), its target goes.
+				out = append(out, scrubTags(s[i+1:end-1])...)
+				end = target
+				skipSpace = false
+			} else {
+				skipSpace = true
+			}
+			i = end
+			continue
+		case c == ']':
+			// No '[' in front of it: the tail of a match that stopped at a
+			// bracket inside an unquoted value. Prose has no use for a lone
+			// ']', so it goes - with the value's opening quote when that is
+			// the last thing emitted.
+			if n := len(out); n > 0 && out[n-1] == '"' {
+				out = out[:n-1]
+			}
+			i, skipSpace = i+1, true
+			continue
+		}
+		out = append(out, c)
+		i++
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// unclosedGroupEnd returns the index just past what an unclosed '[' at i owns.
+// A tag head is the one shape whose payload grammar can be read, so it is the
+// one shape that may swallow a run of text (see unclosedTagEnd); otherwise the
+// '[' goes with the bare word it opens - the shape of an ability name the model
+// cited, cut off mid-flight - and the prose after a stray '[' is kept.
+func unclosedGroupEnd(s string, i int) int {
+	if opensTag(s[i+1:]) {
+		return unclosedTagEnd(s, i)
+	}
+	j := i + 1
+	for j < len(s) && isNameByte(s[j]) {
+		j++
+	}
+	if j > i+1 {
+		return j
+	}
+	return i + 1 // a stray '[': only the bracket itself goes
+}
+
+// isNameByte reports whether c can appear in an ability or tag name - the
+// alphabet an unclosed "[word" is judged by.
+func isNameByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' ||
+		c >= '0' && c <= '9' || c == '_' || c == '-'
+}
+
+// markdownLink reports whether the "[label]" that ends at end is the label of a
+// markdown link, i.e. is followed by a "(target)" holding no blanks, and returns
+// the index just past that target. Models write links rarely, but dropping the
+// label and leaving a bare "(https://...)" behind - in a bubble the pet also
+// speaks - would read worse than either half alone.
+func markdownLink(s string, end int) (targetEnd int, ok bool) {
+	if end >= len(s) || s[end] != '(' {
+		return 0, false
+	}
+	close := strings.IndexByte(s[end:], ')')
+	if close < 2 { // no target at all
+		return 0, false
+	}
+	if strings.ContainsAny(s[end+1:end+close], " \t[") {
+		return 0, false
+	}
+	return end + close + 1, true
+}
+
+// firstColon returns the offset of the first ':' in s, or len(s) when there is
+// none - the boundary isTagName reads a name up to.
+func firstColon(s string) int {
+	if i := strings.IndexByte(s, ':'); i >= 0 {
+		return i
+	}
+	return len(s)
 }
 
 // newlineToPageBreak turns every newline form a model reply might use - an

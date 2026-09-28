@@ -35,6 +35,10 @@ func TestStripTagsAgentPayload(t *testing.T) {
 	}{
 		{"[AGENT: echoer text=hi] done", "done", []string{"echoer text=hi"}, ""},
 		{`[AGENT: echoer text="hi there"] ok`, "ok", []string{`echoer text="hi there"`}, ""},
+		// A quoted value may contain a bracket: the tag must be removed whole,
+		// payload included (a [^\]]* payload stopped at the inner ']' and left
+		// '"]' in the text while handing the parser half a call).
+		{`[AGENT: echoer text="a [b] c"] done`, "done", []string{`echoer text="a [b] c"`}, ""},
 		{"[happy] [AGENT: echoer text=hi] chained", "chained", []string{"echoer text=hi"}, "happy"},
 		{"[AGENT: echoer text=hi]\nnew line", "new line", []string{"echoer text=hi"}, ""},
 		{"no tag here", "no tag here", nil, ""},
@@ -50,6 +54,31 @@ func TestStripTagsAgentPayload(t *testing.T) {
 		if !slices.Equal(agent, tc.wantAgent) || text != tc.wantText || mood != tc.wantMood {
 			t.Errorf("stripTags(%q) = agent(%q) text(%q) mood(%q), want agent(%q) text(%q) mood(%q)",
 				tc.raw, agent, text, mood, tc.wantAgent, tc.wantText, tc.wantMood)
+		}
+	}
+}
+
+// TestStripAgentTags covers the copy of a turn that goes back to the model:
+// dispatched [AGENT: ...] tags are removed so the model cannot re-ask for an
+// ability that already ran. The payload pattern is shared with replyTag, so a
+// quoted value carrying a bracket is removed whole rather than leaving half a
+// tag in the conversation history.
+func TestStripAgentTags(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"[AGENT: echoer text=hi] done", "done"},
+		{`[AGENT: echoer text="a [b] c"] done`, "done"},
+		// The blanks around a removed tag are left alone (harmless in the copy
+		// the model reads); the tag itself is what must not come back.
+		{"sneaky [AGENT: echoer text=x] end", "sneaky  end"},
+		// A tag the model never closed is not this pass's business: replyTag
+		// cannot match it either, so the load-bearing shape is the display
+		// scrub (see scrubTags).
+		{"[AGENT: echoer text=hi", "[AGENT: echoer text=hi"},
+		{"no tag here", "no tag here"},
+	}
+	for _, tc := range cases {
+		if got := stripAgentTags(tc.in); got != tc.want {
+			t.Errorf("stripAgentTags(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

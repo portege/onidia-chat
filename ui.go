@@ -1766,10 +1766,11 @@ var streamNewlines = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ", `\\n
 // SetStreamText replaces the preview shown in the synthetic "..." bubble
 // while an SSE reply is streaming in. Called from the main loop only - the
 // reply goroutine hands text over via u.Stream and never touches UI state.
-// Tags are stripped to match the final bubble, a trailing unclosed "[" (a tag
-// cut off mid-flight) is dropped, and newlines collapse to spaces: the real
-// page breaks are decided later by finishReply. The view follows the bottom
-// only if the user was already there.
+// Tags are stripped to match the final bubble, including the bracket markup
+// scrubTags hides there (see finishReply) - every '[' is consumed with the
+// group it opens, so half an arrived tag cannot flash into the bubble - and
+// newlines collapse to spaces: the real page breaks are decided later by
+// finishReply. The view follows the bottom only if the user was already there.
 func (u *UI) SetStreamText(s string) {
 	follow := u.scroll >= u.maxScroll()
 	// Same split as the final bubble: reasoning goes to the cloud, the answer
@@ -1777,9 +1778,7 @@ func (u *UI) SetStreamText(s string) {
 	// mid-stream text lands in the cloud instead of flashing in the answer.
 	think, answer := splitThinking(s)
 	_, _, _, _, _, txt := stripTags(answer)
-	if i := strings.LastIndex(txt, "["); i >= 0 && !strings.Contains(txt[i:], "]") {
-		txt = txt[:i]
-	}
+	txt, think = scrubTags(txt), scrubTags(think)
 	oneLine := func(s string) string { return strings.TrimSpace(streamNewlines.Replace(s)) }
 	u.streamText = oneLine(txt)
 	u.streamThink = oneLine(think)

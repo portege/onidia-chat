@@ -558,7 +558,9 @@ The reasoning is **never** spoken by the pet and never enters the reply — only
 the answer is. It is also peeled off **before** any tag parsing, so a `[mood]`,
 `[ACTION:]` or `[AGENT: ...]` tag written while the model is thinking cannot
 reach the pet, the pager or an ability. A model that muses "I could use
-`play_song` here" has not asked for a song.
+`play_song` here" has not asked for a song. The cloud shows the model's words,
+not its markup: tag text is hidden there too, so a `[AGENT: ...]` the model was
+only considering is not what you read.
 
 The cloud fills live while the reply streams: an unclosed `<THINKING>` counts
 as open, so mid-stream text lands in the cloud rather than flashing into the
@@ -654,7 +656,10 @@ system prompt catalog, so the reply can lead with
 `[AGENT: play_song title="Havana"]` - chat-app strips the tag, validates
 the parameters against the agent's declared `params` (the model can only
 send what the manifest declares), runs the agent, and folds its `OK`
-message into the reply (spoken by the pet too).
+message into the reply (spoken by the pet too). The tag never reaches the
+bubble: if the model writes one the grammar cannot match whole (a bracket
+inside a value, a tag cut off by its token limit, a tag in another case) the
+leftover markup is hidden as well, so you read the reply, not the plumbing.
 
 One reply may ask for **several** abilities: they run in parallel (4 at a
 time, 60s shared budget) and their results are handed back to the model as

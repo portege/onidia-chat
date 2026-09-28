@@ -63,6 +63,109 @@ func TestStripTags(t *testing.T) {
 	}
 }
 
+// TestScrubTags covers the second, blunt pass: bracket markup the model wrote
+// for the app is hidden whatever shape it arrives in, so the bubble holds the
+// reply and not the plumbing. The inputs are what the bubble held when the
+// leftover reached it.
+func TestScrubTags(t *testing.T) {
+	cases := []struct{ in, want string }{
+		// The shape the user reported: the model cites the ability it used, in
+		// brackets, with no "AGENT:" for the tag grammar to find.
+		{"[pet_control] [read_story] both were used", "both were used"},
+		{"I used [play_song] for that.", "I used for that."},
+		// The tail of a match truncated by a bracket inside a value: the '[' of
+		// the tag went with the match, so all that is left is '"]'.
+		{`hi "] there`, "hi there"},
+		{"hi ] there", "hi there"},
+		// A tag the model was cut off inside of: no closing ']', so no pattern
+		// can match it and the tag goes - but only as far as its payload
+		// grammar reaches.
+		{`sure! [AGENT: play_song title="Havana`, "sure!"},
+		{`[AGENT: play_song title=Havana Enjoy the music!`, "Enjoy the music!"},
+		// Another case: replyTag is case-sensitive on the name, so the whole
+		// tag used to reach the bubble.
+		{"[Agent: play_song title=Havana] enjoy", "enjoy"},
+		{"[action: dance] hmm", "hmm"},
+		{"[IMAGE: a cat [in a hat]] look", "look"},
+		// A whole tag that a nesting-aware scan (rather than the regex) reads.
+		{"[AGENT: pet_control action=dance [fast]] now", "now"},
+		// Brackets nobody asked the app to interpret go the same way: a bare
+		// word, a number, a mood replyTag already knew.
+		{"see [below] for the list", "see for the list"},
+		{"the answer is [42]", "the answer is"},
+		{"[happy] [pet_control] sure!", "sure!"},
+		// A markdown link is the one group written for the reader: the label
+		// stays (scrubbed in turn), the target goes.
+		{"watch this [fun cat video](https://youtu.be/x) now", "watch this fun cat video now"},
+		{"[the docs](https://x/y)", "the docs"},
+		{"see [[a] b](u) here", "see b here"},
+		// An opener that is never closed goes with the word it opens, and the
+		// text after it is kept: prose is not eaten with a stray '['.
+		{"a stray [pet_control and more", "a stray and more"},
+		{"a stray [ bracket", "a stray bracket"},
+		{"[pet_control", ""},
+		{"plain text", "plain text"},
+	}
+	for _, tc := range cases {
+		if got := scrubTags(tc.in); got != tc.want {
+			t.Errorf("scrubTags(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestBubbleHidesTagMarkup is the promise the checkbox work ran into: the
+// user-visible reply (and its thought cloud) never shows the bracket markup
+// the model wrote for the app, whatever shape that markup arrived in. It runs
+// through finishReply, so the wiring - not just the helper - is what is
+// asserted, and with nil runs no ability is executed.
+func TestBubbleHidesTagMarkup(t *testing.T) {
+	bot := &Bot{ImageSource: "off"}
+	cases := []struct{ raw, wantText, wantThink string }{
+		// The reply shape seen in the chat: a mood tag, the ability tag, then
+		// the answer - with a bracketed title inside the quoted value.
+		{`[happy] [AGENT: play_song title="Havana [live]"] sure! here is one for you.`,
+			"sure! here is one for you.", ""},
+		// Well-formed tag: removed by stripTags, whole, because a quoted value
+		// may contain a bracket of its own.
+		{`[AGENT: play_song title="Havana [live]"] enjoy the song!`,
+			"enjoy the song!", ""},
+		// Same tag with the value unquoted: replyTag stops at the bracket inside
+		// it, so the tail is the scrub's job.
+		{`[AGENT: pet_control action=dance [fast]] enjoy!`, "enjoy!", ""},
+		// Cut off mid-tag by the model's token limit.
+		{`sure! [AGENT: play_song title="Havana`, "sure!", ""},
+		// A model that forgot the ']' and carried on: only the tag's own
+		// payload goes, the rest of the answer stays.
+		{`[AGENT: play_song title=Havana Enjoy the music!`, "Enjoy the music!", ""},
+		// Another case: replyTag is case-sensitive on the name.
+		{"[Agent: play_song title=Havana] enjoy the song!", "enjoy the song!", ""},
+		// What the user reported: the model cites the abilities it used, in
+		// brackets, with no tag grammar around them (the catalog lists ability
+		// names bare, so the brackets are the model's own habit).
+		{"[happy] [pet_control] [read_story] I used both!", "I used both!", ""},
+		// A bare ability name anywhere in the reply, number in brackets, and a
+		// markdown link that keeps its label.
+		{"I used [media_control] [1] see [the docs](https://x/y) ok.",
+			"I used see the docs ok.", ""},
+		// Reasoning goes to the cloud, and a tag the model merely mused about
+		// there is markup too - it ran nothing (splitThinking saw it first).
+		{"<THINKING>i could use [AGENT: play_song title=Havana] here</THINKING>enjoy!",
+			"enjoy!", "i could use here"},
+		{"<THINKING>maybe [pet_control] first</THINKING>done!", "done!", "maybe first"},
+	}
+	for _, tc := range cases {
+		res := bot.finishReply(tc.raw, nil)
+		if res.Text != tc.wantText || res.Thinking != tc.wantThink {
+			t.Errorf("finishReply(%q) = text(%q) thinking(%q), want text(%q) thinking(%q)",
+				tc.raw, res.Text, res.Thinking, tc.wantText, tc.wantThink)
+		}
+		if strings.ContainsAny(res.Text, "[]") || strings.ContainsAny(res.Thinking, "[]") {
+			t.Errorf("finishReply(%q) left tag markup in the bubble: text(%q) thinking(%q)",
+				tc.raw, res.Text, res.Thinking)
+		}
+	}
+}
+
 // TestReplyForwardsPetActionEvent verifies that [ACTION: ...] / [EVENT: ...]
 // reply tags are stripped from the displayed text and turned into a command
 // line ready for the pet's cmd-FIFO (with the mood still heading the say-line).

@@ -1841,8 +1841,8 @@ func TestPagerFlip(t *testing.T) {
 
 // TestStreamingBubblePreview verifies the synthetic thinking bubble grows
 // into the streamed reply: "..." before the first delta, the tag-stripped
-// preview afterwards (newlines flattened, a trailing unclosed "[" dropped),
-// and gone once Thinking ends.
+// preview afterwards (newlines flattened, bracket markup hidden), and gone
+// once Thinking ends.
 func TestStreamingBubblePreview(t *testing.T) {
 	u := NewUI(380, 520)
 	u.Thinking = true
@@ -1852,6 +1852,18 @@ func TestStreamingBubblePreview(t *testing.T) {
 	u.SetStreamText("[happy] hello\nthere [happ")
 	if got := u.blocks()[len(u.msgs)].m.Text; got != "hello there" {
 		t.Errorf("after delta: synthetic text = %q, want %q", got, "hello there")
+	}
+	// A tag the regex cannot match whole is hidden here too, so the preview
+	// reads exactly like the bubble that replaces it (finishReply scrubs the
+	// same leftovers): the tail of a truncated match, and a case variant.
+	u.SetStreamText("[happy] hi [AGENT: play_song title=\"Havana [live]\" and more")
+	if got := u.blocks()[len(u.msgs)].m.Text; got != "hi and more" {
+		t.Errorf("after leftover tag: synthetic text = %q, want %q", got, "hi and more")
+	}
+	// Bare ability names the model cited in brackets while streaming.
+	u.SetStreamText("[pet_control] [read_story] on it")
+	if got := u.blocks()[len(u.msgs)].m.Text; got != "on it" {
+		t.Errorf("after bare ability names: synthetic text = %q, want %q", got, "on it")
 	}
 	u.Thinking = false
 	u.streamText = ""
