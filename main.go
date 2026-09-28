@@ -734,6 +734,12 @@ func main() {
 	if cfg != nil && cfg.Mute {
 		ui.mute = true // the dialog's MUTE SPEECH checkbox starts checked
 	}
+	// Thinking bubble: on unless the INI says otherwise, so a config file written
+	// before this setting existed keeps drawing the reasoning cloud rather than
+	// losing it to a zero-value bool.
+	if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.Thinking), "off") {
+		ui.think = false
+	}
 	// Demo mode defaults to OFF (planted pet): only an explicit
 	// demo-mode = true in the INI turns autonomous roaming/chatter on.
 	if cfg != nil {

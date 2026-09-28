@@ -203,6 +203,28 @@ func writeTempINI(t *testing.T, content string) string {
 	return path
 }
 
+// TestConfigThinkingKey covers the thinking-bubble setting: it is stored as
+// on/off rather than true/false (the "tts" convention) because the cloud is on
+// by default, so an INI that predates the setting must not read back as off.
+func TestConfigThinkingKey(t *testing.T) {
+	cfg, err := LoadConfig(writeTempINI(t, "[character]\nthinking = off\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(cfg.Thinking), "off") {
+		t.Errorf("thinking = off loaded as %q", cfg.Thinking)
+	}
+
+	// No key at all: the zero value is "", which the app reads as on.
+	cfg, err = LoadConfig(writeTempINI(t, "[character]\nmute = true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Thinking), "off") {
+		t.Errorf("a file without the key must keep the cloud on, got %q", cfg.Thinking)
+	}
+}
+
 // TestLoadConfigCharacterAge covers the character-age key.
 func TestLoadConfigCharacterAge(t *testing.T) {
 	c, err := LoadConfig(writeTempINI(t, "[character]\ncharacter-age = 11\n"))

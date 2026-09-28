@@ -1311,6 +1311,125 @@ func TestSettingsMuteCheckbox(t *testing.T) {
 	}
 }
 
+// TestSettingsThinkingCheckbox verifies the THINKING BUBBLE checkbox that
+// shares the MUTE SPEECH row: it sits to the right of mute and inside the
+// panel, hit-tests as WThink without stealing mute's clicks, toggles the draft
+// on click (committing only on SAVE), re-seeds from the committed value, and
+// SAVE persists "thinking" as on/off. It also checks the gate itself: with the
+// box unchecked the block carries no cloud lines and is shorter by exactly the
+// cloud plus its gap, so hiding the reasoning really does pull the answer up
+// rather than leaving a hole.
+func TestSettingsThinkingCheckbox(t *testing.T) {
+	path := writeTempINI(t, "[character]\ncharacter-age = 7\n")
+	u := NewUI(380, 520)
+	u.age = 7
+	u.savePath = path
+	u.collapsed = false
+	u.H = 520
+	u.openSettings()
+
+	// Layout: same row as mute, to its right, and inside the panel.
+	mr, tr := u.muteRect(), u.thinkRect()
+	p := u.modalPanel()
+	if tr.Min.Y != mr.Min.Y || tr.Max.Y != mr.Max.Y {
+		t.Fatalf("thinkRect %v must share muteRect's %v row", tr, mr)
+	}
+	if tr.Min.X < mr.Max.X {
+		t.Fatalf("thinkRect %v must sit right of muteRect %v", tr, mr)
+	}
+	if tr.Max.X > p.Max.X-modalPad {
+		t.Fatalf("thinkRect %v overflows the panel's %v content box", tr, p)
+	}
+	// The two rows must not overlap, so a click on one is never the other.
+	if mx, my := (mr.Min.X+mr.Max.X)/2, (mr.Min.Y+mr.Max.Y)/2; u.HitTest(mx, my) != WMute {
+		t.Fatalf("mute centre hit: got %v want WMute", u.HitTest(mx, my))
+	}
+	if tx, ty := (tr.Min.X+tr.Max.X)/2, (tr.Min.Y+tr.Max.Y)/2; u.HitTest(tx, ty) != WThink {
+		t.Fatalf("think centre hit: got %v want WThink", u.HitTest(tx, ty))
+	}
+	// The cloud is on by default, so the box opens checked.
+	if !u.thinkDraft || !u.think {
+		t.Fatal("thinking should default to on")
+	}
+
+	// Uncheck and SAVE: the INI gains thinking = off and the committed state
+	// flips. Nothing commits before the save.
+	u.Press(WThink)
+	u.Release(WThink)
+	if u.thinkDraft || !u.think {
+		t.Fatal("click should uncheck the draft; nothing commits before SAVE")
+	}
+	_, save := u.modalButtons()
+	w := u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if u.settingsOpen {
+		t.Fatal("save should close the modal")
+	}
+	if u.think {
+		t.Error("committed thinking should be false after saving the unchecked box")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "thinking = off") {
+		t.Errorf("INI lacks thinking = off:\n%s", b)
+	}
+	if !strings.Contains(string(b), "character-age = 7") {
+		t.Errorf("INI lost the age while saving thinking:\n%s", b)
+	}
+
+	// Re-open and confirm the draft re-seeds, then turn it back on.
+	u.openSettings()
+	if u.thinkDraft {
+		t.Fatal("reopen should seed the draft from the committed thinking")
+	}
+	u.Press(WThink)
+	u.Release(WThink)
+	_, save = u.modalButtons()
+	w = u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if !u.think {
+		t.Error("committed thinking should be true again")
+	}
+	b, _ = os.ReadFile(path)
+	if !strings.Contains(string(b), "thinking = on") {
+		t.Errorf("INI lacks the rewritten thinking = on:\n%s", b)
+	}
+}
+
+// TestThinkingGateHidesCloud verifies the checkbox actually gates the drawing:
+// the cloud is skipped at measure time, so an unchecked box leaves the block
+// exactly as tall as a reply with no reasoning at all.
+func TestThinkingGateHidesCloud(t *testing.T) {
+	u := NewUI(380, 520)
+	m := Msg{From: u.Bot.Name, Text: "here you go!", Thinking: "the user asked for music so play_song is the ability to use"}
+
+	u.think = true
+	on := u.blockFor(m, 40, 300)
+	if len(on.thinkLines) == 0 {
+		t.Fatal("checked box should measure cloud lines")
+	}
+
+	u.think = false
+	off := u.blockFor(m, 40, 300)
+	if len(off.thinkLines) != 0 {
+		t.Fatalf("unchecked box should drop the cloud, got %d lines", len(off.thinkLines))
+	}
+	if off.h != on.h-on.thinkH-thinkGap {
+		t.Fatalf("hidden cloud height: got %d want %d (checked %d minus cloud %d and gap %d)",
+			off.h, on.h-on.thinkH-thinkGap, on.h, on.thinkH, thinkGap)
+	}
+	// And the answer itself is untouched: hiding the reasoning must not touch
+	// the text, so the two blocks wrap identically.
+	if len(off.lines) != len(on.lines) || off.bubW != on.bubW {
+		t.Errorf("hiding the cloud changed the bubble: %d/%d lines, widths %d/%d",
+			len(off.lines), len(on.lines), off.bubW, on.bubW)
+	}
+}
+
 // TestSettingsDemoCheckbox verifies the DEMO MODE checkbox row (directly
 // below MUTE SPEECH): it hit-tests as WDemo, toggles the draft on click
 // (committing only on SAVE), re-seeds from the committed value when the

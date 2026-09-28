@@ -50,6 +50,7 @@ const (
 	WDropToBM   // BUSY TO minute dropdown 0/15/30/45
 	WDropBad    // dropdown whose selected value is invalid (for validation prompt)
 	WMute       // mute-speech checkbox row
+	WThink      // thinking-bubble checkbox row (shares the mute row)
 	WDemo       // demo-mode checkbox row (below mute)
 	WGirl       // gender picker: ONIDIA button (Haiya! launches the girl)
 	WBoy        // gender picker: KAMA button (Haiya! launches the boy)
@@ -213,9 +214,10 @@ const (
 	genderRowY   = 314 // CHARACTER picker row top inside the panel (below busy time)
 	minSettingsH = 574 // window height forced while the modal is open
 
-	checkSide = 20  // checkbox square side (mute / demo mode)
-	muteRowY  = 370 // mute-checkbox row top inside the panel (below the character picker)
-	demoRowY  = 398 // demo-mode checkbox row top inside the panel (below mute)
+	checkSide   = 20  // checkbox square side (mute / thinking bubble / demo mode)
+	checkColGap = 24  // gap between the two checkboxes sharing the mute row
+	muteRowY    = 370 // mute-checkbox row top inside the panel (below the character picker)
+	demoRowY    = 398 // demo-mode checkbox row top inside the panel (below mute)
 
 	// About modal layout (drawAbout): a small informational panel shown by
 	// the header's About button.
@@ -325,6 +327,7 @@ type UI struct {
 	busyFromMinDraft  int       // busy start minute picked in the modal (0/15/30/45)
 	busyToMinDraft    int       // busy end minute picked in the modal (0/15/30/45)
 	muteDraft         bool      // mute-speech checkbox in the modal; committed on SAVE
+	thinkDraft        bool      // thinking-bubble checkbox in the modal; committed on SAVE
 	demo              bool      // committed demo mode: true = pet roams & chatters (default off)
 	demoDraft         bool      // demo-mode checkbox in the modal; committed on SAVE
 	wantPetRestart    bool      // SAVE changed demo mode while the pet runs: restart it
@@ -342,6 +345,7 @@ type UI struct {
 	busyTo            int       // committed busy-window end hour (-1 = unset)
 	busyToMin         int       // committed busy-window end minute (0/15/30/45)
 	mute              bool      // committed: replies are not spoken aloud (INI "mute")
+	think             bool      // committed: draw the reasoning cloud above a reply (INI "thinking")
 	savePath          string    // INI file settings are written to ("" = ./chat-app.ini)
 	saveErr           string    // last save error, shown inside the modal
 	optIdx            int       // dropdown row under the pointer (set by HitTest)
@@ -375,6 +379,7 @@ func NewUI(w, h int) *UI {
 		collapsed: true,
 		expandedH: max(h, 260),
 		gender:    "girl", // GIRL picker active until the INI says boy
+		think:     true,   // reasoning cloud on unless the INI says thinking = off
 		sleepFrom: -1,     // -1 = no sleep window configured yet
 		sleepTo:   -1,
 		pagerMsg:  -1, // no pager under the pointer yet
@@ -638,6 +643,19 @@ func (u *UI) demoRect() image.Rectangle {
 		p.Min.X+modalPad+w, p.Min.Y+demoRowY+checkSide)
 }
 
+// thinkRect is the thinking-bubble checkbox row: the box plus its label, so
+// clicking either toggles the draft. It shares the MUTE SPEECH row, sitting to
+// its right, and is derived from that row rather than pinned to its own Y so
+// the two can never drift apart. Checked means a reply's reasoning is drawn in
+// the cloud above its bubble; unchecked hides the cloud and lays the block out
+// exactly as if the model had produced no reasoning at all.
+func (u *UI) thinkRect() image.Rectangle {
+	m := u.muteRect()
+	w := checkSide + 10 + textWidth("THINKING BUBBLE", 1)
+	return image.Rect(m.Max.X+checkColGap, m.Min.Y,
+		m.Max.X+checkColGap+w, m.Min.Y+checkSide)
+}
+
 // genderRects returns the ONIDIA and KAMA picker buttons: a centred pair on
 // their own row below the busy time (the MUTE SPEECH checkbox sits directly
 // below them), sized like the dropdown boxes and laid out like the modal's
@@ -819,6 +837,9 @@ func (u *UI) HitTest(x, y int) Widget {
 		}
 		if r := u.muteRect(); inRect(x, y, r) {
 			return WMute
+		}
+		if r := u.thinkRect(); inRect(x, y, r) {
+			return WThink
 		}
 		if r := u.demoRect(); inRect(x, y, r) {
 			return WDemo
@@ -1142,6 +1163,8 @@ func (u *UI) Release(w Widget) bool {
 			u.toggleDrop(dropBusyToM)
 		case WMute:
 			u.muteDraft = !u.muteDraft // commits on SAVE, like the drafts
+		case WThink:
+			u.thinkDraft = !u.thinkDraft // commits on SAVE, like the drafts
 		case WDemo:
 			u.demoDraft = !u.demoDraft // commits on SAVE, like the drafts
 		case WGirl:
@@ -1386,6 +1409,7 @@ func (u *UI) openSettings() bool {
 	}
 	u.busyToMinDraft = minuteIndex(u.busyToMin)
 	u.muteDraft = u.mute
+	u.thinkDraft = u.think
 	u.demoDraft = u.demo
 	u.genderDraft = u.gender
 	// The modal keeps its full designed size, so the window grows in height
@@ -1557,6 +1581,17 @@ func (u *UI) saveSettings() {
 		u.saveErr = err.Error()
 		return
 	}
+	// Stored as on/off rather than true/false (the same convention as "tts")
+	// because the cloud is on by default: a bool would make an INI that predates
+	// this setting read as false and silently lose the reasoning.
+	thinkVal := "off"
+	if u.thinkDraft {
+		thinkVal = "on"
+	}
+	if err := SetConfigValue(path, "character", "thinking", thinkVal); err != nil {
+		u.saveErr = err.Error()
+		return
+	}
 	if err := SetConfigValue(path, "character", "demo-mode", strconv.FormatBool(u.demoDraft)); err != nil {
 		u.saveErr = err.Error()
 		return
@@ -1585,6 +1620,10 @@ func (u *UI) saveSettings() {
 	u.busyFrom, u.busyTo = u.busyFromDraft, u.busyToDraft
 	u.busyFromMin, u.busyToMin = sleepMinutes[u.busyFromMinDraft], sleepMinutes[u.busyToMinDraft]
 	u.mute = u.muteDraft
+	// No pet restart is needed here, unlike demo mode: the transcript is laid
+	// out from scratch every frame, so the clouds appear or vanish the moment
+	// the checkbox is committed.
+	u.think = u.thinkDraft
 	// A demo-mode flip must reach a running pet immediately, so flag a
 	// restart (the main loop quits + relaunches it) — the checkbox would
 	// otherwise only take effect on the next manual Haiya! click.
@@ -2204,6 +2243,7 @@ func (u *UI) drawSettings(frame *image.NRGBA) {
 	u.drawSelectBox(frame, busyTM, minuteLabel(u.busyToMinDraft), u.openDrop == dropBusyToM, WDropToBM)
 
 	u.drawMuteRow(frame)
+	u.drawThinkRow(frame)
 
 	u.drawDemoRow(frame)
 
@@ -2382,10 +2422,17 @@ func (u *UI) drawMinuteList(frame *image.NRGBA) {
 	}
 }
 
-// drawMuteRow paints the MUTE SPEECH checkbox and drawDemoRow the DEMO MODE
-// one directly below it; both share drawCheckRow.
+// drawMuteRow paints the MUTE SPEECH checkbox, drawThinkRow the THINKING
+// BUBBLE one sharing that row, and drawDemoRow the DEMO MODE one below; all
+// three share drawCheckRow.
 func (u *UI) drawMuteRow(frame *image.NRGBA) {
 	u.drawCheckRow(frame, u.muteRect(), WMute, u.muteDraft, "MUTE SPEECH")
+}
+
+// drawThinkRow paints the THINKING BUBBLE checkbox: checked draws a reply's
+// reasoning in the cloud above its bubble, unchecked hides the cloud.
+func (u *UI) drawThinkRow(frame *image.NRGBA) {
+	u.drawCheckRow(frame, u.thinkRect(), WThink, u.thinkDraft, "THINKING BUBBLE")
 }
 
 // drawDemoRow paints the DEMO MODE checkbox: checked means the pet roams and
@@ -2639,9 +2686,19 @@ func (u *UI) blockFor(m Msg, cols, maxW int) msgBlock {
 	b := msgBlock{m: m, lines: lines, bubW: bubW, bubH: bubH, h: h, img: img, paginated: paginated, pageCount: len(m.Pages)}
 	// The thought cloud is measured at the smaller font and stacks on top of
 	// everything else, so the block's total height grows by the cloud's height
-	// plus the gap that keeps it off the label strip.
-	if t := strings.TrimSpace(m.Thinking); t != "" {
-		b.thinkLines = capLines(wrapText(t, thinkCols()), thinkMaxLn)
+	// plus the gap that keeps it off the label strip. The THINKING BUBBLE
+	// checkbox gates it right here, at measure time: a hidden cloud leaves the
+	// block laid out exactly as if the model had produced no reasoning at all,
+	// so the answer bubble simply moves up rather than leaving a hole. One gate
+	// covers both the settled reasoning and the live streaming preview, since
+	// both arrive here as Msg.Thinking.
+	if t := strings.TrimSpace(m.Thinking); t != "" && u.think {
+		// Wrap to the real body budget, then clamp each line to it in pixels.
+		// fitThinkLines is the safety net for an unbreakable token - a word
+		// longer than the body - not for the ordinary case: wrapping to the
+		// body means no word is elided to make the cloud fit.
+		bodyMax := maxW * thinkMaxW / 4
+		b.thinkLines = capLines(fitThinkLines(wrapText(t, thinkCols(maxW)), bodyMax-2*thinkPadX), thinkMaxLn)
 		tw := 0
 		for _, l := range b.thinkLines {
 			tw = max(tw, textWidth(l, thinkScale))
@@ -2653,7 +2710,7 @@ func (u *UI) blockFor(m Msg, cols, maxW int) msgBlock {
 		if minH := bw * 100 / thinkMaxAspect; bh < minH {
 			bh = minH
 		}
-		b.thinkW = min(bw, maxW*thinkMaxW/4)
+		b.thinkW = min(bw, bodyMax)
 		b.thinkH = bh + thinkDotsHeight()
 		b.h += b.thinkH + thinkGap
 	}
@@ -2676,11 +2733,48 @@ func (u *UI) maxScroll() int {
 	return max(0, u.contentHeight()-areaH)
 }
 
-// thinkCols is the wrap width for the reasoning: at scale 1 each glyph is half
-// as wide, so the cloud fits about twice the characters a bubble line does.
-func thinkCols() int {
-	w := (defaultWinW-2*padX)*3/4/thinkMaxW*3 - 2*thinkPadX
-	return max(12, w/(advW*thinkScale))
+// thinkCols is the reasoning's wrap width in glyph cells for a bubble cap of
+// maxW pixels: the cloud body's budget minus its padding, converted to cells.
+// At scale 1 each glyph is half as wide as in a bubble, so this fits about
+// twice the characters a bubble line does.
+//
+// Deriving it from the same maxW the body is sized with is the point. The body
+// is a FRACTION of that cap (thinkMaxW/4 of it), and the old code did not wrap
+// to the real window at all: it divided by thinkMaxW and multiplied by 3, which
+// cancels, so every line was measured against the full bubble width and then
+// centred straight through the outline and off the edge of the window.
+func thinkCols(maxW int) int {
+	body := maxW * thinkMaxW / 4
+	return max(12, (body-2*thinkPadX)/(advW*thinkScale))
+}
+
+// fitThinkLines hard-splits any line wider than the cloud's text budget, so no
+// line can be wider than the body it is centred in. Wrapping already targets
+// that budget, so this only ever bites on an unbreakable token - a "word" longer
+// than the body - but it is what makes the bound absolute rather than nominal.
+func fitThinkLines(lines []string, budget int) []string {
+	// textWidth is n*advW*scale-scale, so cells and pixels are a straight
+	// conversion. Work in cells, convert once.
+	cells := budget / (advW * thinkScale)
+	if cells < 1 {
+		cells = 1
+	}
+	// Room for the marker is only reserved on a line actually being cut: a line
+	// that already fits keeps its full cell budget.
+	cut := max(1, cells-len("..."))
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		r := []rune(l)
+		if len(r) <= cells {
+			out[i] = l
+			continue
+		}
+		if len(r) > cut {
+			r = r[:cut]
+		}
+		out[i] = strings.TrimRight(string(r), " .,;:") + "..."
+	}
+	return out
 }
 
 // capLines keeps at most n lines, marking the cut with an ellipsis on the last

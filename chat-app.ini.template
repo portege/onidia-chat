@@ -178,6 +178,13 @@ busy-time = 09:00-17:00
 # Mute checkbox: while true replies are shown as bubbles but never spoken.
 mute = false
 
+# Thinking bubble checkbox: while "on" (the default) the reasoning behind a reply
+# is drawn in the scalloped cloud above its bubble. Set to "off" to hide the
+# cloud - the answer keeps its place in the transcript and only the cloud goes
+# away. Written as on/off rather than true/false so a file with no "thinking" key
+# keeps the cloud. Saving the dialog rewrites this key in place.
+thinking = on
+
 # Agents: pluggable abilities the model invokes with [AGENT: ...] reply tags.
 # Each agent is a folder (agent.json + executable) in agents-dir; install new
 # ones with `agentctl install <folder|zip|url>` - no rebuild, restart to pick

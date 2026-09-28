@@ -145,7 +145,6 @@ func TestThinkingRendersAsItsOwnBubble(t *testing.T) {
 	if b.thinkW > b.bubW {
 		t.Errorf("cloud width %d exceeds bubble width %d", b.thinkW, b.bubW)
 	}
-
 	// A very long ramble is capped.
 	long := strings.Repeat("thinking about it ", 60)
 	u2 := thinkingTestUI()
@@ -159,6 +158,44 @@ func TestThinkingRendersAsItsOwnBubble(t *testing.T) {
 	u3.AddMsg("bot", "plain answer")
 	if len(u3.blocks()[0].thinkLines) != 0 {
 		t.Error("a plain message grew a thought cloud")
+	}
+}
+
+// The reasoning must fit INSIDE its cloud at any window width, and it must get
+// there by wrapping - not by being cut. The wrap width is counted in cells while
+// the body is measured in pixels, so the two used to disagree: every line was
+// measured against the full bubble width and then centred straight through the
+// outline and off the edge of the window.
+func TestThinkingTextFitsCloud(t *testing.T) {
+	// Short enough to fit the line cap, so nothing may be elided: any missing
+	// word means the wrap was wider than the body and the text was cut to fit.
+	ramble := "the user asked for music so play_song is the ability to use here"
+	for _, w := range []int{360, defaultWinW, 700} {
+		u := thinkingTestUI()
+		u.W = w
+		u.AddThinking("bot", "ok", ramble, nil, false)
+		b := u.blocks()[0]
+		if len(b.thinkLines) == 0 {
+			t.Fatalf("win %d: no cloud lines laid out", w)
+		}
+		bubbleCap := (u.W - 2*padX) * 3 / 4
+		if b.thinkW > bubbleCap {
+			t.Errorf("win %d: cloud width %d exceeds the bubble cap %d", w, b.thinkW, bubbleCap)
+		}
+		// Every line fits inside the body...
+		for _, l := range b.thinkLines {
+			if got := textWidth(l, thinkScale); got > b.thinkW-2*thinkPadX {
+				t.Errorf("win %d: line %q is %dpx wide, the body holds %dpx",
+					w, l, got, b.thinkW-2*thinkPadX)
+			}
+		}
+		// ...and reached it by wrapping, with no word dropped.
+		joined := strings.Join(b.thinkLines, " ")
+		for _, word := range strings.Fields(ramble) {
+			if !strings.Contains(joined, word) {
+				t.Errorf("win %d: word %q elided from the cloud: %q", w, word, joined)
+			}
+		}
 	}
 }
 
