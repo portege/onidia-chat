@@ -14,6 +14,7 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -163,17 +164,25 @@ const (
 	// Thought-cloud metrics. The reasoning is drawn at scale 1 (half the
 	// speech bubble's size) so a long ramble cannot crowd out the answer, and
 	// capped to a few lines so one turn's thinking can never fill the window.
-	thinkScale = 1
-	thinkLineH = (glyphH + 2) * thinkScale // tighter pitch than the bubble's
-	thinkPadX  = 7
-	thinkPadY  = 6
-	thinkLobe  = 7 // nominal lobe size, used to size the wrap width; the drawn
-	// radius comes from thinkCloudR, which scales with the cloud's height
-	thinkArc   = 3  // px the middle lobe rises above the outer ones
-	thinkGap   = 6  // vertical gap between the cloud and the block below it
-	thinkMaxW  = 3  // the cloud is narrower than a bubble: 3/4 of the same max
-	thinkMaxLn = 6  // lines kept before the reasoning is elided
-	pagBtn     = 14 // prev/next page button side
+	thinkScale  = 1
+	thinkLineH  = (glyphH + 2) * thinkScale // tighter pitch than the bubble's
+	thinkPadX   = 10
+	thinkPadY   = 8
+	thinkStroke = 2 // outline width, the line-art look
+	thinkGap    = 6 // vertical gap between the cloud and the block below it
+	thinkMaxW   = 3 // the cloud is narrower than a bubble: 3/4 of the same max
+	thinkMaxLn  = 6 // lines kept before the reasoning is elided
+
+	// The cloud is never flatter than this width:height ratio, so a long ramble
+	// cannot flatten the outline into a lozenge.
+	thinkMaxAspect = 190 // width*100 / height, i.e. 1.9:1
+
+	// The two dots trailing away below the cloud: the detail that makes it read
+	// as "thinking" rather than as a small speech balloon.
+	thinkDotR     = 4
+	thinkDotGap   = 4
+	thinkDotDrift = 8
+	pagBtn        = 14 // prev/next page button side
 
 	// "Copy" pill on a bubble's sender-label row.
 	copyBtnPad   = 4 // padding around the Copy label inside its pill
@@ -2637,10 +2646,15 @@ func (u *UI) blockFor(m Msg, cols, maxW int) msgBlock {
 		for _, l := range b.thinkLines {
 			tw = max(tw, textWidth(l, thinkScale))
 		}
-		b.thinkH = len(b.thinkLines)*thinkLineH + 2*thinkPadY + thinkArc
-		// Width carries the lobe allowance, so it must be measured with the
-		// same radius the cloud will be drawn with.
-		b.thinkW = min(tw+2*thinkCloudR(b.thinkH)+2*thinkPadX, maxW*thinkMaxW/4)
+		// The body is the text box, floored to keep the outline rounded rather
+		// than a flat lozenge, plus room for the trailing dots.
+		bw := tw + 2*thinkPadX
+		bh := len(b.thinkLines)*thinkLineH + 2*thinkPadY
+		if minH := bw * 100 / thinkMaxAspect; bh < minH {
+			bh = minH
+		}
+		b.thinkW = min(bw, maxW*thinkMaxW/4)
+		b.thinkH = bh + thinkDotsHeight()
 		b.h += b.thinkH + thinkGap
 	}
 	return b
@@ -2665,7 +2679,7 @@ func (u *UI) maxScroll() int {
 // thinkCols is the wrap width for the reasoning: at scale 1 each glyph is half
 // as wide, so the cloud fits about twice the characters a bubble line does.
 func thinkCols() int {
-	w := (defaultWinW-2*padX)*3/4/thinkMaxW*3 - 2*thinkLobe - 2*thinkPadX
+	w := (defaultWinW-2*padX)*3/4/thinkMaxW*3 - 2*thinkPadX
 	return max(12, w/(advW*thinkScale))
 }
 
@@ -2681,68 +2695,137 @@ func capLines(lines []string, n int) []string {
 	return out
 }
 
-// thinkCloudR scales the bumps to the cloud's height. A fixed radius makes a
-// one-line cloud look like a row of beads (the lobes would be most of the
-// shape) while a tall one gets a suspiciously flat roof. One third of the
-// height, clamped so it never swallows the text.
-func thinkCloudR(h int) int {
-	return max(4, min(10, h/3))
-}
+// thinkBlob is one circle in the thought cloud's outline.
+type thinkBlob struct{ cx, cy, r int }
 
-// drawThinkCloud paints a thought cloud: a flat-bottomed run of overlapping
-// discs, the classic comic-strip shape. It is built from discs rather than a
-// rounded rect so the silhouette is lumpy, and it is drawn twice (rim, then
-// fill inset by 1px) so it has the same outlined look as a speech bubble.
+// thinkBlobR is the nominal lobe radius for a text area of tw x th: about a
+// third of the short side, so the lobes are big and round.
+func thinkBlobR(tw, th int) int { return max(5, min(20, min(tw, th)/3)) }
+
+// thinkLobes returns the circles whose union forms the cloud body.
 //
-// The disc radius scales with the height (thinkCloudR), which is what keeps a
-// one-line cloud from looking like a row of beads and a tall one from having a
-// suspiciously flat roof.
-func drawThinkCloud(layer *image.NRGBA, x, y, w, h int) {
-	if w <= 0 || h <= 0 {
-		return
-	}
-	// h is the BODY height and the lobe arc adds thinkArc px above y, so the
-	// caller has to reserve that in the block height. Skipping it clips the roof
-	// and the first line of text - which is exactly what the first rendered
-	// frame did, and no field-level test would have noticed.
-	r := thinkCloudR(h)
-	lobes := thinkLobeCenters(x, y+thinkArc, w, r)
-	// Rim pass.
-	drawRoundRect(layer, x, y+thinkArc+r, w, h-r, r, colCloudEdge)
-	for _, l := range lobes {
-		fillDisc(layer, l[0], l[1], r, colCloudEdge)
-	}
-	// Fill pass, inset 1px so a 1px rim shows all the way round.
-	drawRoundRect(layer, x+1, y+thinkArc+r+1, w-2, h-r-1, r, colCloudFill)
-	for _, l := range lobes {
-		fillDisc(layer, l[0], l[1], r-1, colCloudFill)
-	}
-}
-
-// thinkLobeCenters returns the disc centers forming a cloud's top edge. The
-// count follows the width so a wide cloud undulates instead of running as one
-// long bar, and the middle lobes sit higher than the ends, so the roof has the
-// lumpy, slightly asymmetric shape of a drawn cloud rather than a flat top.
-func thinkLobeCenters(x, y, w, r int) [][2]int {
-	// One lobe per ~2.5 diameters, never fewer than 3.
-	n := max(3, min(7, (w-2*r)/(r*5/2)))
-	cy := y + r
-	out := make([][2]int, 0, n)
-	for i := 0; i < n; i++ {
-		cx := x + r + (w-2*r)*i/max(1, n-1)
-		// Rise towards the middle, in integer steps of at most thinkArc.
-		dist := absInt(i - (n-1)/2)
-		rise := thinkArc * (max((n-1)/2-dist, 0) * 2 / max(n-1, 1))
-		out = append(out, [2]int{cx, cy - rise})
+// Each disc is placed so its OUTER edge is tangent to the ellipse: the centre
+// sits one radius in along the outward normal. That is what makes the union a
+// clean scalloped oval instead of discs floating on or inside it.
+//
+// The discs are spaced by ARC LENGTH, not by angle. On a wide ellipse, even
+// angular steps bunch at the curved ends and stretch along the flats, which
+// leaves a notch on one side.
+//
+// Radii vary a little (+/-20%), deterministically from the index: enough to
+// read as a drawn cloud, not enough to open a gap. Deterministic because the
+// cloud is redrawn every frame - a random radius would make it shimmer.
+func thinkLobes(tw, th, base int) []thinkBlob {
+	a, b := float64(tw)/2, float64(th)/2
+	thetas := thinkArcAngles(a, b, base)
+	out := make([]thinkBlob, 0, len(thetas))
+	for i, t := range thetas {
+		frac := int(uint32(i*2654435761) % 1000)
+		r := base * (80 + frac*40/1000) / 100
+		ct, st := math.Cos(t), math.Sin(t)
+		nx, ny := b*ct, a*st // outward normal, normalised
+		if L := math.Hypot(nx, ny); L > 0 {
+			nx, ny = nx/L, ny/L
+		}
+		out = append(out, thinkBlob{
+			cx: int(a*ct - float64(r)*nx),
+			cy: int(b*st - float64(r)*ny),
+			r:  r,
+		})
 	}
 	return out
 }
 
-func absInt(v int) int {
-	if v < 0 {
-		return -v
+// thinkArcAngles returns angles spread evenly by ARC LENGTH around the ellipse,
+// with the count chosen so neighbouring discs overlap by roughly a third of a
+// radius.
+func thinkArcAngles(a, b float64, r int) []float64 {
+	const samples = 720
+	p := math.Pi * (3*(a+b) - math.Sqrt((3*a+b)*(a+3*b))) // Ramanujan
+	n := max(8, min(28, int(p/(1.25*float64(r)))))
+	cum := make([]float64, samples+1)
+	px, py := a, 0.0
+	for i := 1; i <= samples; i++ {
+		t := 2 * math.Pi * float64(i) / float64(samples)
+		x, y := a*math.Cos(t), b*math.Sin(t)
+		cum[i] = cum[i-1] + math.Hypot(x-px, y-py)
+		px, py = x, y
 	}
-	return v
+	total := cum[samples]
+	out := make([]float64, 0, n)
+	j := 1
+	for i := 0; i < n; i++ {
+		target := total * float64(i) / float64(n)
+		for j < samples && cum[j] < target {
+			j++
+		}
+		out = append(out, 2*math.Pi*float64(j)/float64(samples))
+	}
+	return out
+}
+
+// drawThinkBlob outlines one circle: rim, then fill inset by sw, so every circle
+// in the cloud gets the same stroke weight as the body.
+func drawThinkBlob(layer *image.NRGBA, cx, cy, r, sw int, rim, fill color.RGBA) {
+	fillDisc(layer, cx, cy, r, rim)
+	if r-sw > 0 {
+		fillDisc(layer, cx, cy, r-sw, fill)
+	}
+}
+
+// thinkFillEllipse paints a solid ellipse row by row. The discs draw the
+// outline; this only has to make the middle solid.
+func thinkFillEllipse(layer *image.NRGBA, cx, cy, a, b int, col color.RGBA) {
+	if a <= 0 || b <= 0 {
+		return
+	}
+	for dy := -b; dy <= b; dy++ {
+		f := 1 - float64(dy*dy)/float64(b*b)
+		if f < 0 {
+			continue
+		}
+		hw := int(float64(a) * math.Sqrt(f))
+		fillRect(layer, cx-hw, cy+dy, 2*hw, 1, col)
+	}
+}
+
+// drawThinkCloud paints the thought cloud into the layer at (x,y): the scalloped
+// oval body plus the two dots trailing below it. w/h are the OUTER bounds,
+// including the dot trail, matching what blockFor reserved.
+func drawThinkCloud(layer *image.NRGBA, x, y, w, h int) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	dotH := thinkDotsHeight()
+	bodyW, bodyH := w, h-dotH
+	if bodyW <= 0 || bodyH <= 0 {
+		return
+	}
+	ox, oy := x+bodyW/2, y+bodyH/2
+	base := thinkBlobR(bodyW, bodyH)
+	lobes := thinkLobes(bodyW, bodyH, base)
+
+	// Rim pass: interior ellipse + every disc.
+	thinkFillEllipse(layer, ox, oy, bodyW/2, bodyH/2, colCloudEdge)
+	for _, l := range lobes {
+		fillDisc(layer, ox+l.cx, oy+l.cy, l.r, colCloudEdge)
+	}
+	// Fill pass, inset by the stroke: the same shape, shrunk.
+	thinkFillEllipse(layer, ox, oy, bodyW/2-thinkStroke, bodyH/2-thinkStroke, colCloudFill)
+	for _, l := range lobes {
+		fillDisc(layer, ox+l.cx, oy+l.cy, l.r-thinkStroke, colCloudFill)
+	}
+	// The trailing dots, stepping down-left and shrinking.
+	d1x := ox - bodyW/10
+	d1y := oy + bodyH/2 + thinkDotGap + thinkDotR
+	drawThinkBlob(layer, d1x, d1y, thinkDotR, 1, colCloudEdge, colCloudFill)
+	drawThinkBlob(layer, d1x-thinkDotDrift, d1y+thinkDotR+thinkDotGap,
+		thinkDotR-1, 1, colCloudEdge, colCloudFill)
+}
+
+// thinkDotsHeight is the vertical room the trailing dots need below the body.
+func thinkDotsHeight() int {
+	return thinkDotGap + 3*thinkDotR + thinkDotGap - 1
 }
 
 func (u *UI) drawMsgBlock(layer *image.NRGBA, b msgBlock, y int, copyPill, copyFlash, copyHover, copyPress bool) {
@@ -2762,11 +2845,15 @@ func (u *UI) drawMsgBlock(layer *image.NRGBA, b msgBlock, y int, copyPill, copyF
 			cx = u.W - padX - b.thinkW
 		}
 		drawThinkCloud(layer, cx, y, b.thinkW, b.thinkH)
-		r := thinkCloudR(b.thinkH)
-		tx := cx + r + thinkPadX
-		ty := y + thinkArc + thinkPadY
+		// Text centred in the cloud body.
+		tw := 0
 		for _, l := range b.thinkLines {
-			drawText(layer, tx, ty, l, thinkScale, colMuted)
+			tw = max(tw, textWidth(l, thinkScale))
+		}
+		tx := cx + (b.thinkW-tw)/2
+		ty := y + (b.thinkH-thinkDotsHeight()-len(b.thinkLines)*thinkLineH)/2
+		for _, l := range b.thinkLines {
+			drawText(layer, tx, ty, l, thinkScale, colText)
 			ty += thinkLineH
 		}
 		y += b.thinkH + thinkGap
