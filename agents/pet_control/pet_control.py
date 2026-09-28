@@ -117,18 +117,6 @@ KINDS = {
 # ("jump", "walk left"), which is why move has no entry here.
 PET_VERB = {"expression": "expr", "event": "event", "action": "action"}
 
-# How each action reads when spoken. The OK line joins the reply and is read
-# aloud, so "She dance." is not good enough; these are gerunds or short
-# phrases, all of them grammatical after "She is".
-ACTION_PHRASE = {
-    "skip": "skipping rope", "juggle": "juggling", "dance": "dancing",
-    "eat": "eating", "work": "working", "guitar": "playing guitar",
-    "sneeze": "sneezing", "sixseven": "counting to six",
-    "basketball": "playing basketball", "drive": "driving",
-    "ride": "riding a skateboard", "kitten": "playing with a kitten",
-    "wave": "waving",
-}
-
 # Friendly spellings for each kind, so the same "cheer" can be a face or a
 # confetti burst and the agent still knows which was meant.
 KIND_ALIASES = {
@@ -220,11 +208,16 @@ def match(raw, table, aliases):
 
 
 def describe(kind, name):
+    # These lines go back to the model as the ability's result AND are shown in
+    # the chat. They are written in neutral, third-person animation terms on
+    # purpose: a line like "she dances for you" is the kind of phrasing that
+    # makes a safety-tuned model read the whole catalog as instruction about a
+    # person. See the wording test in pet_control_test.go.
     return {
-        "expression": "Her face is %s now." % name,
-        "event": "She is doing the %s effect." % name,
-        "action": "She is %s." % ACTION_PHRASE.get(name, name + "ing"),
-        "move": "She is moving: %s." % name,
+        "expression": "Expression set to %s." % name,
+        "event": "Effect played: %s." % name,
+        "action": "Animation played: %s." % name,
+        "move": "Movement: %s." % name,
     }[kind]
 
 

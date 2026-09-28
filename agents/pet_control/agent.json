@@ -1,19 +1,19 @@
 {
   "id": "pet_control",
   "version": "1.0.0",
-  "description": "Drive the character's own body: set her facial expression, fire a celebration effect, play a pose/animation, or move her around (walk left/right, jump, stand still, go idle, skateboard, parachute). Use whenever the user tells her to DO something or FEEL something - 'dance for me', 'look happy', 'cheer', 'walk over to the left', 'give me a heart', 'be surprised', 'do a happy dance', 'go back to standing'. Pick the kind first, then a name from that kind's list; informal words are fine (hearts, yay, poof, rope, sleepy, sad). One behaviour per call. NOT for playing music or video (that is play_song / play_movie), and not for the character's own spoken reply.",
+  "description": "Control the desktop pet's on-screen animation: switch its facial expression, fire a timed overlay effect, play a named animation, or move it around the screen. This is a UI animation setting for the cartoon sprite drawn on the desktop. Use it when the user wants the pet to look a certain way, react, perform something, or move - 'look happy', 'cheer', 'do a happy dance', 'give hearts', 'walk left', 'stand still'. One behaviour per call. Not for playing music or video (that is play_song / play_movie).",
   "exec": ["python3", "pet_control.py"],
   "timeout_ms": 8000,
   "params": [
     {
       "name": "kind",
       "required": true,
-      "description": "Which part of her to drive: expression (her face only), event (a timed effect like hearts or confetti), action (a full-body animation she performs), or move (where she goes). Informal spellings work too: expr/face/mood, fx/effect, act/pose, motion."
+      "description": "Which animation channel to drive: expression (the face only), event (a timed overlay like hearts or confetti), action (a named animation), or move (where it goes). Informal spellings also work: expr/face/mood, fx/effect, act/pose, motion."
     },
     {
       "name": "name",
       "required": true,
-      "description": "What to do. expression: happy, wink, sad, thinking, anxious, angry, surprised, sleepy, fear, disgust, contempt, confused, skeptical, embarrassed, neutral, adore. event: love, idea, celebration, sleep, peace, disappear, appear, halloween, matrix, magic, robot. action: skip, juggle, dance, eat, work, guitar, sneeze, sixseven, basketball, drive, ride, kitten, wave. move: 'left', 'right', 'walk', 'jump', 'stand', 'idle', 'skateboard', 'parachute'. Informal words are fine (hearts, yay, poof, rope, sleepy) and underscores work instead of spaces (walk_left)."
+      "description": "Which animation to run. expression: happy, wink, sad, thinking, anxious, angry, surprised, sleepy, fear, disgust, contempt, confused, skeptical, embarrassed, neutral, adore. event: love, idea, celebration, sleep, peace, disappear, appear, halloween, matrix, magic, robot. action: skip, juggle, dance, eat, work, guitar, sneeze, sixseven, basketball, drive, ride, kitten, wave. move: 'left', 'right', 'walk', 'jump', 'stand', 'idle', 'skateboard', 'parachute'. Informal words are fine (hearts, yay, poof, rope, sleepy) and underscores work instead of spaces (walk_left)."
     }
   ]
 }

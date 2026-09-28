@@ -245,6 +245,46 @@ func TestPetControlThroughTheRealTagFormat(t *testing.T) {
 	}
 }
 
+// The catalog text is shown to the model verbatim, and a safety-tuned model
+// reads the whole thing at once. The first version of this description said
+// "Drive the character's own body ... Which part of her to drive" and listed
+// commands like "come here" - stacked on the app's persona (a chibi girl
+// character) that reads as instruction about a person, not about a sprite.
+// The model complied once or twice and then started answering "I can't show
+// you something that might be inappropriate" instead of emitting the tag.
+//
+// This is a lint, not a style rule. It exists so the wording is not
+// "improved" back into a refusal, and so the reason it reads the way it does
+// is recorded next to the words rather than in a commit message.
+func TestPetControlDescriptionIsAboutAnimationNotAPerson(t *testing.T) {
+	m, err := agent.LoadManifest(petControlAgent)
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	text := strings.ToLower(m.Description)
+	for _, p := range m.Params {
+		text += " " + strings.ToLower(p.Description)
+	}
+	// Phrasings that made a model refuse. Kept specific: the point is not to
+	// ban the word "body" (a sprite has one) but to ban describing the pet as
+	// something that can be told to act.
+	banned := []string{
+		"her body", "his body", "their body", "the body",
+		"her face is", "make her", "make him", "tell her", "tell him",
+		"comes when", "come here", "obey",
+	}
+	for _, b := range banned {
+		if strings.Contains(text, b) {
+			t.Errorf("catalog text contains %q - this phrasing reads as commanding a "+
+				"person and provokes model refusals; describe the animation instead", b)
+		}
+	}
+	// The positive framing the fixed wording relies on.
+	if !strings.Contains(text, "animation") && !strings.Contains(text, "sprite") {
+		t.Error("catalog text should frame this as animation/sprite, not as directing someone")
+	}
+}
+
 func TestPetControlCoversEveryKnownName(t *testing.T) {
 	for name := range petMoods {
 		if got := petLineOf(t, `{"kind":"expression","name":"`+name+`"}`); got != "expr "+name {
