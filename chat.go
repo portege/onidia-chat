@@ -149,8 +149,9 @@ type ReplyResult struct {
 
 	petLine    string // assembled say-pipe line ("" = nothing to forward)
 	petPipe    string // say-FIFO path it should be written to ("" = disabled)
-	petCmdLine string // command line for the cmd-FIFO ("action dance", "event love")
+	petCmdLine string // command line for the cmd-FIFO ("action dance", "event love", "jump")
 	petCmdPipe string // cmd-FIFO path to write it to ("" = disabled)
+	petExpr    string // bare "[mood]" say-line an agent asked for ("" = none)
 }
 
 // resolveSystemPrompt merges a -system-prompt override and a -system-file
@@ -312,22 +313,83 @@ var petEvents = map[string]bool{
 	"matrix": true, "magic": true, "robot": true,
 }
 
-// knownPetCmd reports whether an agent-supplied cmd-FIFO line ("action dance")
-// names a pose/FX the pet actually has. An ability is third-party code, so its
+// petMove describes one locomotion verb the pet's behaviour layer knows. args
+// is the set of arguments the verb accepts, or nil when it takes none - which
+// matters for more than tidiness: it is what keeps a second command from being
+// smuggled onto the cmd-FIFO behind a valid verb (see knownPetCmd).
+type petMove struct {
+	args map[string]bool
+}
+
+func petMoveNoArg() petMove { return petMove{} }
+func petMoveArgs(a ...string) petMove { // gofmt-friendly helper
+	m := map[string]bool{"": true} // the bare verb is always valid
+	for _, s := range a {
+		m[s] = true
+	}
+	return petMove{args: m}
+}
+
+// petMoves are the pet's own movement commands (desktop-pet behaviour.go).
+// walk/go/move take an optional direction; the rest take nothing.
+var petMoves = map[string]petMove{
+	"stand": petMoveNoArg(), "stop": petMoveNoArg(), "freeze": petMoveNoArg(),
+	"hold": petMoveNoArg(), "stay": petMoveNoArg(),
+	"idle": petMoveNoArg(), "auto": petMoveNoArg(), "wander": petMoveNoArg(),
+	"walk": petMoveArgs("left", "right"), "go": petMoveArgs("left", "right"),
+	"move": petMoveArgs("left", "right"),
+	"left": petMoveNoArg(), "l": petMoveNoArg(),
+	"right": petMoveNoArg(), "r": petMoveNoArg(),
+	"jump": petMoveNoArg(), "hop": petMoveNoArg(), "bounce": petMoveNoArg(),
+	"parachute": petMoveNoArg(), "chute": petMoveNoArg(),
+	"drop": petMoveNoArg(), "fall": petMoveNoArg(),
+	"skateboard": petMoveNoArg(), "skate": petMoveNoArg(),
+	"ride": petMoveNoArg(), "board": petMoveNoArg(),
+}
+
+// knownPetCmd reports whether an agent-supplied cmd-FIFO line names a
+// pose/FX/movement the pet actually has. An ability is third-party code, so its
 // PET line is checked against the same tables the model's [ACTION:]/[EVENT:]
 // tags are: an unknown name is logged and dropped, never written to the FIFO.
+//
+// The table lookup doubles as the injection guard. A line is split on the first
+// space and every part is matched against a closed set, so "action dance\nevent
+// love" fails on the newline in the name and a second command can never ride
+// along behind a valid verb. The move table is why "walk" may carry an
+// argument at all: its allowed values are enumerated rather than passed through.
 func knownPetCmd(line string) bool {
-	verb, name, ok := strings.Cut(strings.TrimSpace(line), " ")
-	if !ok {
-		return false
-	}
+	verb, name, _ := strings.Cut(strings.TrimSpace(line), " ")
+	name = strings.TrimSpace(name)
 	switch verb {
 	case "action":
 		return petActions[name]
 	case "event":
 		return petEvents[name]
+	case "expr":
+		return petMoods[name]
+	}
+	if m, isMove := petMoves[verb]; isMove {
+		if m.args == nil {
+			return name == "" // verb takes no argument at all
+		}
+		return m.args[name]
 	}
 	return false
+}
+
+// petExprOf returns the mood name when line is an "expr <mood>" command.
+// Expressions are the odd one out: the pet has NO cmd-FIFO verb for them.
+// Its face is set from the say-FIFO by a bare [mood] tag with no text, which
+// holds the expression for a few seconds without opening a speech bubble -
+// exactly what the pet controller app sends. So this is the one PET verb that
+// has to travel on the other pipe.
+func petExprOf(line string) (string, bool) {
+	verb, name, _ := strings.Cut(strings.TrimSpace(line), " ")
+	name = strings.TrimSpace(name)
+	if verb != "expr" {
+		return "", false
+	}
+	return name, petMoods[name]
 }
 
 // moodHint pairs one pet mood with the lowercase phrases that suggest it.
@@ -543,7 +605,7 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 	// written to the pet's FIFO by main.go, synchronised with TTS playback.
 	// The action/event command (if any) rides along on the sibling cmd-FIFO,
 	// and only exists when pet forwarding is enabled (mirroring buildPetSayLine).
-	cmdLine := ""
+	cmdLine, exprLine := "", ""
 	if b.PetPipe != "" {
 		switch {
 		case action != "":
@@ -551,7 +613,14 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 		case event != "":
 			cmdLine = "event " + event
 		case knownPetCmd(agentCmd):
-			cmdLine = agentCmd // full line from agent.Result.PetCmd
+			// "expr <mood>" is the one verb the cmd-FIFO cannot carry, so it
+			// leaves by the say-pipe instead; everything else (action, event,
+			// move) is a normal cmd-FIFO line.
+			if mood, isExpr := petExprOf(agentCmd); isExpr {
+				exprLine = "[" + mood + "]"
+			} else {
+				cmdLine = agentCmd // full line from agent.Result.PetCmd
+			}
 		case agentCmd != "":
 			log.Printf("agents: ignoring unknown pet command %q", agentCmd)
 		}
@@ -563,6 +632,7 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 		petPipe:    b.PetPipe,
 		petCmdLine: cmdLine,
 		petCmdPipe: petCmdPathFor(b.PetPipe),
+		petExpr:    exprLine,
 	}
 }
 

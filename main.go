@@ -972,6 +972,13 @@ func main() {
 			if reply.petCmdPipe != "" && reply.petCmdLine != "" {
 				petCmd(reply.petCmdPipe, reply.petCmdLine)
 			}
+			// An agent's "expr <mood>" travels by the say-FIFO instead: the
+			// pet has no cmd-FIFO verb for expressions, and a bare [mood] tag
+			// sets the face without opening a speech bubble. Deliberately not
+			// gated on audioOn - the point is the face, not the voice.
+			if reply.petPipe != "" && reply.petExpr != "" {
+				petSayLine(reply.petPipe, reply.petExpr)
+			}
 			dirty = true
 		case <-caret.C:
 			ui.caret = !ui.caret

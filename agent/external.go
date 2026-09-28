@@ -281,34 +281,76 @@ func stderrSuffix(b *bytes.Buffer) string {
 	return ""
 }
 
-// petNameRe matches a pet pose/FX name as the brain spells it on the cmd-FIFO:
-// lowercase word, digits and underscores ("dance", "celebration", "sixseven").
+// petNameRe matches a pet pose/FX/face name as the brain spells it on the
+// cmd-FIFO: lowercase word, digits and underscores ("dance", "celebration",
+// "sixseven", "sleepy").
 var petNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 
-// normalizePetCmd validates the payload of a "PET <verb> <name>" line and
-// returns the canonical cmd-FIFO line ("action dance"), so an ability can make
-// the character act the ability out - play a song, start a dance; fail, look
-// worried.
+// petMoveNoArg and petMoveWithDir are the pet's own locomotion commands, split
+// by whether they take a direction. The pet's behaviour layer takes these bare
+// - "jump", "stand", "walk left" - with no "move" prefix, which is why they
+// cannot be validated by the "verb + name" shape below. The brain re-checks
+// these against its own tables; this list only decides the SHAPE.
+var petMoveNoArg = map[string]bool{
+	"stand": true, "stop": true, "freeze": true, "hold": true, "stay": true,
+	"idle": true, "auto": true, "wander": true,
+	"left": true, "l": true, "right": true, "r": true,
+	"jump": true, "hop": true, "bounce": true,
+	"parachute": true, "chute": true, "drop": true, "fall": true,
+	"skateboard": true, "skate": true, "ride": true, "board": true,
+}
+
+var petMoveWithDir = map[string]bool{"walk": true, "go": true, "move": true}
+
+// petDirRe matches the only directions the pet walks in.
+var petDirRe = regexp.MustCompile(`^(left|right)$`)
+
+// normalizePetCmd validates the payload of a "PET ..." line and returns the
+// canonical command ("action dance", "expr happy", "walk left"), so an ability
+// can make the character act the ability out - play a song, start a dance;
+// fail, look worried; walk somewhere.
 //
-// That line goes straight to the desktop-pet's cmd-FIFO, which is the one
-// place where third-party agent output could smuggle in a second command, so
-// the shape is strict: a known verb, ONE pet name, nothing else - no spaces,
-// no separators, no newlines. Whether the pet actually knows the name is the
-// brain's business (it owns the action/event tables and drops unknown names
-// with a log line), so a well-formed but unknown name passes through here and
-// fails soft instead of failing the whole run.
+// The command line goes straight to the desktop-pet, which is the one place
+// where third-party agent output could smuggle in a second command, so the
+// shape is strict: a known verb, ONE pet name, nothing else - no spaces, no
+// separators, no newlines. Whether the pet actually knows the name is the
+// brain's business (it owns the action/event/expression tables and drops
+// unknown names with a log line), so a well-formed but unknown name passes
+// through here and fails soft instead of failing the whole run.
 func normalizePetCmd(s string) (string, error) {
-	verb, name, ok := strings.Cut(strings.TrimSpace(s), " ")
-	if !ok {
-		return "", fmt.Errorf("PET %q: want \"action <name>\" or \"event <name>\"", s)
-	}
+	verb, name, _ := strings.Cut(strings.TrimSpace(s), " ")
 	verb = strings.ToLower(verb)
 	name = strings.ToLower(strings.TrimSpace(name))
-	if verb != "action" && verb != "event" {
-		return "", fmt.Errorf("PET: unknown command %q (want action or event)", verb)
+
+	// Movement: a bare verb, or a walk verb plus a direction.
+	if petMoveNoArg[verb] {
+		if name != "" {
+			return "", fmt.Errorf("PET: %q takes no argument (want %q)", verb, verb)
+		}
+		return verb, nil
 	}
-	if !petNameRe.MatchString(name) {
-		return "", fmt.Errorf("PET: bad %s name %q", verb, name)
+	if petMoveWithDir[verb] {
+		if name == "" {
+			return verb, nil
+		}
+		if !petDirRe.MatchString(name) {
+			return "", fmt.Errorf("PET: bad %s direction %q (want left or right)", verb, name)
+		}
+		return verb + " " + name, nil
 	}
-	return verb + " " + name, nil
+
+	switch verb {
+	case "action", "event", "expr":
+		if name == "" {
+			// Say what to do rather than just "bad name": a missing name is a
+			// different mistake from a malformed one.
+			return "", fmt.Errorf("PET: %q needs a name - want %q", verb, verb+" <name>")
+		}
+		if !petNameRe.MatchString(name) {
+			return "", fmt.Errorf("PET: bad %s name %q", verb, name)
+		}
+		return verb + " " + name, nil
+	}
+	return "", fmt.Errorf("PET: unknown command %q (want action, event, expr, "+
+		"or a movement like jump / walk left)", verb)
 }

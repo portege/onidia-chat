@@ -141,6 +141,25 @@ func TestExternalAgentPetCmd(t *testing.T) {
 		t.Errorf("PetCmd = %q, want %q", res.PetCmd, "event love")
 	}
 
+	// An expression and a movement normalize like the other two verbs, and a
+	// bare movement verb needs no name at all.
+	for _, c := range []struct{ line, want string }{
+		{"PET expr happy", "expr happy"},
+		{"PET Expr SLEEPY", "expr sleepy"},
+		{"PET walk left", "walk left"},
+		{"PET Jump", "jump"},
+		{"PET skateboard", "skateboard"},
+	} {
+		res, err := runScriptAgent(t, "echo '"+c.line+"'\necho 'OK x'\n")
+		if err != nil {
+			t.Errorf("PET %q: %v", c.line, err)
+			continue
+		}
+		if res.PetCmd != c.want {
+			t.Errorf("PET %q: PetCmd = %q, want %q", c.line, res.PetCmd, c.want)
+		}
+	}
+
 	// A PET line after OK is never read: the terminal line ends the run.
 	res, err = runScriptAgent(t, "echo 'OK done'\necho 'PET action dance'\n")
 	if err != nil {

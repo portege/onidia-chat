@@ -657,11 +657,36 @@ wire protocol: [`docs/AGENT-PROTOCOL.md`](docs/AGENT-PROTOCOL.md).
 Disable with `-agents-off` / `agents-off = true`.
 
 An agent can also **act the work out on the character**: one optional
-`PET action <name>` / `PET event <name>` line before its `OK` (the bundled
-`play_song` asks the pet to dance) reaches the pet's cmd-FIFO when the model
-didn't choose an `[ACTION: ...]`/`[EVENT: ...]` itself. Names are validated
-against the pet's own tables, so an agent can only pick a pose the pet
+`PET <command>` line before its `OK` reaches the pet when the model didn't
+choose an `[ACTION: ...]`/`[EVENT: ...]` itself. Four kinds, and they do not
+all travel the same pipe:
+
+| line | channel | example |
+|------|---------|---------|
+| `action <name>` | cmd-FIFO | `PET action dance` |
+| `event <name>` | cmd-FIFO | `PET event love` |
+| movement (**no prefix**) | cmd-FIFO | `PET walk left`, `PET jump`, `PET stand` |
+| `expr <mood>` | **say-FIFO**, as a bare `[mood]` tag | `PET expr happy` |
+
+`expr` is the odd one out: the pet has no cmd-FIFO verb for expressions at
+all - its face is set by a bare `[mood]` tag with no text, which holds the
+expression without opening a speech bubble. The agent still writes `PET
+expr <mood>`; chat-app is what routes it to the other pipe. Names are
+validated twice (shape in the agent package, name against the pet's tables
+in the brain), so an agent can only pick a pose, face or step the pet
 really has ([details](docs/AGENT-PROTOCOL.md#control-the-character-pet)).
+
+The bundled **`pet_control`** agent wraps all four behind one call - `kind`
+(`expression` / `event` / `action` / `move`) plus a `name`, with the pet's
+own informal words folded in ("cheer" -> a happy face, "hearts" -> the
+love effect, "rope" -> skipping):
+
+```sh
+./agentctl -dir agents run pet_control kind=action name=rope
+#   INFO action -> skip
+#   She is skipping rope.
+#   (pet command: action skip)
+```
 
 ### Transport strip (play / pause / stop)
 

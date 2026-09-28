@@ -70,7 +70,7 @@ after that). Working directory = the agent's folder.
 ```
 brain -> agent   RUN <json-object>\n
 agent -> brain   INFO <text>\n           # optional, repeatable: logged only
-agent -> brain   PET action <name>\n    # optional, before OK: drive the pet
+agent -> brain   PET <command>\n        # optional, before OK: drive the pet
 agent -> brain   OK <message>\n          # terminal: message joins the reply
                | ERR <text>\n            # terminal: shown as the failure
 ```
