@@ -33,10 +33,16 @@ import (
 const petSayClearToken = "\x04"
 
 // petPipePath derives the say-FIFO path from $DISPLAY exactly the way the
-// pet names it (see desktop-pet main.go instanceTag): every '/', ':' and '.'
-// becomes '-'. Returns "" when no display is set.
+// pet names it: every '/', ':' and '.' becomes '-'. Returns "" when no
+// display is set.
+//
+// The display is canonicalised first (see canonicalDisplay) because the pet
+// does the same, and the two have to agree: ":0", ":0.0" and "localhost:0.0"
+// are one desktop, so all three must land on one path. If they did not, the
+// pet would listen on a pipe this app never writes to and every reply would
+// vanish with no error anywhere.
 func petPipePath() string {
-	disp := os.Getenv("DISPLAY")
+	disp := canonicalDisplay(os.Getenv("DISPLAY"))
 	if disp == "" {
 		return ""
 	}
@@ -47,6 +53,48 @@ func petPipePath() string {
 		return r
 	}, disp)
 	return "/tmp/desktop-pet-" + tag + ".say"
+}
+
+// canonicalDisplay reduces a DISPLAY value to one spelling of the display it
+// names. It is a copy of Canonical in the pet's own internal/single package -
+// the two repos are separate Go modules and this is their only shared
+// contract, so the rules are spelled out twice on purpose:
+//
+//	":0"  ":0.0"  "localhost:0.0"  "unix:0"  "unix/:0"  -> ":0"
+//	":0.1"                                         -> ":0.1" (a different screen)
+//	"MyHost:2.0"                                   -> "myhost:2"
+//
+// A missing display stays missing (""), which petPipePath reads as "forward
+// nothing". Keep this and single.Canonical in step; the pet's own table of
+// examples is the reference.
+func canonicalDisplay(display string) string {
+	d := strings.TrimSpace(display)
+	if d == "" {
+		return ""
+	}
+	// Both socket spellings mean "this machine", and they are cut differently
+	// on purpose: "unix:0" has no leading colon left, "unix/:0" does.
+	if rest, ok := strings.CutPrefix(d, "unix:"); ok {
+		d = ":" + rest
+	} else if rest, ok := strings.CutPrefix(d, "unix/"); ok {
+		d = rest
+	}
+	host, num, ok := strings.Cut(d, ":")
+	if !ok {
+		return strings.ToLower(d) // no display number: nothing to normalise
+	}
+	host = strings.ToLower(host)
+	if host == "localhost" {
+		host = "" // an empty host already means "this machine"
+	}
+	num = strings.TrimSuffix(num, ".0") // screen 0 is the default screen
+	if host == "" {
+		if num == "" {
+			return ""
+		}
+		return ":" + num
+	}
+	return host + ":" + num
 }
 
 // petCmdPathFor derives the pet's command-FIFO path from its say-FIFO path.

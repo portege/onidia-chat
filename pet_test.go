@@ -50,6 +50,16 @@ func TestPetPipePath(t *testing.T) {
 		{":0", "/tmp/desktop-pet--0.say"},
 		{":1", "/tmp/desktop-pet--1.say"},
 		{"", ""}, // no DISPLAY -> forwarding disabled
+		// The same desktop spelled four ways must give the same pipe, or the
+		// pet listens where we never write (the pet canonicalises too - see
+		// onidia's internal/single, and keep the two in step).
+		{":0.0", "/tmp/desktop-pet--0.say"},
+		{"localhost:0.0", "/tmp/desktop-pet--0.say"},
+		{"unix:0", "/tmp/desktop-pet--0.say"},
+		{"unix/:0", "/tmp/desktop-pet--0.say"},
+		// ... while a different display, screen or host still differs.
+		{":0.1", "/tmp/desktop-pet--0-1.say"},
+		{"MyHost:2.0", "/tmp/desktop-pet-myhost-2.say"},
 	}
 	for _, tc := range cases {
 		t.Setenv("DISPLAY", tc.display)
