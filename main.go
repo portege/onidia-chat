@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -679,6 +680,11 @@ func main() {
 	var petRestartPending atomic.Bool
 	petTick := time.NewTicker(2 * time.Second)
 	defer petTick.Stop()
+	// quitPet sends the pet away with her goodbye; the body is filled in
+	// below, once the speech engine exists (the farewell speaks through it).
+	// Both happen long before the event loop starts, so the Haiya! button can
+	// never see the nil.
+	var quitPet func()
 	// Haiya! click: launch when teal, gracefully quit (poof-out) when pink.
 	onHaiya := func() {
 		if ui.PetRunning() {
@@ -686,7 +692,7 @@ func main() {
 				return // a quit is already in flight
 			}
 			log.Printf("pet: quit requested via Haiya! button")
-			QuitPet(petCmdPath, petGoneCh)
+			quitPet() // she says goodbye, then poofs out
 			return
 		}
 		if err := LaunchPet(ui.PetCharacter(), ui.PetDemo()); err != nil {
@@ -780,6 +786,46 @@ func main() {
 	// correct from the first frame.
 	ui.updateBusyState()
 
+	// The shutdown goodbye (farewells.go): when anything about to end is
+	// within earshot, she picks one farewell at random, waves, shows it in
+	// her bubble and says it out loud before the process or the pet goes
+	// away. newFarewell reads the sender name and the mute checkbox on the
+	// main loop at the moment of parting - the settings dialog can change
+	// either at any time - and wires them to the pipes this run resolved.
+	newFarewell := func() farewellSigner {
+		return farewellSigner{
+			TTS:     tts,
+			Muted:   ui.Muted(),
+			Name:    ui.Bot.Name,
+			SayPipe: pipe,
+			CmdPipe: petCmdPath,
+		}
+	}
+	// signOffApp is the chat window's own exit ritual: the line goes into
+	// the scrollback and on screen first (the wait inside signOff parks the
+	// loop and the window dies right after), and it answers at most once no
+	// matter which of the three close paths fires.
+	var farewellOnce sync.Once
+	signOffApp := func(why string) {
+		farewellOnce.Do(func() {
+			bye := newFarewell()
+			bye.UI = ui
+			bye.Paint = func() { win.DrawFrame(ui.Render()) }
+			bye.signOff(why)
+		})
+	}
+	// The Haiya! goodbye runs off the UI loop, because signOff waits for the
+	// audio and a slow TTS round trip must not freeze the window. Its signer
+	// carries no UI for the same reason - only the main loop touches UI
+	// state - so the chat log stays untouched while the pet hears her line.
+	quitPet = func() {
+		bye := newFarewell()
+		go func() {
+			bye.signOff("pet quit")
+			QuitPet(petCmdPath, petGoneCh) // poof out once she stops talking
+		}()
+	}
+
 	dirty := true
 	caret := time.NewTicker(530 * time.Millisecond)
 	defer caret.Stop()
@@ -845,10 +891,12 @@ func main() {
 		select {
 		case ev, ok := <-win.Events():
 			if !ok {
+				signOffApp("window gone") // the X server hung up on us
 				return
 			}
 			switch ev.Type {
 			case EvQuit:
+				signOffApp("window close") // WM delete, or the close key
 				return
 			case EvKey:
 				if ui.Key(ev.Key, ev.Sym) {
@@ -878,6 +926,7 @@ func main() {
 						win.Resize(ui.W, ui.H)
 					}
 					if ui.WantClose() { // header close button clicked
+						signOffApp("header close")
 						return
 					}
 					if ui.WantPet() { // header "Haiya!" button clicked
