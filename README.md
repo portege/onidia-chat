@@ -511,6 +511,12 @@ make run
 Or without make: `go build -trimpath -ldflags="-s -w" -o chat-app .`
 `make` targets: `build`, `run`, `preview`, `clean`.
 
+Building from source is optional. The top-level `make dist` produces a
+versioned tarball with an installer (bundled agent zips included), `make deb`
+a Debian package, and `make apt-repo` an apt repository you can host
+yourself - see [`../DISTRIBUTING.md`](../DISTRIBUTING.md) (packages) and
+[`../RELEASE.md`](../RELEASE.md) (cutting and publishing a release).
+
 ### One instance only
 
 A second `chat-app` refuses to start:
