@@ -220,6 +220,48 @@ func TestBuildSayLine(t *testing.T) {
 	}
 }
 
+// TestPetLineHonoursThinkingSetting: the THINKING BUBBLE setting has to govern
+// the pet's cloud as well as the window's. onidia parses the <THINKING> block
+// out of the say-line and draws a thought cloud of her own, so a say-line that
+// still carries the block re-introduces the very bubble the user turned off.
+// The window's own decision is untouched: ReplyResult.Thinking stays populated
+// and UI.think decides whether to paint it.
+func TestPetLineHonoursThinkingSetting(t *testing.T) {
+	const reply = "[happy] <THINKING>she likes apples</THINKING> here you go"
+
+	for _, tc := range []struct {
+		name string
+		off  bool
+		want string
+	}{
+		{"default keeps the block", false, "[happy] <THINKING>she likes apples</THINKING> here you go"},
+		{"off drops the block", true, "[happy] here you go"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &fakeProvider{canned: reply}
+			bot := &Bot{Provider: p, Name: "Buddy", ImageSource: "off", PetPipe: "/tmp/test.say"}
+			bot.PetThinkingOff = tc.off
+			res := bot.Reply([]Msg{{From: "you", Text: "an apple?"}}, "an apple?")
+
+			if res.petLine != tc.want {
+				t.Errorf("petLine = %q, want %q", res.petLine, tc.want)
+			}
+			if strings.Contains(res.petLine, "<THINKING>") == tc.off {
+				t.Errorf("petLine %q: <THINKING> present = %v, want %v",
+					res.petLine, !tc.off, tc.off)
+			}
+			// The reasoning still reaches the reply result either way: the
+			// setting hides clouds, it does not change what the model said.
+			if res.Thinking != "she likes apples" {
+				t.Errorf("Thinking = %q, want the reasoning kept for the window", res.Thinking)
+			}
+			if res.Text != "here you go" {
+				t.Errorf("Text = %q, want the answer alone", res.Text)
+			}
+		})
+	}
+}
+
 func TestSaveTempPNG(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 3))
 	path, err := saveTempPNG(img)

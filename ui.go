@@ -1644,6 +1644,10 @@ func (u *UI) saveSettings() {
 			u.Bot.Name = name // bubble sender label
 		}
 		u.Bot.CharacterName = name
+		// The pet draws her own cloud from the say-line's <THINKING> block, so
+		// the same checkbox has to gate the line the Bot builds - otherwise
+		// unchecking this row silences the window but not the character.
+		u.Bot.PetThinkingOff = !u.thinkDraft
 		u.Bot.CharacterAge = u.ageDraft
 		u.Bot.SleepSet = true
 		u.Bot.SleepFromH, u.Bot.SleepToH = u.sleepFromDraft, u.sleepToDraft

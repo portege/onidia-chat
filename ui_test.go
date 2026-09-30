@@ -1369,6 +1369,11 @@ func TestSettingsThinkingCheckbox(t *testing.T) {
 	if u.think {
 		t.Error("committed thinking should be false after saving the unchecked box")
 	}
+	// The same save must reach the pet bridge, or the character keeps drawing a
+	// cloud from the say-line the window has stopped drawing.
+	if !u.Bot.PetThinkingOff {
+		t.Error("saving thinking = off should also stop the pet's cloud")
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1393,6 +1398,9 @@ func TestSettingsThinkingCheckbox(t *testing.T) {
 	u.Release(w)
 	if !u.think {
 		t.Error("committed thinking should be true again")
+	}
+	if u.Bot.PetThinkingOff {
+		t.Error("re-enabling thinking should bring the pet's cloud back")
 	}
 	b, _ = os.ReadFile(path)
 	if !strings.Contains(string(b), "thinking = on") {

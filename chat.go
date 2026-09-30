@@ -99,6 +99,7 @@ type Bot struct {
 	Model             string // provider-specific model ID
 	APIURL            string // Gemini endpoint base
 	PetPipe           string // desktop-pet say FIFO; empty disables forwarding
+	PetThinkingOff    bool   // pet bridge honours "thinking = off" too; negative so &Bot{} keeps today's behaviour (see petThinking)
 	SystemInstruction string // system prompt sent to every model
 	ImageSource       string // "pixabay" | "wiki" | "gemini" | "off"
 	ForceImageKeyword string // if set, always fetch/generate an image for this keyword
@@ -683,13 +684,24 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 		Text:        text,
 		Thinking:    thinking,
 		Image:       img,
-		petLine:     buildPetSayLine(b.PetPipe, mood, text, thinking, img),
+		petLine:     buildPetSayLine(b.PetPipe, mood, text, b.petThinking(thinking), img),
 		petPipe:     b.PetPipe,
 		petCmdLine:  cmdLine,
 		petCmdPipe:  petCmdPathFor(b.PetPipe),
 		petExpr:     exprLine,
 		UsedAbility: anyRunSucceeded(runs),
 	}
+}
+
+// petThinking applies the THINKING BUBBLE setting to the block headed for the
+// pet's say-pipe. The chat window hides the cloud itself (UI.think), but the
+// line still travels to onidia, which would draw its own cloud from it - so the
+// block is dropped here instead of shipped and ignored.
+func (b *Bot) petThinking(thinking string) string {
+	if b.PetThinkingOff {
+		return ""
+	}
+	return thinking
 }
 
 // effectiveSystem returns the system prompt to send for a chat reply. The

@@ -742,9 +742,13 @@ func main() {
 	}
 	// Thinking bubble: on unless the INI says otherwise, so a config file written
 	// before this setting existed keeps drawing the reasoning cloud rather than
-	// losing it to a zero-value bool.
+	// losing it to a zero-value bool. The pet draws a cloud of her own from the
+	// same block, so the Bot is told too - one setting, both clouds.
 	if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.Thinking), "off") {
 		ui.think = false
+		if ui.Bot != nil {
+			ui.Bot.PetThinkingOff = true
+		}
 	}
 	// Demo mode defaults to OFF (planted pet): only an explicit
 	// demo-mode = true in the INI turns autonomous roaming/chatter on.

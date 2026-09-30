@@ -183,6 +183,10 @@ mute = false
 # cloud - the answer keeps its place in the transcript and only the cloud goes
 # away. Written as on/off rather than true/false so a file with no "thinking" key
 # keeps the cloud. Saving the dialog rewrites this key in place.
+#
+# It governs BOTH clouds: the window's above the answer, and the pet's own
+# thought cloud, which she draws from the <THINKING> block on the say-pipe.
+# Set to "off" and the block is no longer forwarded, so she stops showing it.
 thinking = on
 
 # Agents: pluggable abilities the model invokes with [AGENT: ...] reply tags.

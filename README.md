@@ -566,6 +566,15 @@ The cloud fills live while the reply streams: an unclosed `<THINKING>` counts
 as open, so mid-stream text lands in the cloud rather than flashing into the
 answer.
 
+**The pet has one too.** onidia parses the same block out of the say-pipe
+line and draws a smaller cloud above her speech bubble, which is how her
+"thinking" is visible at all - the chat window may be collapsed or behind
+another window while she answers. The **THINKING BUBBLE** setting (the row
+under MUTE SPEECH, `thinking = on|off`) governs *both*: switching it off stops
+the block being forwarded on the say-pipe, so she stops showing it as well as
+the window. Before that was wired up the checkbox only silenced the window and
+left the character still musing, which reads as the setting not working.
+
 ## Controls
 
 | Input | Action |
