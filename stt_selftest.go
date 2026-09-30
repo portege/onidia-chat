@@ -63,6 +63,11 @@ func runSTTSelfTest(backend STT, recorder, device string, debug bool) int {
 		fmt.Printf("record   : FAILED: %v\n", err)
 		return 2
 	}
+	// cleanup kills the recorder and only then unlinks the WAV, and it runs on
+	// every return path below - which is why main must let this function RETURN
+	// before it exits (os.Exit runs no deferred functions). The sleep is the
+	// intended length, not the limit: the hard bound is the process group, so a
+	// recorder that ignores SIGINT still dies instead of recording forever.
 	defer rec.cleanup()
 	time.Sleep(sttSelfTestSeconds * time.Second)
 	path, stopErr := rec.Stop()

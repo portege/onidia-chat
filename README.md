@@ -792,4 +792,5 @@ mpv/cvlc/vlc/ffplay fallback). Install the latter two with
 | "gemini call failed: ..." bubbles | check network, key validity, or pick another `-model` |
 | Buddy doesn't speak | start the desktop-pet first (it creates the FIFO); check `-pet-pipe` |
 | Want silence from the buddy | run with `-pet-pipe off` |
+| `/tmp` filling up with `chat-app-stt-*.wav`, and a `pw-record` that never ends | an orphaned take from a build before the recorder-lifecycle fix: those recorders outlive the app. `pkill pw-record; rm -f /tmp/chat-app-stt-*.wav`, then rebuild. Current builds kill every take on exit, so this cannot recur |
 | `context deadline exceeded` on every call, while other sites work | your network filters `generativelanguage.googleapis.com`. Options: run behind a proxy (`export HTTPS_PROXY=...`, Go honors it), a VPN, or point `-api-url` at a relay you control that forwards to Gemini (any service that proxies `POST <base>/v1beta/models/*:generateContent` transparently). Debug with `go run ./cmd/geminitest -models`. |

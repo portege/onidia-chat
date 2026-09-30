@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -128,9 +129,11 @@ func findSTTRecorder() string {
 type sttRecorder struct {
 	cmd    *exec.Cmd
 	path   string
+	pgid   int          // the recorder's own process group; see startSTTRecorder
 	stop   func() error // signals the recorder so it finalises the WAV header
 	mu     sync.Mutex
 	closed bool
+	waited bool // Stop has reaped the process, so cleanup must not Wait again
 }
 
 // startSTTRecorder begins a recording into a fresh temp WAV. The caller must
@@ -148,22 +151,79 @@ func startSTTRecorder(recorder, device string) (*sttRecorder, error) {
 	f.Close() // the recorder writes to the file by path
 
 	cmd := exec.Command(recorder, sttArgs(recorder, device, path)...)
+	// Its own process group. A recorder is a child process, so any path that
+	// exits without stopping it - os.Exit, a panic, the app quitting mid-take -
+	// orphans it, and an orphan keeps appending to the WAV at ~32 KB/s until
+	// the tmpfs fills. In a group it can be signalled and killed as a unit, and
+	// a leftover can always be reaped by group. Setpgid failing fails Start.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		os.Remove(path)
 		return nil, fmt.Errorf("start %s: %w", filepath.Base(recorder), err)
 	}
-	return &sttRecorder{
+	// Setpgid makes the child a group leader, so its pgid is its pid.
+	pgid := cmd.Process.Pid
+	r := &sttRecorder{
 		cmd:  cmd,
 		path: path,
+		pgid: pgid,
 		stop: func() error {
 			// SIGINT makes pw-record and arecord write the RIFF sizes and
 			// exit cleanly; SIGKILL would leave a truncated, unusable header.
-			if cmd.Process == nil {
-				return nil
-			}
-			return cmd.Process.Signal(os.Interrupt)
+			// Signalling the group also takes down anything they spawned.
+			return signalGroup(pgid, syscall.SIGINT)
 		},
-	}, nil
+	}
+	r.register()
+	return r, nil
+}
+
+// liveRecorders tracks every recorder this process has started and not yet
+// cleaned up, so they can all be ended at once on the way out.
+//
+// "Somebody must remember to stop it" is not a contract a caller can be held
+// to: the mic button's own path, a test that presses WMic and moves on, or a
+// future caller all end up in the same place - a recorder still running after
+// the thing that wanted it is gone, appending to a WAV at ~32 KB/s. This is
+// the net for that, and it is cheap.
+var liveRecorders = struct {
+	mu sync.Mutex
+	m  map[*sttRecorder]struct{}
+}{m: make(map[*sttRecorder]struct{})}
+
+func (r *sttRecorder) register() {
+	liveRecorders.mu.Lock()
+	liveRecorders.m[r] = struct{}{}
+	liveRecorders.mu.Unlock()
+}
+
+func (r *sttRecorder) unregister() {
+	liveRecorders.mu.Lock()
+	delete(liveRecorders.m, r)
+	liveRecorders.mu.Unlock()
+}
+
+// killAllRecorders ends every take still open in this process and unlinks their
+// WAVs. Safe to call repeatedly and from a shutdown path.
+func killAllRecorders() {
+	liveRecorders.mu.Lock()
+	recs := make([]*sttRecorder, 0, len(liveRecorders.m))
+	for r := range liveRecorders.m {
+		recs = append(recs, r)
+	}
+	liveRecorders.mu.Unlock()
+	for _, r := range recs {
+		r.cleanup() // unregisters itself
+	}
+}
+
+// signalGroup delivers sig to the recorder's process group. A pgid of 0 or less
+// means the recorder was never started, so there is nothing to signal.
+func signalGroup(pgid int, sig syscall.Signal) error {
+	if pgid <= 0 {
+		return syscall.ESRCH
+	}
+	return syscall.Kill(-pgid, sig)
 }
 
 // Stop ends the recording and returns the WAV path. The recorder gets a short
@@ -188,19 +248,57 @@ func (r *sttRecorder) Stop() (string, error) {
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
-		if r.cmd.Process != nil {
-			_ = r.cmd.Process.Kill()
-		}
+		// The polite signal did not take (a recorder wedged on a full
+		// queue will sit there and keep growing the file), so the group
+		// gets SIGKILL. A truncated header only matters if a backend is
+		// about to read it, and the timeout means it never will be.
+		r.kill()
 		<-done
 	}
+	r.mu.Lock()
+	r.waited = true
+	r.mu.Unlock()
 	return r.path, nil
 }
 
-// cleanup removes the temp WAV. Safe to call after Stop.
+// kill SIGKILLs the recorder's process group. The last line of defence behind
+// Stop: a take that is still running when we are done with it must not keep
+// writing to disk.
+func (r *sttRecorder) kill() {
+	if r == nil || r.pgid <= 0 {
+		return
+	}
+	if r.cmd != nil && r.cmd.Process != nil {
+		_ = r.cmd.Process.Kill() // keeps Wait able to reap it
+	}
+	_ = signalGroup(r.pgid, syscall.SIGKILL)
+}
+
+// cleanup ends the take for good: the process is killed if it is somehow still
+// alive, and only then is the WAV unlinked. Order matters - removing the path
+// first leaves a process writing to a deleted inode, which is invisible in the
+// directory listing but still takes the disk, and that is how a 28-hour-old
+// take came to be filling /tmp. Safe to call after Stop, and safe to call
+// without it, which is the whole point: every exit path can call this.
 func (r *sttRecorder) cleanup() {
-	if r != nil && r.path != "" {
+	if r == nil {
+		return
+	}
+	r.kill()
+	if r.cmd != nil && r.cmd.Process != nil {
+		r.mu.Lock()
+		waited := r.waited
+		r.mu.Unlock()
+		if !waited {
+			// Nobody reaped it (the app is exiting mid-take); reap it here so
+			// a kill on the shutdown path does not leave a zombie behind.
+			go func() { _ = r.cmd.Wait() }()
+		}
+	}
+	if r.path != "" {
 		os.Remove(r.path)
 	}
+	r.unregister()
 }
 
 // sttArgs builds the command line for a given recorder. Split out from the

@@ -450,7 +450,16 @@ func main() {
 	// speech-input failure is visible without clicking the mic and reading a
 	// one-line message in the input bar.
 	if *sttTestFlag {
-		os.Exit(runSTTSelfTest(sttEngine, findSTTRecorder(), sttDevice, sttDebug))
+		// Let the self test RETURN before anything exits. os.Exit runs no
+		// deferred functions, and the self test's deferred cleanup is what
+		// stops its recorder and unlinks the WAV - so exiting around it
+		// orphaned a pw-record that kept writing to /tmp until it filled.
+		// The exit code still reaches the shell: it is os.Exit's argument.
+		code := runSTTSelfTest(sttEngine, findSTTRecorder(), sttDevice, sttDebug)
+		if code != 0 {
+			os.Exit(code)
+		}
+		return
 	}
 
 	// Agents: downloadable pluggable abilities. Discovery is startup-only
@@ -889,6 +898,19 @@ func main() {
 			result := ui.Bot.Greeting()
 			ui.Replies <- result
 		}()
+	}()
+
+	// Every exit path below returns from main, including the ones a user
+	// reaches by closing the window mid-take. A live recording has to be
+	// abandoned on the way out: the session's cap lives in this process, so
+	// once main returns the timer is gone and the recorder would be orphaned,
+	// still appending to its WAV with nothing left to stop it. Escape already
+	// does this for the keyboard case (ui.CancelMic); this covers the rest.
+	defer func() {
+		if ui.STTSess != nil {
+			ui.CancelMic()
+		}
+		killAllRecorders() // and any take no session is holding on to
 	}()
 
 	for {
