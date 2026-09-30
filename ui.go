@@ -198,8 +198,15 @@ const (
 	mediaLbl  = "NOW PLAYING"
 	mediaMaxT = 64 // title rune cap (the strip is narrow)
 
-	maxInput  = 280 // textarea rune cap
-	winRadius = 12  // window shell corner rounding (transparent corners)
+	maxInput = 280 // textarea rune cap
+
+	// Window shell corner rounding: 0 keeps the shell a square rectangle.
+	// Rounding was tried two ways - zeroing the alpha in the corners (the
+	// compositor alone decides whether that shows) and cutting a SHAPE
+	// outline - and on a labwc/Xwayland desktop both left the corners as
+	// visible blocks instead of clean see-through arcs. A square shell has no
+	// such seam, so it is the default; raise it to re-enable the rounding.
+	winRadius = 0
 
 	// Settings modal layout (drawSettings).
 	modalPad  = 20  // panel inner padding

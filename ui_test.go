@@ -424,27 +424,27 @@ func TestAboutModalNarrow(t *testing.T) {
 	}
 }
 
-// TestRenderRoundedCorners verifies the window shell is not a hard rectangle:
-// the four corner pixels of a rendered frame are fully transparent (the
-// compositor rounds the window) while edge midpoints and the centre stay
-// opaque.
+// TestRenderRoundedCorners guards the shell's corner treatment. Rounding is
+// off (winRadius 0): the window is a square rectangle, so the four extreme
+// corner pixels are opaque like every other pixel - no alpha seam that a
+// compositor may or may not honour, and no clipped corner that can show up as
+// a stray block. Raise winRadius and this test is expected to be revisited.
 func TestRenderRoundedCorners(t *testing.T) {
 	u := NewUI(380, 520)
 	frame := u.Render()
 	w, h := frame.Bounds().Dx(), frame.Bounds().Dy()
 	opaque := func(x, y int) bool { return frame.Pix[frame.PixOffset(x, y)+3] == 255 }
-	for _, c := range [][2]int{{0, 0}, {w - 1, 0}, {0, h - 1}, {w - 1, h - 1}} {
-		if opaque(c[0], c[1]) {
-			t.Errorf("corner (%d,%d) should be transparent", c[0], c[1])
-		}
+	if winRadius != 0 {
+		t.Errorf("winRadius = %d, want 0 (square shell)", winRadius)
 	}
 	for _, p := range [][2]int{
+		{0, 0}, {w - 1, 0}, {0, h - 1}, {w - 1, h - 1}, // the four corners
 		{w / 2, 0}, {w / 2, h - 1}, // top/bottom edge midpoints
 		{0, h / 2}, {w - 1, h / 2}, // left/right edge midpoints
-		{w / 2, h / 2}, {winRadius, winRadius}, // centre + just inside a corner
+		{w / 2, h / 2}, {1, 1}, {w - 2, h - 2}, // centre + just inside the corners
 	} {
 		if !opaque(p[0], p[1]) {
-			t.Errorf("point (%d,%d) should be opaque", p[0], p[1])
+			t.Errorf("point (%d,%d) should be opaque on a square shell", p[0], p[1])
 		}
 	}
 }
