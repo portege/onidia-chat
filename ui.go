@@ -2107,8 +2107,12 @@ func (u *UI) drawAbout(frame *image.NRGBA) {
 
 	// Word art: the biggest letter size that still fits next to the badge; on a
 	// very narrow window the badge is dropped rather than squeezing the title.
+	// 84 is the width the mark wants: the old hand-drawn portrait read fine at
+	// 72, but the traced logo carries the fringe, the lashes and the tongue, and
+	// at 72 those collapse into a band across the face. The strip is 96 tall,
+	// so this is the largest diameter that still leaves a margin.
 	const title = "ONIDIA"
-	const badgeD = 72
+	const badgeD = 84
 	cy := heroY + heroH/2
 	scale, withBadge := 2, false
 	for _, s := range []int{4, 3, 2} {

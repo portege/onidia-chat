@@ -595,7 +595,7 @@ left the character still musing, which reads as the setting not working.
 | click **+ / −** (header, left of ⚙) | show/hide the conversation history (starts collapsed) |
 | click **⚙ gear** (header, left of ✕) | open the settings dialog (character age 7-13, sleep window FROM/TO, busy window, CHARACTER picker — the buttons carry the character names: **ONIDIA** = Haiya! launches the girl, **KAMA** = the boy, MUTE SPEECH and DEMO MODE checkboxes below it; SAVE writes `character-name`, `character-age`, `sleep-time`, `busy-time`, `mute`, `demo-mode` + `character-gender` to `chat-app.ini` and rewrites the stored persona's "your name is …" sentence with the name + age) |
 | in the dialog | type the character's name into NAME, click a dropdown to drop its list (hour lists scroll with the wheel), pick a value, pick **ONIDIA**/**KAMA** in the CHARACTER row for who the Haiya! button launches, tick/untick **MUTE SPEECH** to silence the text-to-speech voice, tick/untick **DEMO MODE** to switch the buddy between roaming+chattering and planted (it walks to its parking spot three character widths in from the right edge and stays there), **SAVE** (or **Enter**); **CANCEL** / **Esc** discards |
-| click **About** (header, left of ✕) | open the About dialog: a teal hero strip with the word-art name (drop shadow, plum outline, sparkles) and the round character badge — her happy face, drawn in code — above the tagline, a live line naming whichever buddy is running, and the engineering credit; **OK**, a backdrop click or **Esc** dismisses it |
+| click **About** (header, left of ✕) | open the About dialog: a teal hero strip with the word-art name (drop shadow, plum outline, sparkles) and the round character badge — the same Onidia mark as the web header's logo, her happy face, drawn in code — above the tagline, a live line naming whichever buddy is running, and the engineering credit; **OK**, a backdrop click or **Esc** dismisses it |
 | **drag** the header | move the window (`_NET_WM_MOVERESIZE`; the frame has no titlebar) |
 | click **✕** (header, far right) | quit the app |
 | **Alt+F4** | quit too (the WM delete protocol stays enabled) |
@@ -632,7 +632,7 @@ you ──▶ textarea ──▶ SEND/Enter ──▶ UI appends your bubble, sh
 │                  (the startup gate and cmd/preflight run the same registry)
 ├── ui.go          layout, state, hit-testing and software rendering
 ├── font.go        5×7 bitmap font (+true lowercase) and draw primitives
-├── about_art.go   the About modal's hand-drawn character badge + sparkles
+├── about_art.go   the About modal's character badge (the logo mark) + sparkles
 ├── chat.go        the brain: Gemini client, persona, mood-tag handling
 ├── pet.go         desktop-pet say-FIFO bridge (non-blocking writes)
 ├── stt.go         speech-to-text: mic take -> transcribe -> textarea
