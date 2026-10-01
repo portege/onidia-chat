@@ -467,6 +467,12 @@ func (u *UI) msgArea() (y, h int) {
 // exactly as before.
 const micW = 44
 
+// sttHandsFreeNote is the input-bar status while a take is running under AUTO
+// STOP. Unlike the manual note it is short enough to render in full: the note
+// area is 21 columns at the default window width and fitCols cuts from the
+// right, which is where the meaning is.
+const sttHandsFreeNote = "Listening… auto-send"
+
 // micEnabled reports whether the microphone button is shown at all.
 func (u *UI) micEnabled() bool { return u.STT != nil }
 
@@ -1950,7 +1956,16 @@ func (u *UI) startMic() {
 		return
 	}
 	u.STTSess = sess
-	u.sttErr, u.sttNote = "", "Recording… (press again to stop)"
+	// The instruction depends on the mode. Telling someone using AUTO STOP to
+	// "press again to stop" is not just a wasted phrase, it is the one thing
+	// they were trying not to have to do. The hands-free note is held to 21
+	// columns so the whole sentence survives the note area at the default
+	// window width - unlike the manual one, which fitCols has always cut.
+	note := "Recording… (press again to stop)"
+	if u.autoStop {
+		note = sttHandsFreeNote
+	}
+	u.sttErr, u.sttNote = "", note
 	u.sttSince = time.Now()
 }
 

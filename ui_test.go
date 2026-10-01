@@ -1438,6 +1438,38 @@ func TestThinkingGateHidesCloud(t *testing.T) {
 	}
 }
 
+// TestSttNoteMatchesMode guards the input-bar status against the mode. The
+// manual note's whole content is the instruction "press again to stop", which
+// is precisely what AUTO STOP removes - showing it to someone using AUTO STOP
+// tells them the app does not do the thing they just enabled.
+func TestSttNoteMatchesMode(t *testing.T) {
+	for _, tc := range []struct {
+		autoStop bool
+		want     string
+	}{
+		{false, "Recording… (press again to stop)"},
+		{true, sttHandsFreeNote},
+	} {
+		u := newSTTTestUI(t, &fakeSTT{name: "fake"})
+		u.autoStop = tc.autoStop
+		u.startMic()
+		if got := u.sttNote; got != tc.want {
+			t.Errorf("autoStop=%v: note = %q, want %q", tc.autoStop, got, tc.want)
+		}
+		if tc.autoStop && strings.Contains(u.sttNote, "press") {
+			t.Error("the hands-free note must not tell the user to press the mic again")
+		}
+		// And unlike the manual note, it has to survive the note area.
+		u2 := NewUI(defaultWinW, defaultWinH)
+		cols := (u2.inputRect().Dx() - 20) / (advW * uiFontScale)
+		if got := fitCols(sttHandsFreeNote, cols); got != sttHandsFreeNote {
+			t.Errorf("hands-free note %q does not fit in %d columns, renders as %q",
+				sttHandsFreeNote, cols, got)
+		}
+		u.CancelMic()
+	}
+}
+
 // TestSettingsAutoStopCheckbox mirrors the AUTO SUBMIT test for the AUTO STOP
 // row below it, and additionally checks that unticking it mid-take drops the
 // watcher - the one place a setting change has to reach something already

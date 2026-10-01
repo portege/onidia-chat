@@ -151,6 +151,12 @@ stt = transcribe
 # take, which looks exactly like a broken microphone. Only enable it for a
 # genuinely noisy room. Diagnose with:  go run . -stt-test [-stt-debug]
 # stt-whisper-vad = false
+#
+# NOT the same thing as "auto-stop" further down. This one is faster-whisper's
+# filter, applied to a finished recording: it decides whether to KEEP a take,
+# after the audio has been captured, and says nothing about when anyone stopped
+# talking. "auto-stop" ends a take while it is still running. They are
+# independent and can both be on; see stt_vad.go.
 
 # Python interpreter that has faster-whisper installed, when it is not the
 # system python (e.g. a project virtualenv).

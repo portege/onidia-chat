@@ -76,7 +76,7 @@ type Config struct {
 	STTDevice       string `ini:"stt-device"`        // capture device for arecord/ffmpeg ("" = system default)
 	STTWhisperModel string `ini:"stt-whisper-model"` // faster-whisper size: tiny | base | small | ...
 	STTWhisperCmd   string `ini:"stt-whisper-cmd"`   // python interpreter running faster-whisper ("" = auto)
-	STTWhisperVAD   bool   `ini:"stt-whisper-vad"`   // faster-whisper voice-activity filter (default OFF: it discards quiet takes)
+	STTWhisperVAD   bool   `ini:"stt-whisper-vad"`   // faster-whisper voice-activity filter (default OFF: it discards quiet takes). NOT the same as auto-stop, which ends a take live - see stt_vad.go
 }
 
 // LoadConfig reads a simple INI file and returns populated Config.
