@@ -49,9 +49,12 @@ func countIn(img *image.NRGBA, col color.RGBA) int {
 //	colHaiyaPink - the hair ties, the one colour deliberately taken from the
 //	               app's own palette rather than the mark's
 //
-// The tails' sheen is absent on purpose: in the source drawing it too is laid
-// down before the head, so the head covers it. It is ported anyway, in case the
-// head's geometry ever moves, but it cannot be asserted on.
+// The tails' sheen is not in this list, and cannot be: in the source drawing it
+// too is laid down before the head, so the head all but covers it. The only
+// part that escapes is a sliver where the far round cap clears the head's edge -
+// 0.505 units wide by 0.021 thick, about 0.006 of a device pixel at badge size.
+// The sheen is ported anyway, in case the head's geometry ever moves, but it is
+// not worth an assertion.
 func TestFaceBadgeIsTheLogo(t *testing.T) {
 	img := badgeAt(42)
 	for _, c := range []struct {

@@ -264,6 +264,12 @@ func drawFaceBadge(dst *image.NRGBA, cx, cy, r int) {
 	// wide base at the crown down past the jaw; the plum outline and the teal
 	// fill are the same capsule with the radii inset, which is how the pet
 	// strokes it. side is +1 for the tail on the mark's left.
+	//
+	// The pale sheen down each tail is the pet's own stroke, but the pet draws
+	// it before the head, and the head is a disc of radius 38.7 about (56,60)
+	// that swallows all but a sliver of it: the far cap clears the edge by
+	// 0.021 units, which is nothing at any badge size. Kept for fidelity - if
+	// the head's geometry ever moves back, the sheen comes with it.
 	for _, side := range []float64{1, -1} {
 		at := func(dx float64) float64 { return logoCX + side*dx }
 		m.taper(dst, at(25), 55.004, at(39.238), 90.238, 10.2, 4.8, colPlum)
