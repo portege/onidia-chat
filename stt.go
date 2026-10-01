@@ -25,6 +25,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"os"
@@ -32,6 +33,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -411,6 +413,33 @@ func parseWavChunks(raw []byte) (rate, channels, bits int, data []byte, err erro
 	return rate, channels, bits, data, nil
 }
 
+// wavDataOffset returns the index in raw where the sample data starts, walking
+// the RIFF chunks the way wavPCM does rather than assuming a 44-byte header:
+// recorders pad their chunk lists differently, and a take is inspected while
+// the recorder is still appending to it, so the header may be short a field.
+//
+// A partial header is an error rather than a zero offset, because guessing 44
+// would analyse the header bytes as audio.
+func wavDataOffset(raw []byte) (int, error) {
+	if len(raw) < 12 || string(raw[0:4]) != "RIFF" || string(raw[8:12]) != "WAVE" {
+		return 0, sttErrf("no valid WAV header (was anything captured?)")
+	}
+	// The RIFF and data sizes are deliberately NOT used to bound the walk: this
+	// runs against a recording still in progress, and until the recorder is
+	// signalled those fields are placeholders (a fresh file says 36 and 0).
+	// Trusting them truncates the walk before it reaches the data chunk. The
+	// file's own length is the only honest bound, and the walk stops at the
+	// first data chunk, so trailing padding is never reached anyway.
+	for off := 12; off+8 <= len(raw); {
+		size := int(binary.LittleEndian.Uint32(raw[off+4 : off+8]))
+		if string(raw[off:off+4]) == "data" {
+			return off + 8, nil
+		}
+		off += 8 + size + size&1 // chunks are word-aligned
+	}
+	return 0, sttErrf("WAV has no data chunk")
+}
+
 // ---- session ----------------------------------------------------------------
 
 // STTSession drives one press-to-record cycle: it owns the recorder, then
@@ -422,13 +451,20 @@ type STTSession struct {
 	device    string
 	rec       *sttRecorder
 	stopTimer *time.Timer
-	Done      chan sttResult
-	closeOnce sync.Once
+	// vad watches for the end of speech when the AUTO STOP setting is on, so
+	// a take can end without a second click. It ends the take through finish,
+	// exactly as the length cap does, and is nil when the setting is off.
+	vad         *sttVAD
+	autoStop    bool
+	autoStopped atomic.Bool
+	Done        chan sttResult
+	closeOnce   sync.Once
 }
 
 // StartSTTSession returns a session ready to record, or an error if no backend
-// is enabled or no recorder exists. Call Record to begin the take.
-func StartSTTSession(backend STT, recorder, device string) (*STTSession, error) {
+// is enabled or no recorder exists. Call Record to begin the take. autoStop
+// turns on end-of-speech detection for this take (the AUTO STOP setting).
+func StartSTTSession(backend STT, recorder, device string, autoStop bool) (*STTSession, error) {
 	if backend == nil {
 		return nil, sttErrf("speech input is off")
 	}
@@ -440,6 +476,7 @@ func StartSTTSession(backend STT, recorder, device string) (*STTSession, error) 
 		backend:  backend,
 		recorder: recorder,
 		device:   device,
+		autoStop: autoStop,
 		Done:     make(chan sttResult, 1),
 	}, nil
 }
@@ -454,11 +491,35 @@ func (s *STTSession) Record() error {
 	// A forgotten recording must not run forever: the timer finishes the take
 	// exactly as an explicit stop would.
 	s.stopTimer = time.AfterFunc(sttMaxRecord, func() { s.finish(nil) })
+	if s.autoStop {
+		// Watching the WAV that was just created, and ending the take through
+		// the same finish the cap uses, so there is only one place a take can
+		// end and closeOnce already covers all of them.
+		s.vad = newSTTVAD(rec.path, func() {
+			s.autoStopped.Store(true)
+			s.finish(nil)
+		})
+	}
 	return nil
 }
 
 // Recording reports whether a take is in progress.
 func (s *STTSession) Recording() bool { return s.rec != nil && !s.rec.closed }
+
+// AutoStopped reports whether this take was ended by the end-of-speech watcher
+// rather than by the user or the length cap. The UI reads it to word the
+// transcript status: with AUTO STOP on the point is that the user never has to
+// touch anything, so the prompt also goes out on its own (see handsFree).
+func (s *STTSession) AutoStopped() bool { return s.autoStopped.Load() }
+
+// MicLevel is the current input loudness as 0..100 for the mic meter, or 0 when
+// nothing is being measured. Read from the UI goroutine every frame.
+func (s *STTSession) MicLevel() int {
+	if s.vad == nil {
+		return 0
+	}
+	return s.vad.Level()
+}
 
 // Stop ends the take and starts transcription in the background.
 func (s *STTSession) Stop() { s.finish(nil) }
@@ -476,6 +537,11 @@ func (s *STTSession) finish(userErr error) {
 	s.closeOnce.Do(func() {
 		if s.stopTimer != nil {
 			s.stopTimer.Stop()
+		}
+		// The watcher has done its job either way: stop it before the file is
+		// closed and removed underneath it, and before transcription starts.
+		if s.vad != nil {
+			s.vad.stop()
 		}
 		if s.rec == nil {
 			s.deliver(sttResult{Err: userErr})

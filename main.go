@@ -767,6 +767,7 @@ func main() {
 		// that goes to the model without being read is worse than one extra
 		// click, so it is opt-in.
 		ui.autoSubmit = cfg.AutoSubmit
+		ui.autoStop = cfg.AutoStop
 	}
 	ui.Bot.Provider = botProvider
 	story.bot = ui.Bot // wire the native read_story agent to this provider

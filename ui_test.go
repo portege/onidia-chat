@@ -1438,7 +1438,117 @@ func TestThinkingGateHidesCloud(t *testing.T) {
 	}
 }
 
-// TestSettingsAutoSubmitCheckbox mirrors the DEMO MODE checkbox test for the
+// TestSettingsAutoStopCheckbox mirrors the AUTO SUBMIT test for the AUTO STOP
+// row below it, and additionally checks that unticking it mid-take drops the
+// watcher - the one place a setting change has to reach something already
+// running rather than the next take.
+func TestSettingsAutoStopCheckbox(t *testing.T) {
+	path := writeTempINI(t, "[character]\ncharacter-age = 7\n")
+	u := NewUI(380, 520)
+	u.age = 7
+	u.savePath = path
+	u.collapsed = false
+	u.H = 520
+	u.openSettings()
+
+	ar, as := u.autoRect(), u.autoStopRect()
+	cancel, _ := u.modalButtons()
+	p := u.modalPanel()
+	if as.Min.Y <= ar.Max.Y {
+		t.Errorf("autoStopRect %v must sit below the auto-submit row %v", as, ar)
+	}
+	if as.Max.Y >= cancel.Min.Y {
+		t.Errorf("autoStopRect %v must clear the buttons %v", as, cancel)
+	}
+	if as.Max.X > p.Max.X-modalPad || as.Max.Y > p.Max.Y-modalPad {
+		t.Errorf("autoStopRect %v overflows the panel %v", as, p)
+	}
+	if u.autoStopDraft || u.autoStop {
+		t.Fatal("auto-stop should default to off")
+	}
+
+	px, py := (as.Min.X+as.Max.X)/2, (as.Min.Y+as.Max.Y)/2
+	if w := u.HitTest(px, py); w != WAutoStop {
+		t.Fatalf("auto-stop checkbox hit: got %v want WAutoStop", w)
+	}
+	u.Press(WAutoStop)
+	u.Release(WAutoStop)
+	if !u.autoStopDraft {
+		t.Fatal("click should check the auto-stop draft")
+	}
+	if u.autoStop {
+		t.Fatal("nothing should commit before SAVE")
+	}
+
+	_, save := u.modalButtons()
+	w := u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if !u.autoStop {
+		t.Error("the committed flag should be set after saving a checked box")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "auto-stop = true") {
+		t.Errorf("INI lacks the saved auto-stop key:\n%s", b)
+	}
+	// The neighbours must survive the extra key.
+	for _, want := range []string{"auto-submit = false", "demo-mode = false"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("INI lost %q while saving auto-stop:\n%s", want, b)
+		}
+	}
+
+	u.openSettings()
+	if !u.autoStopDraft {
+		t.Fatal("reopen should seed the draft from the committed value")
+	}
+}
+
+// TestAutoStopImpliesAutoSubmit pins the coupling, because it is the one place
+// where two checkboxes are not independent and a reader would reasonably
+// expect them to be: enabling AUTO STOP means the user never presses anything,
+// so leaving a SEND click behind would be a trap rather than a choice.
+func TestAutoStopImpliesAutoSubmit(t *testing.T) {
+	for _, tc := range []struct {
+		stop, submit, want bool
+	}{
+		{false, false, false},
+		{false, true, true},
+		{true, false, true}, // the coupling
+		{true, true, true},
+	} {
+		u := NewUI(320, 480)
+		u.autoStop, u.autoSubmit = tc.stop, tc.submit
+		if got := u.handsFree(); got != tc.want {
+			t.Errorf("autoStop=%v autoSubmit=%v: handsFree() = %v, want %v",
+				tc.stop, tc.submit, got, tc.want)
+		}
+	}
+}
+
+// TestAutoStopFallsBackToManual: with the setting off, a take must survive the
+// whole silence window and still be waiting for the user to click.
+func TestAutoStopFallsBackToManual(t *testing.T) {
+	u := newSTTTestUI(t, &fakeSTT{name: "fake"})
+	u.autoStop = false
+	u.ToggleMic()
+	if !u.Recording() {
+		t.Skip("no system recorder available in this environment")
+	}
+	// Nothing is watching, so no amount of waiting ends the take.
+	for i := 0; i < 20; i++ {
+		u.DrainSTT()
+	}
+	if !u.Recording() {
+		t.Fatal("the take ended on its own with auto-stop off")
+	}
+	u.ToggleMic()
+	drainUntilSettled(t, u)
+}
+
 // AUTO SUBMIT row beside it: layout inside the panel, hit-testing, draft-only
 // toggling, persistence to the INI, and re-seeding on reopen.
 func TestSettingsAutoSubmitCheckbox(t *testing.T) {

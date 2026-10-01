@@ -228,7 +228,7 @@ func TestFindSTTRecorder(t *testing.T) {
 // recorder, since the session only needs *some* process that ignores SIGINT.
 func TestSTTSessionLifecycle(t *testing.T) {
 	fake := &fakeSTT{name: "fake", text: "  hello there  "}
-	sess, err := StartSTTSession(fake, fakeRecorderPath(t), "")
+	sess, err := StartSTTSession(fake, fakeRecorderPath(t), "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestSTTSessionLifecycle(t *testing.T) {
 // is attempted.
 func TestSTTSessionCancel(t *testing.T) {
 	fake := &fakeSTT{name: "fake", text: "should not appear"}
-	sess, err := StartSTTSession(fake, fakeRecorderPath(t), "")
+	sess, err := StartSTTSession(fake, fakeRecorderPath(t), "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestSTTSessionCancel(t *testing.T) {
 // max-record timer) must not transcribe twice.
 func TestSTTSessionStopIsIdempotent(t *testing.T) {
 	fake := &fakeSTT{name: "fake", text: "once"}
-	sess, _ := StartSTTSession(fake, fakeRecorderPath(t), "")
+	sess, _ := StartSTTSession(fake, fakeRecorderPath(t), "", false)
 	if err := sess.Record(); err != nil {
 		t.Fatal(err)
 	}
@@ -319,10 +319,10 @@ func TestSTTSessionStopIsIdempotent(t *testing.T) {
 // TestStartSTTSessionGuards the two ways a session can be refused.
 func TestStartSTTSessionGuards(t *testing.T) {
 	fake := &fakeSTT{name: "fake"}
-	if _, err := StartSTTSession(nil, fakeRecorderPath(t), ""); err == nil {
+	if _, err := StartSTTSession(nil, fakeRecorderPath(t), "", false); err == nil {
 		t.Fatal("a nil backend should be refused")
 	}
-	_, err := StartSTTSession(fake, "", "")
+	_, err := StartSTTSession(fake, "", "", false)
 	if err == nil || !strings.Contains(err.Error(), "recorder") {
 		t.Fatalf("no recorder should be reported clearly, got %v", err)
 	}
@@ -412,7 +412,7 @@ func TestMicDrainLandsTranscript(t *testing.T) {
 	u := newSTTTestUI(t, fake)
 	u.input = []rune("already typed")
 
-	sess, err := StartSTTSession(fake, fakeRecorderPath(t), "")
+	sess, err := StartSTTSession(fake, fakeRecorderPath(t), "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +447,7 @@ func TestMicDrainLandsTranscript(t *testing.T) {
 func TestMicDrainReportsError(t *testing.T) {
 	fake := &fakeSTT{name: "fake", err: errors.New("mic: device busy")}
 	u := newSTTTestUI(t, fake)
-	sess, _ := StartSTTSession(fake, fakeRecorderPath(t), "")
+	sess, _ := StartSTTSession(fake, fakeRecorderPath(t), "", false)
 	if err := sess.Record(); err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +468,7 @@ func TestMicDrainReportsError(t *testing.T) {
 func TestMicCancelLeavesNoTrace(t *testing.T) {
 	fake := &fakeSTT{name: "fake", text: "nope"}
 	u := newSTTTestUI(t, fake)
-	sess, _ := StartSTTSession(fake, fakeRecorderPath(t), "")
+	sess, _ := StartSTTSession(fake, fakeRecorderPath(t), "", false)
 	if err := sess.Record(); err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +492,7 @@ func TestMicCancelLeavesNoTrace(t *testing.T) {
 // the textarea, so the user's words survive a mistaken Escape.
 func TestEscapeDuringRecording(t *testing.T) {
 	u := newSTTTestUI(t, &fakeSTT{name: "fake"})
-	sess, _ := StartSTTSession(u.STT, fakeRecorderPath(t), "")
+	sess, _ := StartSTTSession(u.STT, fakeRecorderPath(t), "", false)
 	if err := sess.Record(); err != nil {
 		t.Fatal(err)
 	}

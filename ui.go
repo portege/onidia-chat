@@ -53,6 +53,7 @@ const (
 	WThink      // thinking-bubble checkbox row (shares the mute row)
 	WDemo       // demo-mode checkbox row (below mute)
 	WAutoSubmit // auto-submit checkbox row (shares the demo row)
+	WAutoStop   // auto-stop checkbox row (below auto-submit)
 	WGirl       // gender picker: ONIDIA button (Haiya! launches the girl)
 	WBoy        // gender picker: KAMA button (Haiya! launches the boy)
 	WOption     // one row of an open dropdown list
@@ -215,17 +216,23 @@ const (
 	panelW    = 340 // modal panel width (clamped to the window; wide enough
 	// that the four sleep-time dropdowns fit their labels, chevrons and
 	// the expanded lists' dot + text)
-	panelH = 504 // modal panel height (name + age + sleep rows + busy rows +
-	// character picker + mute checkbox + demo-mode checkbox + buttons)
+	panelH = 534 // modal panel height (name + age + sleep rows + busy rows +
+	// character picker + mute/thinking row + demo/auto-submit row + auto-stop
+	// row + buttons)
 	dropH        = 32  // dropdown box height
 	optH         = 24  // dropdown list row height
 	genderRowY   = 314 // CHARACTER picker row top inside the panel (below busy time)
-	minSettingsH = 574 // window height forced while the modal is open
+	minSettingsH = 604 // window height forced while the modal is open
 
 	checkSide   = 20  // checkbox square side (mute / thinking bubble / demo mode)
 	checkColGap = 24  // gap between the two checkboxes sharing the mute row
 	muteRowY    = 370 // mute-checkbox row top inside the panel (below the character picker)
 	demoRowY    = 398 // demo-mode checkbox row top inside the panel (below mute)
+
+	// autoStopRowY is the end-of-speech row, on its own line below AUTO SUBMIT.
+	// The rows above it are paired and will not fit a third column, so this one
+	// takes the full width of the panel and grows it rather than cramping them.
+	autoStopRowY = 426
 
 	// About modal layout (drawAbout): a small informational panel shown by
 	// the header's About button.
@@ -342,8 +349,10 @@ type UI struct {
 	thinkDraft        bool      // thinking-bubble checkbox in the modal; committed on SAVE
 	demo              bool      // committed demo mode: true = pet roams & chatters (default off)
 	autoSubmit        bool      // committed: a finished transcript is sent on its own (INI "auto-submit"; default off)
+	autoStop          bool      // committed: a take ends on silence, with no second click (INI "auto-stop"; default off)
 	demoDraft         bool      // demo-mode checkbox in the modal; committed on SAVE
 	autoSubmitDraft   bool      // auto-submit checkbox in the modal; committed on SAVE
+	autoStopDraft     bool      // auto-stop checkbox in the modal; committed on SAVE
 	wantPetRestart    bool      // SAVE changed demo mode while the pet runs: restart it
 	gender            string    // committed pet gender: "girl" (Onidia) or "boy" (Kama)
 	genderDraft       string    // gender picked in the modal; committed on SAVE
@@ -668,6 +677,16 @@ func (u *UI) autoRect() image.Rectangle {
 		d.Max.X+checkColGap+w, d.Min.Y+checkSide)
 }
 
+// autoStopRect is the end-of-speech checkbox row, on its own line below
+// AUTO SUBMIT. It is anchored to autoStopRowY rather than derived from the row
+// above, because it is the only one of these that sits alone.
+func (u *UI) autoStopRect() image.Rectangle {
+	p := u.modalPanel()
+	w := checkSide + 10 + textWidth("AUTO STOP", 1)
+	return image.Rect(p.Min.X+modalPad, p.Min.Y+autoStopRowY,
+		p.Min.X+modalPad+w, p.Min.Y+autoStopRowY+checkSide)
+}
+
 // thinkRect is the thinking-bubble checkbox row: the box plus its label, so
 // clicking either toggles the draft. It shares the MUTE SPEECH row, sitting to
 // its right, and is derived from that row rather than pinned to its own Y so
@@ -871,6 +890,9 @@ func (u *UI) HitTest(x, y int) Widget {
 		}
 		if r := u.autoRect(); inRect(x, y, r) {
 			return WAutoSubmit
+		}
+		if r := u.autoStopRect(); inRect(x, y, r) {
+			return WAutoStop
 		}
 		if girl, boy := u.genderRects(); inRect(x, y, girl) {
 			return WGirl
@@ -1197,6 +1219,8 @@ func (u *UI) Release(w Widget) bool {
 			u.demoDraft = !u.demoDraft // commits on SAVE, like the drafts
 		case WAutoSubmit:
 			u.autoSubmitDraft = !u.autoSubmitDraft // commits on SAVE, like the drafts
+		case WAutoStop:
+			u.autoStopDraft = !u.autoStopDraft // commits on SAVE, like the drafts
 		case WGirl:
 			u.genderDraft = "girl" // commits on SAVE, like the drafts
 		case WBoy:
@@ -1442,6 +1466,7 @@ func (u *UI) openSettings() bool {
 	u.thinkDraft = u.think
 	u.demoDraft = u.demo
 	u.autoSubmitDraft = u.autoSubmit
+	u.autoStopDraft = u.autoStop
 	u.genderDraft = u.gender
 	// The modal keeps its full designed size, so the window grows in height
 	// when it is too short (prevH remembers the old height). collapsed is
@@ -1631,6 +1656,10 @@ func (u *UI) saveSettings() {
 		u.saveErr = err.Error()
 		return
 	}
+	if err := SetConfigValue(path, "character", "auto-stop", strconv.FormatBool(u.autoStopDraft)); err != nil {
+		u.saveErr = err.Error()
+		return
+	}
 	if err := SetConfigValue(path, "character", "character-gender", u.genderDraft); err != nil {
 		u.saveErr = err.Error()
 		return
@@ -1673,6 +1702,13 @@ func (u *UI) saveSettings() {
 		u.cancelAutoSubmit()
 	}
 	u.autoSubmit = u.autoSubmitDraft
+	// Turning auto-stop off only affects the next take, but a take in progress
+	// should not be left with a watcher that can no longer be undone - so drop
+	// it, and the take reverts to needing a second click.
+	if !u.autoStopDraft {
+		u.cancelAutoStop()
+	}
+	u.autoStop = u.autoStopDraft
 	u.gender = u.genderDraft
 	if u.Bot != nil {
 		if name != "" {
@@ -1840,6 +1876,26 @@ func (u *UI) SetStreamText(s string) {
 
 // drawCircle fills a circle of radius rad centred on (cx, cy). The mic
 // button is the only round widget, so this stays local to the UI file.
+// drawLevelRing paints the input level as a ring of dots around the mic, lit
+// from the top clockwise in proportion to level (0..100). It exists so the
+// end-of-speech threshold is observable: the dots moving is the difference
+// between "it is listening" and "it cannot hear me", which a take that never
+// stops and a take that stops instantly look identical without it.
+func drawLevelRing(frame *image.NRGBA, cx, cy, rad, level int) {
+	const dots = 12
+	lit := dots * max(0, min(100, level)) / 100
+	for i := 0; i < dots; i++ {
+		// Start at the top and go clockwise, a quarter turn per three dots.
+		a := -math.Pi/2 + 2*math.Pi*float64(i)/dots
+		px, py := cx+int(math.Cos(a)*float64(rad)), cy+int(math.Sin(a)*float64(rad))
+		if i < lit {
+			drawCircle(frame, px, py, 2, colError)
+		} else {
+			drawCircle(frame, px, py, 1, colInputBorder)
+		}
+	}
+}
+
 func drawCircle(frame *image.NRGBA, cx, cy, rad int, col color.RGBA) {
 	for y := -rad; y <= rad; y++ {
 		for x := -rad; x <= rad; x++ {
@@ -1884,7 +1940,7 @@ func (u *UI) ToggleMic() {
 // startMic begins a fresh take, reporting a failure in the input bar rather
 // than silently doing nothing.
 func (u *UI) startMic() {
-	sess, err := StartSTTSession(u.STT, findSTTRecorder(), u.sttDevice)
+	sess, err := StartSTTSession(u.STT, findSTTRecorder(), u.sttDevice, u.autoStop)
 	if err != nil {
 		u.sttErr, u.sttNote = err.Error(), ""
 		return
@@ -1925,6 +1981,30 @@ func (u *UI) armAutoSubmit() {
 // pressing Escape, starting another take, or switching the setting off.
 func (u *UI) cancelAutoSubmit() { u.sttAutoAt = time.Time{} }
 
+// handsFree reports whether a finished transcript should send itself.
+//
+// AUTO SUBMIT is the explicit half. AUTO STOP implies it, and that is the whole
+// point of the setting: if the app is going to end the take by itself, leaving
+// the user a SEND click afterwards would not be hands-free, it would be a trap
+// - a take that has already been closed, waiting on a button the user has no
+// reason to think they still have to press. So the two make a clean set:
+//
+//	neither  - fully manual, today's behaviour
+//	submit   - you stop, it sends
+//	stop     - it stops, it sends  (fully hands-free)
+//	both     - same as stop
+func (u *UI) handsFree() bool { return u.autoSubmit || u.autoStop }
+
+// cancelAutoStop drops the end-of-speech watcher on the take in flight, so
+// unchecking the setting mid-take takes effect immediately rather than at the
+// next one. The take is not stopped: it simply goes back to needing a click.
+func (u *UI) cancelAutoStop() {
+	if u.STTSess != nil && u.STTSess.vad != nil {
+		u.STTSess.vad.stop()
+		u.STTSess.vad = nil
+	}
+}
+
 // autoSubmitPending reports whether a send is counting down.
 func (u *UI) autoSubmitPending() bool { return !u.sttAutoAt.IsZero() }
 
@@ -1946,7 +2026,21 @@ func (u *UI) DrainSTT() {
 		u.Submit()
 		return
 	}
-	if u.STTSess == nil || !u.sttBusy {
+	if u.STTSess == nil {
+		return
+	}
+	// A take the end-of-speech watcher ended has no click behind it, so nobody
+	// has marked it busy yet. Pick it up here, where the poll already is.
+	if !u.sttBusy && !u.STTSess.Recording() {
+		u.sttBusy = true
+		u.sttErr = ""
+		if u.STTSess.AutoStopped() {
+			u.sttNote = "Heard you - transcribing…"
+		} else {
+			u.sttNote = "Transcribing…"
+		}
+	}
+	if !u.sttBusy {
 		return
 	}
 	select {
@@ -1975,7 +2069,7 @@ func (u *UI) DrainSTT() {
 			// window the user can read and interrupt, not a replacement for
 			// showing them what was heard. An empty take arms nothing: there
 			// would be nothing to send, and the note would flash for no reason.
-			if u.autoSubmit && strings.TrimSpace(string(u.input)) != "" {
+			if u.handsFree() && strings.TrimSpace(string(u.input)) != "" {
 				u.armAutoSubmit()
 			}
 		}
@@ -2350,6 +2444,7 @@ func (u *UI) drawSettings(frame *image.NRGBA) {
 
 	u.drawDemoRow(frame)
 	u.drawAutoRow(frame)
+	u.drawAutoStopRow(frame)
 
 	u.drawGenderRow(frame)
 
@@ -2551,6 +2646,12 @@ func (u *UI) drawDemoRow(frame *image.NRGBA) {
 // in the textarea for the user to read and send.
 func (u *UI) drawAutoRow(frame *image.NRGBA) {
 	u.drawCheckRow(frame, u.autoRect(), WAutoSubmit, u.autoSubmitDraft, "AUTO SUBMIT")
+}
+
+// drawAutoStopRow paints the AUTO STOP checkbox: checked ends a take on
+// silence, so a turn is mic-click then talk.
+func (u *UI) drawAutoStopRow(frame *image.NRGBA) {
+	u.drawCheckRow(frame, u.autoStopRect(), WAutoStop, u.autoStopDraft, "AUTO STOP")
 }
 
 // drawCheckRow paints one labelled checkbox: a rounded square that is white
@@ -3344,6 +3445,12 @@ func (u *UI) drawMic(frame *image.NRGBA) {
 		if phase := int(time.Since(u.sttSince).Milliseconds()/125) % 2; phase == 0 {
 			drawCircle(frame, cx, cy, micW/2+3, colError)
 		}
+	}
+	// Level ring, only while the end-of-speech watcher is deciding: without it
+	// the user is being asked to trust an invisible threshold, and there is no
+	// way to tell "it has not heard me yet" from "the floor is set too high".
+	if u.Recording() && u.STTSess != nil && u.STTSess.vad != nil {
+		drawLevelRing(frame, cx, cy, micW/2+5, u.STTSess.MicLevel())
 	}
 	drawCircle(frame, cx, cy, micW/2, outline)
 	drawCircle(frame, cx, cy, micW/2-2, fill)

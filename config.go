@@ -38,6 +38,7 @@ type Config struct {
 	Thinking         string `ini:"thinking"`            // "on" (default) | "off": draw the reasoning cloud (settings dialog checkbox)
 	DemoMode         bool   `ini:"demo-mode"`           // true = pet roams & chatters on its own (settings dialog checkbox; default off = planted)
 	AutoSubmit       bool   `ini:"auto-submit"`         // true = send a spoken transcript automatically (settings dialog checkbox; default off = the user sends it)
+	AutoStop         bool   `ini:"auto-stop"`           // true = end a take on silence, with no second click (settings dialog checkbox; default off)
 	Provider         string `ini:"provider"`            // "gemini" (default) | "bedrock" | "ollama" | "openrouter"
 	Preflight        string `ini:"preflight"`           // startup check: "strict" (default; block before the window opens) | "warn" | "off"
 	Stream           bool   `ini:"stream"`              // openrouter: SSE streaming reply (default on)
@@ -197,6 +198,8 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.DemoMode = parseBool(val)
 	case "auto-submit":
 		cfg.AutoSubmit = parseBool(val)
+	case "auto-stop":
+		cfg.AutoStop = parseBool(val)
 	case "character-gender":
 		cfg.Gender = normalizeGender(val)
 	case "provider":

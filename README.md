@@ -176,6 +176,49 @@ cut.) A take that transcribed to nothing (silence) never arms the countdown.
 
 Written to `chat-app.ini` as `auto-submit = true|false`.
 
+### Auto-stop (AUTO STOP, hands-free)
+
+The mic still needs *starting*, so a turn is never zero clicks — but with this
+on it stops being two. Tick **AUTO STOP** (the row below AUTO SUBMIT) and:
+
+1. click the mic
+2. talk
+3. *stop talking — the take closes itself, transcribes, and sends*
+
+No second click, no SEND. It works by watching the input level: a take that has
+heard speech and then stays quiet for **1.2s** is closed. That's it — no model
+is asked whether you finished.
+
+Because there is no longer a button to press, a transcript is sent straight
+away. **Enabling AUTO STOP therefore implies AUTO SUBMIT**; the point of ending
+a take for someone is that they don't then have to do the next thing either.
+
+**This is a level threshold, and level thresholds are a heuristic.** The guards
+that make it usable rather than maddening:
+
+- A take that has **never heard anything** is never ended. A noisy room runs to
+  the 120-second cap instead of closing instantly on a hiss.
+- It must fall quiet for a full **sentence pause**, not a gap between words.
+- Level is judged on the **peak** of each 20ms frame, not the RMS —
+  `internal/mic` spells out why: *"a working microphone in a quiet room sits at a
+  very low RMS while still carrying speech, and gating on the RMS declares a
+  perfectly good mic dead."* The floor is also **relative** to the take's own
+  loudest frame, so a quiet headset still counts as speech.
+- The mic button shows a **ring of dots for the input level** while it decides.
+  This is not decoration: without it, a take that never stops and a take that
+  stops instantly look identical, and you cannot tell whether the floor is set
+  too high.
+
+Both failure modes point the safe way. Too noisy → it never stops, and you click
+or wait for the cap. Too quiet → the relative floor covers it.
+
+Tuning, if a take is cut mid-sentence: raise `vadSilence`. If takes never stop,
+the room is too loud for a threshold and this is the wrong tool — the manual
+click still works, and `-stt whisper` with `stt-whisper-vad` is the other lever
+(for filtering quiet takes *after* recording, which is a different job).
+
+Written to `chat-app.ini` as `auto-stop = true|false`.
+
 Backends are pluggable behind the `STT` interface in `stt.go`, chosen by the
 `stt` key:
 
@@ -620,8 +663,8 @@ left the character still musing, which reads as the setting not working.
 | click **SEND** | submit (only enabled while the textarea has text) |
 | click textarea | focus it (border turns teal, caret blinks) |
 | click **+ / −** (header, left of ⚙) | show/hide the conversation history (starts collapsed) |
-| click **⚙ gear** (header, left of ✕) | open the settings dialog (character age 7-13, sleep window FROM/TO, busy window, CHARACTER picker — the buttons carry the character names: **ONIDIA** = Haiya! launches the girl, **KAMA** = the boy, MUTE SPEECH and DEMO MODE checkboxes below it (AUTO SUBMIT shares the DEMO MODE row); SAVE writes `character-name`, `character-age`, `sleep-time`, `busy-time`, `mute`, `thinking`, `demo-mode`, `auto-submit` + `character-gender` to `chat-app.ini` and rewrites the stored persona's "your name is …" sentence with the name + age) |
-| in the dialog | type the character's name into NAME, click a dropdown to drop its list (hour lists scroll with the wheel), pick a value, pick **ONIDIA**/**KAMA** in the CHARACTER row for who the Haiya! button launches, tick/untick **MUTE SPEECH** to silence the text-to-speech voice, tick/untick **DEMO MODE** to switch the buddy between roaming+chattering and planted (it walks to its parking spot three character widths in from the right edge and stays there), tick/untick **AUTO SUBMIT** to send a spoken prompt on its own (see below), **SAVE** (or **Enter**); **CANCEL** / **Esc** discards |
+| click **⚙ gear** (header, left of ✕) | open the settings dialog (character age 7-13, sleep window FROM/TO, busy window, CHARACTER picker — the buttons carry the character names: **ONIDIA** = Haiya! launches the girl, **KAMA** = the boy, MUTE SPEECH and DEMO MODE checkboxes below it (AUTO SUBMIT shares the DEMO MODE row, AUTO STOP the row below); SAVE writes `character-name`, `character-age`, `sleep-time`, `busy-time`, `mute`, `thinking`, `demo-mode`, `auto-submit`, `auto-stop` + `character-gender` to `chat-app.ini` and rewrites the stored persona's "your name is …" sentence with the name + age) |
+| in the dialog | type the character's name into NAME, click a dropdown to drop its list (hour lists scroll with the wheel), pick a value, pick **ONIDIA**/**KAMA** in the CHARACTER row for who the Haiya! button launches, tick/untick **MUTE SPEECH** to silence the text-to-speech voice, tick/untick **DEMO MODE** to switch the buddy between roaming+chattering and planted (it walks to its parking spot three character widths in from the right edge and stays there), tick/untick **AUTO SUBMIT** to send a spoken prompt on its own, and **AUTO STOP** to end the take when you stop talking (see below), **SAVE** (or **Enter**); **CANCEL** / **Esc** discards |
 | click **About** (header, left of ✕) | open the About dialog: a teal hero strip with the word-art name (drop shadow, plum outline, sparkles) and the round character badge — the same Onidia mark as the web header's logo, her happy face, drawn in code — above the tagline, a live line naming whichever buddy is running, and the engineering credit; **OK**, a backdrop click or **Esc** dismisses it |
 | **drag** the header | move the window (`_NET_WM_MOVERESIZE`; the frame has no titlebar) |
 | click **✕** (header, far right) | quit the app |

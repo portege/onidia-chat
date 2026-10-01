@@ -229,3 +229,25 @@ demo-mode = false
 # with nothing in it. Saving the dialog rewrites this key in place.
 auto-submit = false
 
+# Auto-stop checkbox (the row below AUTO SUBMIT) - hands-free speech input. OFF
+# (the default) is the flow above: click the mic, talk, click it again to stop.
+#
+# ON ends the take by itself when you stop talking, so a turn is click, talk,
+# and nothing else. It works by watching the input level, not by asking a model:
+# a take that has heard speech and then stays quiet for vadSilence (1.2s) is
+# closed. Because there is no button to press, a transcript is sent straight
+# after - enabling this implies auto-submit, which is the whole point. The
+# setting is deliberately conservative:
+#
+#   * a take that has never heard anything is never ended, so a noisy room runs
+#     to the 120-second cap instead of closing instantly on a hiss;
+#   * a take must fall quiet for a full sentence pause, not a gap between words;
+#   * the level is judged on the peak of each 20ms frame and relative to the
+#     take's own loudest frame, so a quiet headset still counts as speech;
+#   * the mic button shows a ring of dots for the input level while it decides,
+#     which is the only way to tell "listening" from "cannot hear you".
+#
+# If takes get cut off mid-sentence, raise vadSilence. If they never stop, the
+# room is too loud for a level threshold and the manual click still works.
+auto-stop = false
+
