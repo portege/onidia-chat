@@ -52,6 +52,7 @@ const (
 	WMute       // mute-speech checkbox row
 	WThink      // thinking-bubble checkbox row (shares the mute row)
 	WDemo       // demo-mode checkbox row (below mute)
+	WAutoSubmit // auto-submit checkbox row (shares the demo row)
 	WGirl       // gender picker: ONIDIA button (Haiya! launches the girl)
 	WBoy        // gender picker: KAMA button (Haiya! launches the boy)
 	WOption     // one row of an open dropdown list
@@ -301,6 +302,10 @@ type UI struct {
 	sttNote   string
 	sttSince  time.Time
 	sttDevice string // capture device ("" = system default)
+	// sttAutoAt is when a pending auto-submit fires, or zero when none is
+	// pending. It is armed only once the transcript has actually landed, so it
+	// is never set while a take or a transcription is still in flight.
+	sttAutoAt time.Time
 
 	hover Widget
 	press Widget
@@ -336,7 +341,9 @@ type UI struct {
 	muteDraft         bool      // mute-speech checkbox in the modal; committed on SAVE
 	thinkDraft        bool      // thinking-bubble checkbox in the modal; committed on SAVE
 	demo              bool      // committed demo mode: true = pet roams & chatters (default off)
+	autoSubmit        bool      // committed: a finished transcript is sent on its own (INI "auto-submit"; default off)
 	demoDraft         bool      // demo-mode checkbox in the modal; committed on SAVE
+	autoSubmitDraft   bool      // auto-submit checkbox in the modal; committed on SAVE
 	wantPetRestart    bool      // SAVE changed demo mode while the pet runs: restart it
 	gender            string    // committed pet gender: "girl" (Onidia) or "boy" (Kama)
 	genderDraft       string    // gender picked in the modal; committed on SAVE
@@ -650,6 +657,17 @@ func (u *UI) demoRect() image.Rectangle {
 		p.Min.X+modalPad+w, p.Min.Y+demoRowY+checkSide)
 }
 
+// autoRect is the auto-submit checkbox row: the box plus its label, so clicking
+// either toggles the draft. It shares the DEMO MODE row to that row's right, and
+// is derived from it for the same reason thinkRect derives from muteRect - the
+// two can never drift apart.
+func (u *UI) autoRect() image.Rectangle {
+	d := u.demoRect()
+	w := checkSide + 10 + textWidth("AUTO SUBMIT", 1)
+	return image.Rect(d.Max.X+checkColGap, d.Min.Y,
+		d.Max.X+checkColGap+w, d.Min.Y+checkSide)
+}
+
 // thinkRect is the thinking-bubble checkbox row: the box plus its label, so
 // clicking either toggles the draft. It shares the MUTE SPEECH row, sitting to
 // its right, and is derived from that row rather than pinned to its own Y so
@@ -850,6 +868,9 @@ func (u *UI) HitTest(x, y int) Widget {
 		}
 		if r := u.demoRect(); inRect(x, y, r) {
 			return WDemo
+		}
+		if r := u.autoRect(); inRect(x, y, r) {
+			return WAutoSubmit
 		}
 		if girl, boy := u.genderRects(); inRect(x, y, girl) {
 			return WGirl
@@ -1174,6 +1195,8 @@ func (u *UI) Release(w Widget) bool {
 			u.thinkDraft = !u.thinkDraft // commits on SAVE, like the drafts
 		case WDemo:
 			u.demoDraft = !u.demoDraft // commits on SAVE, like the drafts
+		case WAutoSubmit:
+			u.autoSubmitDraft = !u.autoSubmitDraft // commits on SAVE, like the drafts
 		case WGirl:
 			u.genderDraft = "girl" // commits on SAVE, like the drafts
 		case WBoy:
@@ -1418,6 +1441,7 @@ func (u *UI) openSettings() bool {
 	u.muteDraft = u.mute
 	u.thinkDraft = u.think
 	u.demoDraft = u.demo
+	u.autoSubmitDraft = u.autoSubmit
 	u.genderDraft = u.gender
 	// The modal keeps its full designed size, so the window grows in height
 	// when it is too short (prevH remembers the old height). collapsed is
@@ -1603,6 +1627,10 @@ func (u *UI) saveSettings() {
 		u.saveErr = err.Error()
 		return
 	}
+	if err := SetConfigValue(path, "character", "auto-submit", strconv.FormatBool(u.autoSubmitDraft)); err != nil {
+		u.saveErr = err.Error()
+		return
+	}
 	if err := SetConfigValue(path, "character", "character-gender", u.genderDraft); err != nil {
 		u.saveErr = err.Error()
 		return
@@ -1638,6 +1666,13 @@ func (u *UI) saveSettings() {
 		u.wantPetRestart = true
 	}
 	u.demo = u.demoDraft
+	// Unlike demo mode this needs no pet restart, and it must also drop any
+	// send already counting down: the user has just said they do not want the
+	// app sending on its own, so the one it is about to do is the last one.
+	if !u.autoSubmitDraft {
+		u.cancelAutoSubmit()
+	}
+	u.autoSubmit = u.autoSubmitDraft
 	u.gender = u.genderDraft
 	if u.Bot != nil {
 		if name != "" {
@@ -1743,7 +1778,10 @@ func (u *UI) Key(r rune, sym uint32) bool {
 		u.Submit()
 		return true
 	case ksBackspace:
+		// Editing the transcript is the clearest signal that the user wants to
+		// keep control of it, so it cancels the pending send.
 		if n := len(u.input); n > 0 {
+			u.cancelAutoSubmit()
 			u.input = u.input[:n-1]
 			return true
 		}
@@ -1757,6 +1795,7 @@ func (u *UI) Key(r rune, sym uint32) bool {
 			return true
 		}
 		if len(u.input) > 0 {
+			u.cancelAutoSubmit()
 			u.input = nil
 			u.sttNote = "" // a discarded transcript note is no longer true
 			return true
@@ -1764,6 +1803,7 @@ func (u *UI) Key(r rune, sym uint32) bool {
 		return false
 	}
 	if r >= 0x20 && r <= 0x7e && len(u.input) < maxInput {
+		u.cancelAutoSubmit() // the user is adding to it by hand
 		u.input = append(u.input, r)
 		return true
 	}
@@ -1819,6 +1859,9 @@ func drawCircle(frame *image.NRGBA, cx, cy, rad int, col color.RGBA) {
 // mic interaction: no mode flags beyond the session itself, which already
 // knows whether it is recording.
 func (u *UI) ToggleMic() {
+	// Any mic interaction supersedes a send that is counting down: the user is
+	// about to record again, so the words waiting to go out should just wait.
+	u.cancelAutoSubmit()
 	switch {
 	case u.STT == nil:
 		return
@@ -1864,10 +1907,45 @@ func (u *UI) CancelMic() {
 	}
 }
 
+// armAutoSubmit schedules the prompt to go out on its own, and says so in the
+// input bar. Only ever called with words already in the textarea.
+//
+// The wording is held to what actually fits: at the default window width the
+// note area is 21 columns, so anything longer is silently cut by fitCols and
+// loses the part that matters - which key to press. TestAutoSubmitNoteFits
+// pins that.
+func (u *UI) armAutoSubmit() {
+	u.sttAutoAt = time.Now().Add(sttAutoSubmitDelay)
+	u.sttErr = ""
+	u.sttNote = "Sending, Esc to stop"
+}
+
+// cancelAutoSubmit drops a pending send, leaving the text where it is. Every
+// route out of the grace window goes through here: the user editing, sending,
+// pressing Escape, starting another take, or switching the setting off.
+func (u *UI) cancelAutoSubmit() { u.sttAutoAt = time.Time{} }
+
+// autoSubmitPending reports whether a send is counting down.
+func (u *UI) autoSubmitPending() bool { return !u.sttAutoAt.IsZero() }
+
 // DrainSTT collects a finished take. It is non-blocking: a take that is still
 // transcribing has nothing on the channel yet, so the next poll picks it up.
 // Call it every frame from main.
 func (u *UI) DrainSTT() {
+	// The countdown is checked before the take is even looked at, because by the
+	// time a transcript has landed sttBusy is already false and the guard below
+	// would return first. Nothing else can be pending meanwhile: every mic
+	// interaction cancels the countdown, so a new take and a pending send can
+	// never overlap.
+	if u.autoSubmitPending() {
+		if time.Now().Before(u.sttAutoAt) {
+			return // still inside the grace window
+		}
+		u.cancelAutoSubmit()
+		u.sttNote = ""
+		u.Submit()
+		return
+	}
 	if u.STTSess == nil || !u.sttBusy {
 		return
 	}
@@ -1892,6 +1970,14 @@ func (u *UI) DrainSTT() {
 			}
 			u.input = append(u.input, []rune(res.Text)...)
 			u.focused = true
+			// With auto-submit on, the words still land in the textarea first
+			// and the countdown starts from here - so the one second is a grace
+			// window the user can read and interrupt, not a replacement for
+			// showing them what was heard. An empty take arms nothing: there
+			// would be nothing to send, and the note would flash for no reason.
+			if u.autoSubmit && strings.TrimSpace(string(u.input)) != "" {
+				u.armAutoSubmit()
+			}
 		}
 	default:
 		// Still transcribing.
@@ -1910,6 +1996,9 @@ func (u *UI) Busy() bool { return u.sttBusy }
 // "..." bubble meanwhile and the reply arrives on u.Replies). Empty input is
 // a no-op.
 func (u *UI) Submit() {
+	// Every send is final, including an automatic one, so a countdown that is
+	// somehow still live must not fire a second time behind it.
+	u.cancelAutoSubmit()
 	text := strings.TrimSpace(string(u.input))
 	if text == "" {
 		return
@@ -2260,6 +2349,7 @@ func (u *UI) drawSettings(frame *image.NRGBA) {
 	u.drawThinkRow(frame)
 
 	u.drawDemoRow(frame)
+	u.drawAutoRow(frame)
 
 	u.drawGenderRow(frame)
 
@@ -2454,6 +2544,13 @@ func (u *UI) drawThinkRow(frame *image.NRGBA) {
 // and still idly blinking).
 func (u *UI) drawDemoRow(frame *image.NRGBA) {
 	u.drawCheckRow(frame, u.demoRect(), WDemo, u.demoDraft, "DEMO MODE")
+}
+
+// drawAutoRow paints the AUTO SUBMIT checkbox beside DEMO MODE: checked sends a
+// finished transcript on its own after a short grace window, unchecked leaves it
+// in the textarea for the user to read and send.
+func (u *UI) drawAutoRow(frame *image.NRGBA) {
+	u.drawCheckRow(frame, u.autoRect(), WAutoSubmit, u.autoSubmitDraft, "AUTO SUBMIT")
 }
 
 // drawCheckRow paints one labelled checkbox: a rounded square that is white

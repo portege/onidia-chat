@@ -763,6 +763,10 @@ func main() {
 	// demo-mode = true in the INI turns autonomous roaming/chatter on.
 	if cfg != nil {
 		ui.demo = cfg.DemoMode
+		// Auto-submit defaults to OFF for the same reason: a misheard sentence
+		// that goes to the model without being read is worse than one extra
+		// click, so it is opt-in.
+		ui.autoSubmit = cfg.AutoSubmit
 	}
 	ui.Bot.Provider = botProvider
 	story.bot = ui.Bot // wire the native read_story agent to this provider

@@ -212,3 +212,20 @@ thinking = on
 # place and restarts the buddy so the mode takes effect immediately.
 demo-mode = false
 
+# Auto-submit checkbox (the row beside DEMO MODE). OFF (the default) keeps the
+# old hands-on flow: the mic button records, pressing it again stops, the
+# transcript is typed into the input bar, and you read it and press SEND. That
+# is the safer default, because a misheard sentence costs one click to fix
+# rather than a reply already sent to the model.
+#
+# ON removes the last step: once the transcript lands it is shown for one
+# second and then sent on its own, so a whole turn is mic-click, talk,
+# mic-click. The one second is a grace window, not extra latency - it starts
+# when the words arrive, not when you stop talking, so a slow transcription
+# never eats into it. Type, backspace, press Escape, press the mic again or
+# untick this box during that second and the prompt stays where it is.
+#
+# An empty take (silence) never arms the countdown, so it cannot fire a send
+# with nothing in it. Saving the dialog rewrites this key in place.
+auto-submit = false
+

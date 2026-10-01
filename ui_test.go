@@ -1438,6 +1438,139 @@ func TestThinkingGateHidesCloud(t *testing.T) {
 	}
 }
 
+// TestSettingsAutoSubmitCheckbox mirrors the DEMO MODE checkbox test for the
+// AUTO SUBMIT row beside it: layout inside the panel, hit-testing, draft-only
+// toggling, persistence to the INI, and re-seeding on reopen.
+func TestSettingsAutoSubmitCheckbox(t *testing.T) {
+	path := writeTempINI(t, "[character]\ncharacter-age = 7\n")
+	u := NewUI(380, 520)
+	u.age = 7
+	u.savePath = path
+	u.collapsed = false
+	u.H = 520
+	u.openSettings()
+
+	// Layout: the row shares the DEMO MODE row, sits to its right, and stays
+	// inside the panel and clear of the buttons.
+	ar, dr := u.autoRect(), u.demoRect()
+	cancel, _ := u.modalButtons()
+	if ar.Min.Y != dr.Min.Y {
+		t.Errorf("autoRect row %d should align with demoRect row %d", ar.Min.Y, dr.Min.Y)
+	}
+	if ar.Min.X <= dr.Max.X {
+		t.Errorf("autoRect %v should sit to the right of demoRect %v", ar, dr)
+	}
+	if ar.Max.X > u.modalPanel().Max.X-modalPad {
+		t.Errorf("autoRect %v overflows the panel %v", ar, u.modalPanel())
+	}
+	if ar.Max.Y >= cancel.Min.Y {
+		t.Errorf("autoRect %v must clear the buttons %v", ar, cancel)
+	}
+	if u.autoSubmitDraft || u.autoSubmit {
+		t.Fatal("auto-submit should default to off")
+	}
+
+	// Click it: the draft toggles, nothing commits.
+	px, py := (ar.Min.X+ar.Max.X)/2, (ar.Min.Y+ar.Max.Y)/2
+	if w := u.HitTest(px, py); w != WAutoSubmit {
+		t.Fatalf("auto-submit checkbox hit: got %v want WAutoSubmit", w)
+	}
+	u.Press(WAutoSubmit)
+	u.Release(WAutoSubmit)
+	if !u.autoSubmitDraft {
+		t.Fatal("click should check the auto-submit draft")
+	}
+	if u.autoSubmit {
+		t.Fatal("nothing should commit before SAVE")
+	}
+
+	// SAVE persists it.
+	_, save := u.modalButtons()
+	w := u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if u.settingsOpen {
+		t.Fatal("save should close the modal")
+	}
+	if !u.autoSubmit {
+		t.Error("the committed flag should be set after saving a checked box")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "auto-submit = true") {
+		t.Errorf("INI lacks the saved auto-submit key:\n%s", b)
+	}
+	// And it must not have cost the neighbouring settings their values.
+	for _, want := range []string{"demo-mode = false", "character-age = 7"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("INI lost %q while saving auto-submit:\n%s", want, b)
+		}
+	}
+
+	// Re-open: the draft re-seeds from the committed value.
+	u.openSettings()
+	if !u.autoSubmitDraft {
+		t.Fatal("reopen should seed the draft from the committed value")
+	}
+}
+
+// TestSettingsAutoSubmitCancel: CANCEL discards the flip, and a pending
+// auto-submit survives neither the cancel nor the box being left off.
+func TestSettingsAutoSubmitCancel(t *testing.T) {
+	path := writeTempINI(t, "[character]\ncharacter-age = 7\n")
+	u := NewUI(380, 520)
+	u.age = 7
+	u.savePath = path
+	u.collapsed = false
+	u.H = 520
+	u.openSettings()
+	u.Press(WAutoSubmit)
+	u.Release(WAutoSubmit)
+	if !u.autoSubmitDraft {
+		t.Fatal("click should check the draft")
+	}
+	cancel, _ := u.modalButtons()
+	w := u.HitTest((cancel.Min.X+cancel.Max.X)/2, (cancel.Min.Y+cancel.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+
+	u.openSettings()
+	if u.autoSubmitDraft || u.autoSubmit {
+		t.Error("CANCEL should have discarded the flip")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "auto-submit") {
+		t.Errorf("CANCEL should not have written the key:\n%s", b)
+	}
+}
+
+// TestSettingsAutoSubmitReadsBack makes sure the INI value actually reaches the
+// running UI, which is the half of the round trip saveSettings does not cover.
+func TestSettingsAutoSubmitReadsBack(t *testing.T) {
+	path := writeTempINI(t, "[character]\nauto-submit = true\ncharacter-age = 7\n")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AutoSubmit {
+		t.Error("auto-submit = true should load as true")
+	}
+	// A file written before this setting existed must read as off, not error.
+	old := writeTempINI(t, "[character]\ncharacter-age = 7\n")
+	cfg2, err := LoadConfig(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.AutoSubmit {
+		t.Error("a missing auto-submit key should default to off")
+	}
+}
+
 // TestSettingsDemoCheckbox verifies the DEMO MODE checkbox row (directly
 // below MUTE SPEECH): it hit-tests as WDemo, toggles the draft on click
 // (committing only on SAVE), re-seeds from the committed value when the

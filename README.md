@@ -149,6 +149,33 @@ textarea for you to edit (or press **Esc** to discard the take). Nothing is
 sent to the model until you press SEND, because a misheard sentence is much
 cheaper to fix in the textarea than to re-record.
 
+### Auto-submit (AUTO SUBMIT, beside DEMO MODE)
+
+That last click is the one thing left to do by hand, so the settings dialog has
+a checkbox to remove it. It is **off by default** — the flow above is the
+default because a misheard sentence should cost a click, not a reply — but with
+it on a whole turn becomes:
+
+1. click the mic, talk
+2. click the mic again to stop
+3. *the transcript appears, waits one second, and sends itself*
+
+The one second is a **grace window, not extra latency**. It is counted from the
+moment the words arrive rather than from the moment you stopped talking, because
+transcription is asynchronous and can take several seconds; starting it at the
+button press would burn it before there was anything to send. The window exists
+so a misheard word can still be caught at a glance. Anything you do in that
+second keeps the prompt where it is: typing, backspace, **Esc**, the SEND
+button, or the mic again. Untick the box and even a send already counting down
+is dropped.
+
+The input bar says `Sending, Esc to stop` while it runs, so the app is never
+about to send something without saying so. (That wording is deliberately short:
+the note is clipped to the width of the input bar, and the tail is what gets
+cut.) A take that transcribed to nothing (silence) never arms the countdown.
+
+Written to `chat-app.ini` as `auto-submit = true|false`.
+
 Backends are pluggable behind the `STT` interface in `stt.go`, chosen by the
 `stt` key:
 
@@ -593,8 +620,8 @@ left the character still musing, which reads as the setting not working.
 | click **SEND** | submit (only enabled while the textarea has text) |
 | click textarea | focus it (border turns teal, caret blinks) |
 | click **+ / −** (header, left of ⚙) | show/hide the conversation history (starts collapsed) |
-| click **⚙ gear** (header, left of ✕) | open the settings dialog (character age 7-13, sleep window FROM/TO, busy window, CHARACTER picker — the buttons carry the character names: **ONIDIA** = Haiya! launches the girl, **KAMA** = the boy, MUTE SPEECH and DEMO MODE checkboxes below it; SAVE writes `character-name`, `character-age`, `sleep-time`, `busy-time`, `mute`, `demo-mode` + `character-gender` to `chat-app.ini` and rewrites the stored persona's "your name is …" sentence with the name + age) |
-| in the dialog | type the character's name into NAME, click a dropdown to drop its list (hour lists scroll with the wheel), pick a value, pick **ONIDIA**/**KAMA** in the CHARACTER row for who the Haiya! button launches, tick/untick **MUTE SPEECH** to silence the text-to-speech voice, tick/untick **DEMO MODE** to switch the buddy between roaming+chattering and planted (it walks to its parking spot three character widths in from the right edge and stays there), **SAVE** (or **Enter**); **CANCEL** / **Esc** discards |
+| click **⚙ gear** (header, left of ✕) | open the settings dialog (character age 7-13, sleep window FROM/TO, busy window, CHARACTER picker — the buttons carry the character names: **ONIDIA** = Haiya! launches the girl, **KAMA** = the boy, MUTE SPEECH and DEMO MODE checkboxes below it (AUTO SUBMIT shares the DEMO MODE row); SAVE writes `character-name`, `character-age`, `sleep-time`, `busy-time`, `mute`, `thinking`, `demo-mode`, `auto-submit` + `character-gender` to `chat-app.ini` and rewrites the stored persona's "your name is …" sentence with the name + age) |
+| in the dialog | type the character's name into NAME, click a dropdown to drop its list (hour lists scroll with the wheel), pick a value, pick **ONIDIA**/**KAMA** in the CHARACTER row for who the Haiya! button launches, tick/untick **MUTE SPEECH** to silence the text-to-speech voice, tick/untick **DEMO MODE** to switch the buddy between roaming+chattering and planted (it walks to its parking spot three character widths in from the right edge and stays there), tick/untick **AUTO SUBMIT** to send a spoken prompt on its own (see below), **SAVE** (or **Enter**); **CANCEL** / **Esc** discards |
 | click **About** (header, left of ✕) | open the About dialog: a teal hero strip with the word-art name (drop shadow, plum outline, sparkles) and the round character badge — the same Onidia mark as the web header's logo, her happy face, drawn in code — above the tagline, a live line naming whichever buddy is running, and the engineering credit; **OK**, a backdrop click or **Esc** dismisses it |
 | **drag** the header | move the window (`_NET_WM_MOVERESIZE`; the frame has no titlebar) |
 | click **✕** (header, far right) | quit the app |

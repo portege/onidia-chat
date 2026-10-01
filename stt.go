@@ -49,6 +49,14 @@ const (
 	// sttChunkSeconds is the audio chunk size the Transcribe docs recommend
 	// for PCM: Duration x Rate x Channels x 2 bytes.
 	sttChunkSeconds = 1
+	// sttAutoSubmitDelay is how long a finished transcript waits on screen when
+	// auto-submit is on, before it is sent. It is counted from the moment the
+	// words arrive rather than from the moment the user stopped talking:
+	// transcription is asynchronous and can take seconds, so a countdown started
+	// at the button press would run out before there was anything to send. The
+	// delay is the grace window - long enough to read what was heard, short
+	// enough that the exchange still feels like a conversation.
+	sttAutoSubmitDelay = 1 * time.Second
 )
 
 // sttRecorderCandidates is the order in which system recorders are tried.
