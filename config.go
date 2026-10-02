@@ -64,6 +64,7 @@ type Config struct {
 	SleepTo          int    // legacy whole-hour aliases kept for existing callers (set from H fields)
 	AgentsDir        string `ini:"agents-dir"`         // directory of downloadable agents ("" = default)
 	AgentsOff        bool   `ini:"agents-off"`         // true = never discover agents / advertise them
+	AgentsDisabled   string `ini:"agents-disabled"`    // comma-separated ids to switch off ("")
 	MusicDir         string `ini:"music-dir"`          // play_song agent's music folder ("" = agent default)
 	VideoDir         string `ini:"video-dir"`          // play_movie agent's video folder ("" = agent default)
 	AgentsKey        string `ini:"agents-key"`         // trusted Ed25519 public key hex for agent signatures ("" = unverified)
@@ -235,6 +236,8 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.AgentsDir = val
 	case "agents-off":
 		cfg.AgentsOff = parseBool(val)
+	case "agents-disabled":
+		cfg.AgentsDisabled = val
 	case "agents-key":
 		cfg.AgentsKey = strings.TrimSpace(val)
 	case "agents-require-sig":

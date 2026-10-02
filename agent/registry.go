@@ -230,10 +230,34 @@ func ScanInstalled(dir string) []InstalledAgent {
 		} else {
 			item.ID = m.ID
 			item.Version = m.Version
-			item.Disabled = m.Disabled
+			item.Disabled = m.Disabled || IsDisabled(m.ID)
 		}
 		list = append(list, item)
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
 	return list
+}
+
+// ScanInstalledDirs inventories every directory in order, keeping the first
+// folder seen for an id (same precedence as discovery, so the user's own agent
+// shadows a packaged one). Unlike discovery it also reports agents that are
+// switched off, which is the point of listing them: an agent the user cannot
+// see is the one they will think is missing.
+//
+// Directories that do not exist are skipped, not an error: the per-user agents
+// directory is absent for anyone who has never added one.
+func ScanInstalledDirs(dirs []string) []InstalledAgent {
+	seen := map[string]bool{}
+	var out []InstalledAgent
+	for _, dir := range dirs {
+		for _, it := range ScanInstalled(dir) {
+			if seen[it.ID] {
+				continue
+			}
+			seen[it.ID] = true
+			out = append(out, it)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }

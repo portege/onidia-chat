@@ -108,6 +108,34 @@ func TestDefaultConfigPath(t *testing.T) {
 	}
 }
 
+// TestDefaultConfigPathUserConfig covers the third fallback: a packaged
+// install puts the binary in /opt/onidia/bin and the config in the user's
+// XDG config dir, so neither ./chat-app.ini nor the exedir copy exists and the
+// user copy is the only thing that can be found.
+func TestDefaultConfigPathUserConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "cfg"))
+	// The checkout directory has its own chat-app.ini, which the first lookup
+	// would find and return; move somewhere empty so only the XDG copy can win.
+	t.Chdir(t.TempDir())
+
+	dir := filepath.Join(home, "cfg", "chat-app")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "chat-app.ini")
+	if err := os.WriteFile(want, []byte("provider = ollama\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The test binary sits in a temp dir with no chat-app.ini beside it, so the
+	// first two lookups cannot fire and the XDG path must win.
+	if got := defaultConfigPath(); got != want {
+		t.Fatalf("defaultConfigPath() = %q, want %q", got, want)
+	}
+}
+
 // TestLoadConfigCharacterName covers the character-name key.
 func TestLoadConfigCharacterName(t *testing.T) {
 	c, err := LoadConfig(writeTempINI(t, "[character]\ncharacter-name = Onidia\n"))

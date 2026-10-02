@@ -122,6 +122,58 @@ func Reset() {
 	registryMu.Lock()
 	registry = map[string]Agent{}
 	registryMu.Unlock()
+	disabledMu.Lock()
+	disabledIDs = map[string]bool{}
+	disabledMu.Unlock()
+}
+
+// ---- enabling and disabling -------------------------------------------------
+
+// A manifest can carry "disabled": true to switch one agent off, but that only
+// works for agents the user owns: on a packaged install the agents live in
+// /opt/onidia/share/agents, root-owned, so switching one off means sudo nano.
+// This set is the owner-independent switch - chat-app's agents-disabled config
+// key (or -agents-disabled) fills it, and discovery skips those ids.
+//
+// Disabling is not the same as deleting: the agent stays on disk, keeps its
+// version and its folder, and comes back on the next start without a reinstall.
+var (
+	disabledMu  sync.RWMutex
+	disabledIDs = map[string]bool{}
+)
+
+// SetDisabled replaces the set of disabled agent ids. Unknown ids are kept, so
+// a config naming an agent that is not installed is not silently dropped and
+// starts working the day that agent is installed.
+func SetDisabled(ids []string) {
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			m[id] = true
+		}
+	}
+	disabledMu.Lock()
+	disabledIDs = m
+	disabledMu.Unlock()
+}
+
+// IsDisabled reports whether id is switched off.
+func IsDisabled(id string) bool {
+	disabledMu.RLock()
+	defer disabledMu.RUnlock()
+	return disabledIDs[id]
+}
+
+// DisabledIDs returns the disabled ids, sorted.
+func DisabledIDs() []string {
+	disabledMu.RLock()
+	out := make([]string, 0, len(disabledIDs))
+	for id := range disabledIDs {
+		out = append(out, id)
+	}
+	disabledMu.RUnlock()
+	sort.Strings(out)
+	return out
 }
 
 // ---- argument validation ---------------------------------------------------

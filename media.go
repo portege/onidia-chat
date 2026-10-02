@@ -57,7 +57,7 @@ type MediaState struct {
 
 // mediaStateDir is where session files live. chat-app exports it to its agents
 // (see main.go) so both halves always agree; the fallbacks only matter when
-// media_control is run by hand through agentctl.
+// media_control is run outside the app, e.g. from a source checkout.
 func mediaStateDir() string {
 	if d := strings.TrimSpace(os.Getenv("CHAT_APP_STATE_DIR")); d != "" {
 		return d

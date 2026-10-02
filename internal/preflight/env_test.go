@@ -105,18 +105,22 @@ func TestEnvPetPipe(t *testing.T) {
 	})
 }
 
+// A directory that does not exist is not a failure any more: the per-user
+// one is absent for anyone who has never installed an agent, and the search
+// now also covers the packaged /opt/onidia/share/agents.
 func TestEnvAgentsDir(t *testing.T) {
 	if out := envOutcome(t, Env{AgentsOff: true}, "env.agents-dir"); out.Status != StatusSkip {
 		t.Errorf("agents off: status = %v, want skip", out.Status)
 	}
 	missing := filepath.Join(t.TempDir(), "agents")
-	if out := envOutcome(t, Env{AgentsDir: missing}, "env.agents-dir"); out.Status != StatusFail {
-		t.Errorf("missing dir: status = %v, want fail", out.Status)
+	out := envOutcome(t, Env{AgentsDirs: []string{missing}}, "env.agents-dir")
+	if out.Status != StatusPass || !strings.Contains(out.Detail, "no installed agents") {
+		t.Errorf("missing dir: status = %v detail %q, want pass with no installed agents", out.Status, out.Detail)
 	}
 	empty := t.TempDir()
-	out := envOutcome(t, Env{AgentsDir: empty}, "env.agents-dir")
-	if out.Status != StatusPass || !strings.Contains(out.Detail, "empty") {
-		t.Errorf("empty dir: status = %v detail %q, want pass noting empty", out.Status, out.Detail)
+	out = envOutcome(t, Env{AgentsDirs: []string{empty}}, "env.agents-dir")
+	if out.Status != StatusPass || !strings.Contains(out.Detail, "no installed agents") {
+		t.Errorf("empty dir: status = %v detail %q, want pass with no installed agents", out.Status, out.Detail)
 	}
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "play_song"), 0o755); err != nil {
@@ -125,9 +129,32 @@ func TestEnvAgentsDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "play_song", "agent.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out = envOutcome(t, Env{AgentsDir: dir}, "env.agents-dir")
+	out = envOutcome(t, Env{AgentsDirs: []string{dir}}, "env.agents-dir")
 	if out.Status != StatusPass || !strings.Contains(out.Detail, "1 agent(s)") {
 		t.Errorf("one agent: status = %v detail %q, want pass with 1 agent(s)", out.Status, out.Detail)
+	}
+}
+
+// The real packaged case: nothing in the user's own directory, but the
+// bundled agents are present. That has to count, otherwise a fresh .deb
+// install reports "no agents" while pet_control is right there.
+func TestEnvAgentsDirTwoDirectories(t *testing.T) {
+	perUser := t.TempDir() // exists but empty - the normal state
+	system := t.TempDir()
+	for _, name := range []string{"pet_control", "play_song"} {
+		if err := os.MkdirAll(filepath.Join(system, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(system, name, "agent.json"), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := envOutcome(t, Env{AgentsDirs: []string{perUser, system}}, "env.agents-dir")
+	if out.Status != StatusPass {
+		t.Fatalf("status = %v detail %q, want pass", out.Status, out.Detail)
+	}
+	if !strings.Contains(out.Detail, "2 agent(s)") || !strings.Contains(out.Detail, system) {
+		t.Errorf("detail = %q, want 2 agent(s) naming %s", out.Detail, system)
 	}
 }
 

@@ -196,11 +196,19 @@ mute = false
 thinking = on
 
 # Agents: pluggable abilities the model invokes with [AGENT: ...] reply tags.
-# Each agent is a folder (agent.json + executable) in agents-dir; install new
-# ones with `agentctl install <folder|zip|url>` - no rebuild, restart to pick
-# up. See agents/README.md for the authoring guide.
+# Each agent is a folder (agent.json + executable). The bundled ones ship in
+# /opt/onidia/share/agents; your own live in ~/.config/chat-app/agents and win
+# if they share an id. Manage them without leaving the app:
+#   chat-app -agents-list                          what is installed, and what is off
+#   chat-app -agents-install <folder|zip|url|id>   add one (no rebuild; restart picks it up)
+#   chat-app -agents-remove <id>                   remove one of your own
+# See agents/README.md for the authoring guide.
 # agents-dir = /home/boi/.config/chat-app/agents
 # agents-off = false
+# Switch individual agents off without deleting them - useful for the packaged
+# ones, which are root-owned in /opt and so cannot be edited in place. They stay
+# on disk and come back when you remove the id from here.
+# agents-disabled = play_movie, media_control
 
 # Media folders for the built-in play_song / play_movie agents (flag names:
 # -music-dir / -video-dir). Unset = the agents use ~/Music and ~/Videos.

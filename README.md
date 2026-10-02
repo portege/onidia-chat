@@ -362,7 +362,7 @@ Example `chat-app.ini`:
 provider = gemini
 
 [gemini]
-api-key = AIzaSyB7YR3ypNW2A-raPItTfLir-B-vKuuzyR8
+api-key = <GEMINI_API_KEY>
 model = gemini-3.6-flash
 api-url = https://generativelanguage.googleapis.com
 

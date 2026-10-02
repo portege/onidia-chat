@@ -30,8 +30,19 @@ import (
 )
 
 // defaultConfigPath returns the conventional chat-app.ini to auto-load when
-// -config is not given: first in the working directory, then next to the
-// running binary. Returns "" when neither exists (config stays disabled).
+// -config is not given, in order:
+//
+//  1. ./chat-app.ini           - running from a checkout or a config directory
+//  2. next to the binary       - a portable/relocated install
+//  3. $XDG_CONFIG_HOME/chat-app/chat-app.ini, else ~/.config/chat-app/chat-app.ini
+//
+// The third one is where a package install has to put it: a .deb puts the
+// binary in /opt/onidia/bin and the config in /opt/onidia/share, so neither of
+// the first two can ever see it, and ~/.config/chat-app is already this app's
+// config home (agent.DefaultDir() puts agents in ~/.config/chat-app/agents and
+// the whisper helper in ~/.config/chat-app/stt-whisper.py).
+//
+// Returns "" when none exists (config stays disabled).
 func defaultConfigPath() string {
 	if _, err := os.Stat("chat-app.ini"); err == nil {
 		return "chat-app.ini"
@@ -42,7 +53,27 @@ func defaultConfigPath() string {
 			return p
 		}
 	}
+	if p := userConfigDir(); p != "" {
+		p = filepath.Join(p, "chat-app.ini")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
 	return ""
+}
+
+// userConfigDir is $XDG_CONFIG_HOME/chat-app, falling back to
+// ~/.config/chat-app. Returns "" when the home directory cannot be determined,
+// so callers get a path that does not exist rather than a bare relative one.
+func userConfigDir() string {
+	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
+		return filepath.Join(x, "chat-app")
+	}
+	h, err := os.UserHomeDir()
+	if err != nil || h == "" {
+		return ""
+	}
+	return filepath.Join(h, ".config", "chat-app")
 }
 
 // firstNonEmpty returns the first non-blank argument (flag > config).
@@ -157,6 +188,14 @@ func main() {
 			"directory of downloadable agents (default: $XDG_CONFIG_HOME/chat-app/agents or ~/.config/chat-app/agents)")
 		agentsOffFlag = flag.Bool("agents-off", false,
 			"disable agent discovery and [AGENT: ...] reply tags")
+		agentsDisabledFlag = flag.String("agents-disabled", "",
+			"comma-separated agent ids to switch off (default: config agents-disabled)")
+		agentsListFlag = flag.Bool("agents-list", false,
+			"list installed agents (id, version, where it came from, enabled/disabled) and exit")
+		agentsInstallFlag = flag.String("agents-install", "",
+			"install an agent (folder, .zip, URL, or a registry id) into ~/.config/chat-app/agents and exit")
+		agentsRemoveFlag = flag.String("agents-remove", "",
+			"remove an installed agent by id and exit")
 		musicDirFlag = flag.String("music-dir", "",
 			"music folder for the play_song agent (default: config music-dir, or ~/Music inside the agent)")
 		videoDirFlag = flag.String("video-dir", "",
@@ -192,7 +231,14 @@ func main() {
 	// interfere with the first. The read-only modes are exempt: -stt-test has
 	// to keep working WHILE the app is running - that is the whole point of
 	// it - and -preview only writes PNGs.
-	if !*preview && !*sttTestFlag {
+	//
+	// The -agents-* modes are exempt for the same reason: "why did that agent
+	// just not show up" is exactly the question someone asks while the app is
+	// open, and having the answer be "start it again first" would be absurd.
+	// -agents-install and -agents-remove touch only the user's own agents
+	// directory, never the running instance's FIFOs or window.
+	if !*preview && !*sttTestFlag && !*agentsListFlag &&
+		*agentsInstallFlag == "" && *agentsRemoveFlag == "" {
 		if _, err := acquireInstanceLock(); err != nil {
 			log.Fatalf("chat-app: %v", err)
 		}
@@ -463,21 +509,41 @@ func main() {
 	}
 
 	// Agents: downloadable pluggable abilities. Discovery is startup-only
-	// (drop a new folder into the dir and restart, or use agentctl run to
-	// test it standalone). Built-ins could Register() here before Discover
-	// so a download can never shadow them. Placed before the headless probe
-	// exits so `-preview` and friends exercise the same wiring.
+	// (drop a new folder into the dir and restart, or run one once with
+	// chat-app -agents-install / -agents-remove nearby). Built-ins could
+	// Register() here before Discover so a download can never shadow them.
+	// Placed before the headless probe exits so `-preview` and friends
+	// exercise the same wiring.
 	agentsDir := strings.TrimSpace(*agentsDirFlag)
 	if agentsDir == "" && cfg != nil {
 		agentsDir = strings.TrimSpace(cfg.AgentsDir)
 	}
-	if agentsDir == "" {
-		agentsDir = agent.DefaultDir()
+	// An explicitly named directory REPLACES the defaults; otherwise scan the
+	// per-user dir and then the packaged one, so a .deb install finds the
+	// bundled agents (pet_control, play_song, ...) with nobody having to copy
+	// them into their home directory first. User first, because first
+	// registration wins and a user's own agent must shadow a bundled one.
+	var searchDirs []string
+	if agentsDir != "" {
+		searchDirs = []string{agentsDir}
+	} else {
+		searchDirs = agent.DefaultDirs()
 	}
 	agentsOff := *agentsOffFlag
 	if !explicitFlags["agents-off"] && cfg != nil {
 		agentsOff = cfg.AgentsOff
 	}
+	// Per-agent on/off switch. Flag > config > none. Applied before discovery
+	// so a disabled agent is never registered, never offered to the model in
+	// the catalog, and therefore cannot be reached through an [AGENT: ...] tag.
+	disabledList := strings.Split(*agentsDisabledFlag, ",")
+	if !explicitFlags["agents-disabled"] && cfg != nil && cfg.AgentsDisabled != "" {
+		disabledList = strings.Split(cfg.AgentsDisabled, ",")
+	}
+	if len(disabledList) == 1 && strings.TrimSpace(disabledList[0]) == "" {
+		disabledList = nil // a bare "" must not read as one agent named ""
+	}
+	agent.SetDisabled(disabledList)
 	// Media folders flow to the play_* agents as CHAT_APP_* env vars
 	// (flag > config > unset -> the agent falls back to ~/Music / ~/Videos).
 	// CHAT_APP_STATE_DIR is where the media agents record the player they
@@ -498,7 +564,7 @@ func main() {
 		if err := agent.Register(story); err != nil {
 			log.Printf("agents: %v", err)
 		}
-		if agentsDir != "" {
+		if len(searchDirs) > 0 {
 			var pol agent.Policy
 			if cfg != nil {
 				pol.RequireSignature = cfg.AgentsRequireSig
@@ -510,16 +576,35 @@ func main() {
 					}
 				}
 			}
-			ids, problems := agent.DiscoverWithPolicy(agentsDir, pol)
-			for _, p := range problems {
-				log.Printf("%s", p)
+			total := 0
+			for i, dir := range searchDirs {
+				ids, problems := agent.DiscoverWithPolicy(dir, pol)
+				for _, p := range problems {
+					log.Printf("%s", p)
+				}
+				if len(ids) > 0 {
+					total += len(ids)
+					log.Printf("agents: %d discovered in %s: %s", len(ids), dir, strings.Join(ids, ", "))
+				} else if i == len(searchDirs)-1 {
+					// Only the last directory is worth reporting as empty: an empty
+					// per-user dir is the normal state for someone who has never
+					// installed an agent of their own.
+					log.Printf("agents: none in %s (chat-app -agents-install <dir|zip|url>, or -agents-list to see what is installed)", dir)
+				}
 			}
-			if len(ids) > 0 {
-				log.Printf("agents: %d discovered: %s", len(ids), strings.Join(ids, ", "))
-			} else {
-				log.Printf("agents: none in %s (agentctl install <dir|zip|url> to add)", agentsDir)
+			if total == 0 {
+				log.Printf("agents: only the built-in story agent is available")
 			}
 		}
+	}
+
+	// -agents-list / -agents-install / -agents-remove: manage agents without
+	// the agentctl binary, which is not shipped. Each prints its result and
+	// exits without opening a window, so the whole agent story is reachable
+	// from the one command that is actually installed.
+	if *agentsListFlag || *agentsInstallFlag != "" || *agentsRemoveFlag != "" {
+		runAgentMode(searchDirs, *agentsInstallFlag, *agentsRemoveFlag, cfg)
+		return
 	}
 
 	// -fetch-image tests the resolved source's fetch path (the gemini source
@@ -645,7 +730,7 @@ func main() {
 		AWSRegion:  awsRegionVal,
 	}, preflight.Env{
 		Pipe:        pipe,
-		AgentsDir:   agentsDir,
+		AgentsDirs:  searchDirs,
 		AgentsOff:   agentsOff,
 		ImageSource: imgSource,
 		PixabayKey:  pxKey,

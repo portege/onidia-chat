@@ -15,6 +15,7 @@ func TestAgentConfigKeys(t *testing.T) {
 	ini := "music-dir = ~/tunes\n" +
 		"video-dir = /data/movies\n" +
 		"agents-off = true\n" +
+		"agents-disabled = play_movie, media_control\n" +
 		"agents-dir = /opt/agents\n"
 	if err := os.WriteFile(p, []byte(ini), 0o644); err != nil {
 		t.Fatal(err)
@@ -28,6 +29,12 @@ func TestAgentConfigKeys(t *testing.T) {
 	}
 	if !cfg.AgentsOff || cfg.AgentsDir != "/opt/agents" {
 		t.Errorf("agents keys = off=%v dir=%q", cfg.AgentsOff, cfg.AgentsDir)
+	}
+	// The per-agent switch, kept as a raw string so main.go can split it the
+	// same way the flag is split.
+	if got := strings.Split(cfg.AgentsDisabled, ","); len(got) != 2 ||
+		strings.TrimSpace(got[0]) != "play_movie" || strings.TrimSpace(got[1]) != "media_control" {
+		t.Errorf("agents-disabled = %q, want play_movie and media_control", cfg.AgentsDisabled)
 	}
 	// Phase 4 signature and registry keys
 	p2 := filepath.Join(t.TempDir(), "chat-app-sec.ini")

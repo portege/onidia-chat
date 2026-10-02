@@ -9,19 +9,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
 // Env is the resolved environment context, filled by the caller from the same
 // values chat-app already computed (flag > config > default precedence).
 type Env struct {
-	Pipe        string // resolved pet say-FIFO ("" = forwarding disabled)
-	AgentsDir   string // agent discovery directory
-	AgentsOff   bool   // agent discovery disabled
-	ImageSource string // "pixabay" | "wiki" | "gemini" | "off"
-	PixabayKey  string // resolved key ("" = none configured)
-	TTSOn       bool   // speech replies requested
-	STTOn       bool   // speech input (microphone) requested
+	Pipe        string   // resolved pet say-FIFO ("" = forwarding disabled)
+	AgentsDirs  []string // agent discovery directories, in precedence order
+	AgentsOff   bool     // agent discovery disabled
+	ImageSource string   // "pixabay" | "wiki" | "gemini" | "off"
+	PixabayKey  string   // resolved key ("" = none configured)
+	TTSOn       bool     // speech replies requested
+	STTOn       bool     // speech input (microphone) requested
 }
 
 // ttsPlayerCandidates mirrors chat-app's tts.go player preference list
@@ -118,24 +119,39 @@ func EnvChecks(e Env) []Check {
 				if e.AgentsOff {
 					return Skip("agent discovery disabled (agents-off)")
 				}
-				entries, err := os.ReadDir(e.AgentsDir)
-				if err != nil {
-					return Fail(fmt.Sprintf("agents dir %s unreadable: %s", e.AgentsDir, errDetail(err)),
-						"create it (mkdir -p "+e.AgentsDir+"), install agents with agentctl, or set agents-off = true")
-				}
-				installed := 0
-				for _, ent := range entries {
-					if !ent.IsDir() {
-						continue
+				// More than one directory is normal: the per-user one first,
+				// then the packaged /opt/onidia/share/agents. A missing
+				// directory is not a problem either - most people have
+				// never installed an agent of their own.
+				total := 0
+				var where []string
+				for _, dir := range e.AgentsDirs {
+					entries, err := os.ReadDir(dir)
+					if err != nil {
+						if os.IsNotExist(err) {
+							continue
+						}
+						return Fail(fmt.Sprintf("agents dir %s unreadable: %s", dir, errDetail(err)),
+							"fix its permissions, or set agents-off = true")
 					}
-					if _, err := os.Stat(filepath.Join(e.AgentsDir, ent.Name(), "agent.json")); err == nil {
-						installed++
+					n := 0
+					for _, ent := range entries {
+						if !ent.IsDir() {
+							continue
+						}
+						if _, err := os.Stat(filepath.Join(dir, ent.Name(), "agent.json")); err == nil {
+							n++
+						}
+					}
+					if n > 0 {
+						total += n
+						where = append(where, fmt.Sprintf("%d in %s", n, dir))
 					}
 				}
-				if len(entries) == 0 {
-					return Pass(fmt.Sprintf("%s is empty (built-in agents still work)", e.AgentsDir))
+				if total == 0 {
+					return Pass("no installed agents (the built-in story agent still works)")
 				}
-				return Pass(fmt.Sprintf("%d agent(s) in %s", installed, e.AgentsDir))
+				return Pass(fmt.Sprintf("%d agent(s): %s", total, strings.Join(where, ", ")))
 			},
 		},
 		{

@@ -286,9 +286,15 @@ func resolveEnv(kv map[string]string) preflight.Env {
 		pipe = preflight.Get(kv, "pet-pipe")
 	}
 
+	// Search directories, in precedence order. An agents-dir from the config
+	// REPLACES the defaults; otherwise the per-user dir is scanned first and
+	// the packaged /opt/onidia/share/agents second, matching main.go.
 	agentsDir := preflight.Get(kv, "agents-dir")
-	if agentsDir == "" {
-		agentsDir = agent.DefaultDir()
+	var searchDirs []string
+	if agentsDir != "" {
+		searchDirs = []string{agentsDir}
+	} else {
+		searchDirs = agent.DefaultDirs()
 	}
 	agentsOff, _ := strconv.ParseBool(preflight.Get(kv, "agents-off"))
 
@@ -318,7 +324,7 @@ func resolveEnv(kv map[string]string) preflight.Env {
 
 	return preflight.Env{
 		Pipe:        pipe,
-		AgentsDir:   agentsDir,
+		AgentsDirs:  searchDirs,
 		AgentsOff:   agentsOff,
 		ImageSource: imageSource,
 		PixabayKey:  pxKey,
