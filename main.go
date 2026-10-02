@@ -1,6 +1,6 @@
 package main
 
-// chat-app - a tiny desktop chat window with a textarea and a submit (SEND)
+// onidia-chat - a tiny desktop chat window with a textarea and a submit (SEND)
 // button, written in pure Go on raw X11 - the same no-toolkit approach as its
 // sibling ../desktop-pet.
 //
@@ -24,9 +24,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/portege/chat-app/agent"
-	"github.com/portege/chat-app/internal/mic"
-	"github.com/portege/chat-app/internal/preflight"
+	"github.com/portege/onidia-chat/agent"
+	"github.com/portege/onidia-chat/internal/mic"
+	"github.com/portege/onidia-chat/internal/preflight"
 )
 
 // defaultConfigPath returns the conventional chat-app.ini to auto-load when
@@ -65,6 +65,12 @@ func defaultConfigPath() string {
 // userConfigDir is $XDG_CONFIG_HOME/chat-app, falling back to
 // ~/.config/chat-app. Returns "" when the home directory cannot be determined,
 // so callers get a path that does not exist rather than a bare relative one.
+//
+// The directory name is deliberately NOT "onidia-chat". The app was renamed
+// from chat-app to onidia-chat, but this path holds the user's api-key, their
+// downloaded agents and the whisper helper, and a rename would orphan all three
+// on every existing machine. The old name stays until a future release ships a
+// real migration.
 func userConfigDir() string {
 	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
 		return filepath.Join(x, "chat-app")
@@ -240,7 +246,7 @@ func main() {
 	if !*preview && !*sttTestFlag && !*agentsListFlag &&
 		*agentsInstallFlag == "" && *agentsRemoveFlag == "" {
 		if _, err := acquireInstanceLock(); err != nil {
-			log.Fatalf("chat-app: %v", err)
+			log.Fatalf("onidia-chat: %v", err)
 		}
 		defer releaseInstanceLock()
 	}
@@ -510,7 +516,7 @@ func main() {
 
 	// Agents: downloadable pluggable abilities. Discovery is startup-only
 	// (drop a new folder into the dir and restart, or run one once with
-	// chat-app -agents-install / -agents-remove nearby). Built-ins could
+	// onidia-chat -agents-install / -agents-remove nearby). Built-ins could
 	// Register() here before Discover so a download can never shadow them.
 	// Placed before the headless probe exits so `-preview` and friends
 	// exercise the same wiring.
@@ -589,7 +595,7 @@ func main() {
 					// Only the last directory is worth reporting as empty: an empty
 					// per-user dir is the normal state for someone who has never
 					// installed an agent of their own.
-					log.Printf("agents: none in %s (chat-app -agents-install <dir|zip|url>, or -agents-list to see what is installed)", dir)
+					log.Printf("agents: none in %s (onidia-chat -agents-install <dir|zip|url>, or -agents-list to see what is installed)", dir)
 				}
 			}
 			if total == 0 {

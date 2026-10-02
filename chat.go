@@ -23,7 +23,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 const (

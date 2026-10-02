@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""play_movie - chat-app media agent (protocol agent-line-v1).
+"""play_movie - onidia-chat media agent (protocol agent-line-v1).
 
 Twin of play_song.py (video edition): fuzzy-match query against the video
 folder, launch a detached player, answer "OK Playing <title>". The run records

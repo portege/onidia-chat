@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/portege/chat-app/internal/mic"
+	"github.com/portege/onidia-chat/internal/mic"
 )
 
 const sttSelfTestSeconds = 4.0
@@ -26,7 +26,7 @@ const sttSelfTestSeconds = 4.0
 // runSTTSelfTest records one take, transcribes it with the configured
 // backend, and prints the whole chain. It returns a process exit code.
 func runSTTSelfTest(backend STT, recorder, device string, debug bool) int {
-	fmt.Println("== chat-app speech-input self test ==")
+	fmt.Println("== onidia-chat speech-input self test ==")
 	if backend == nil {
 		fmt.Println("backend  : speech input is OFF (stt = off)")
 		return 2
@@ -87,7 +87,7 @@ func runSTTSelfTest(backend STT, recorder, device string, debug bool) int {
 	case level.Silent:
 		fmt.Printf("level    : %s\n", level)
 		fmt.Println("            -> nothing reached the device: fix the mic before blaming the backend")
-		fmt.Println("            -> re-run with -stt-debug, or check the chat-app log, for the full trace")
+		fmt.Println("            -> re-run with -stt-debug, or check the onidia-chat log, for the full trace")
 		return 1
 	default:
 		fmt.Printf("level    : %s\n", level)

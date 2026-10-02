@@ -1,4 +1,4 @@
-# AGENT-PROTOCOL.md - manifest + wire protocol for chat-app agents
+# AGENT-PROTOCOL.md - manifest + wire protocol for onidia-chat agents
 
 Version: `agent-line-v1`. Two halves: a **manifest** (`agent.json`) that
 makes an agent self-describing for auto-discovery, and a **line protocol**
@@ -29,7 +29,7 @@ Startup scan (and `agentctl list`) validates every folder:
 Anything else is reported as a per-folder problem and skipped - one broken
 download never brings the app down. Hidden folders (`.git`, ...) and
 folders without `agent.json` are ignored silently. Discovery runs at
-startup only: install, then restart chat-app.
+startup only: install, then restart onidia-chat.
 
 ## Manifest - agent.json
 
@@ -63,7 +63,7 @@ startup only: install, then restart chat-app.
 
 ## Wire protocol
 
-One process per run: chat-app starts it, writes one line to stdin, reads
+One process per run: onidia-chat starts it, writes one line to stdin, reads
 stdout lines until a terminal line, then waits up to 2s for exit (kill
 after that). Working directory = the agent's folder.
 
@@ -82,7 +82,7 @@ agent -> brain   OK <message>\n          # terminal: message joins the reply
 - `OK` message: the user-facing result. Empty `OK` is allowed (side
   effect only). Plain text, no markdown/emoji (bitmap font + TTS).
 - After the terminal line: **exit**. Work longer than the reply? spawn it
-  detached and exit - chat-app must not wait for your daemon.
+  detached and exit - onidia-chat must not wait for your daemon.
 - No `OK`/`ERR` before exit or EOF = failure; stderr (first 8KB) is
   included in the error shown in the reply.
 - Timeout (`timeout_ms`): process killed, reply gets
@@ -106,7 +106,7 @@ Rules:
 - the payload must be `action|event` + **one** name (`[a-z][a-z0-9_]*`) -
   `PET action dance; rm -rf /` is rejected and the run fails. The line ends up
   in the pet's command FIFO, so nothing else may ride in it;
-- the name must be one the pet knows, else chat-app logs
+- the name must be one the pet knows, else onidia-chat logs
   `ignoring unknown pet command` and drops it - the reply still succeeds;
 - it is a **fallback**: when the model already used `[ACTION: ...]` /
   `[EVENT: ...]` for that reply, the model's choice wins;
@@ -177,7 +177,7 @@ explain or retry in its own words first.
 ## Native tool calling (Phase 3 - preferred when the provider supports it)
 
 Nothing changes for the agent author: the same manifest drives **two** ways the
-model can ask for an ability, and chat-app picks the better one per reply.
+model can ask for an ability, and onidia-chat picks the better one per reply.
 
 When the active provider has a function/tool-calling API - Gemini
 (`functionDeclarations`), OpenRouter / any OpenAI-compatible endpoint
@@ -205,7 +205,7 @@ advertised, so the model does not mix the two.
 
 **Fallback:** a provider, server or model without tool support answers the first
 tool request with an error (an ollama server older than 0.3, a model that
-rejects `tools`, a quota 4xx). chat-app then runs the `[AGENT: ...]` path for
+rejects `tools`, a quota 4xx). onidia-chat then runs the `[AGENT: ...]` path for
 that reply - catalog included - so the ability still happens; a provider that
 can remember the rejection (ollama, on a 4xx) skips the doomed call from the
 next reply on.
@@ -238,20 +238,20 @@ same convention as `onidia`'s character packs.
 
 ## Environment
 
-Agents inherit chat-app's full environment, plus these extras chat-app
+Agents inherit onidia-chat's full environment, plus these extras onidia-chat
 sets from its configuration:
 
 | variable | set from | purpose |
 |---|---|---|
 | `CHAT_APP_MUSIC_DIR` | `-music-dir` / `music-dir` | music folder for `play_song` (unset = agent uses `~/Music`) |
 | `CHAT_APP_VIDEO_DIR` | `-video-dir` / `video-dir` | video folder for `play_movie` (unset = agent uses `~/Videos`) |
-| `CHAT_APP_STATE_DIR` | derived (`$XDG_STATE_HOME/chat-app`) | where a media agent records the player it started, so the chat window can show a transport strip and `media_control` can pause/stop it. Best-effort: if it cannot be written, playback still works, there is just no strip |
+| `CHAT_APP_STATE_DIR` | derived (`$XDG_STATE_HOME/onidia-chat`) | where a media agent records the player it started, so the chat window can show a transport strip and `media_control` can pause/stop it. Best-effort: if it cannot be written, playback still works, there is just no strip |
 
 Standard convention for your own agents: prefix config-derived variables
 with `CHAT_APP_`. `CHAT_APP_PLAYER` is a built-in override (whole command
 line, shell-split) that forces the media player - used by tests and
 useful for debugging. **Never pass API keys to downloaded agents**; a
-native agent (linked into chat-app, like `read_story`) is the right tool
+native agent (linked into onidia-chat, like `read_story`) is the right tool
 when an ability needs the LLM.
 
 ## Security (v1 trust model)

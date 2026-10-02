@@ -20,7 +20,7 @@ pixabay-key = test-px-key
 pet-pipe = off
 images = false
 `
-	tmp, err := os.CreateTemp("", "chat-app-config-*.ini")
+	tmp, err := os.CreateTemp("", "onidia-chat-config-*.ini")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestLoadConfigMultiLine(t *testing.T) {
 		"Keep replies short.\n" +
 		"```\n"
 
-	tmp, err := os.CreateTemp("", "chat-app-config-*.ini")
+	tmp, err := os.CreateTemp("", "onidia-chat-config-*.ini")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -677,7 +677,7 @@ func TestSetConfigValueOnShippedINI(t *testing.T) {
 func TestLoadConfigStreamKey(t *testing.T) {
 	load := func(body string) *Config {
 		t.Helper()
-		tmp, err := os.CreateTemp("", "chat-app-config-*.ini")
+		tmp, err := os.CreateTemp("", "onidia-chat-config-*.ini")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -109,12 +109,12 @@ func petCmdPathFor(sayPath string) string {
 	return strings.TrimSuffix(sayPath, ".say") + ".cmd"
 }
 
-// The pet lifecycle: chat-app launches the onidia binary detached and
+// The pet lifecycle: onidia-chat launches the onidia binary detached and
 // remembers the process, so quitting can be confirmed (and escalated to
 // SIGTERM when the pet ignores the quit command, e.g. a stale binary).
 
 var petMu sync.Mutex
-var petProc *os.Process // the onidia instance chat-app launched, if any
+var petProc *os.Process // the onidia instance onidia-chat launched, if any
 
 // onidiaPath resolves the onidia/desktop-pet binary, in the same spirit as
 // the pet's own chat-app.ini lookup: a sibling onidia/ directory, a sibling
@@ -128,7 +128,7 @@ func onidiaPath() string {
 		return "desktop-pet/desktop-pet"
 	}
 	cands := []string{
-		"../onidia/onidia", // relative to chat-app/ working dir
+		"../onidia/onidia", // relative to onidia-chat/ working dir
 		"../desktop-pet/desktop-pet",
 		"/home/boi/repo/ai-helper/onidia/onidia",
 		"/home/boi/repo/ai-helper/desktop-pet/desktop-pet",
@@ -224,8 +224,8 @@ func normalizeGender(v string) string {
 }
 
 // LaunchPet (re)builds the onidia binary if its sources changed, then starts
-// it detached from the chat-app process (new session, no shared stdout) so it
-// keeps running when chat-app exits. character picks the sprite: "kama" for
+// it detached from the onidia-chat process (new session, no shared stdout) so it
+// keeps running when onidia-chat exits. character picks the sprite: "kama" for
 // the settings dialog's BOY gender, "onidia" (the binary's own default, so
 // no flag is passed) for GIRL. demo enables the pet's autonomous mode
 // (random roaming + unsolicited chatter); demo=false keeps it planted — it
@@ -244,7 +244,7 @@ func LaunchPet(character string, demo bool) error {
 	cmd := exec.Command(bin, petLaunchArgs(character, demo)...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from chat-app
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from onidia-chat
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("launching %s: %w", bin, err)
 	}
@@ -301,7 +301,7 @@ func watchPetQuit(cmdPath string, gone chan<- struct{}) {
 }
 
 // stopPetByName SIGTERMs any running pet process (exact name match: onidia,
-// or its older desktop-pet name) - used when chat-app adopted a pet it did
+// or its older desktop-pet name) - used when onidia-chat adopted a pet it did
 // not launch and therefore has no process handle for.
 func stopPetByName() {
 	for _, name := range []string{"onidia", "desktop-pet"} {

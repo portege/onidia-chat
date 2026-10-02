@@ -1,13 +1,13 @@
-// preflight - chat-app's requirements check, standalone.
+// preflight - onidia-chat's requirements check, standalone.
 //
-// Answers "will chat-app actually work right now?" without opening the UI:
+// Answers "will onidia-chat actually work right now?" without opening the UI:
 // the selected LLM backend reachable/credentialed (ollama server + model,
 // Gemini key + API, Bedrock credentials, OpenRouter key + API) plus the host
 // environment (display, audio player, pet pipe, agents dir, image source).
-// It runs the same internal/preflight checks chat-app's startup gate runs,
+// It runs the same internal/preflight checks onidia-chat's startup gate runs,
 // so what it reports is exactly what the app would launch with.
 //
-//	preflight                 # what ./chat-app would launch with
+//	preflight                 # what ./onidia-chat would launch with
 //	preflight -all            # ...also probe the other backends (info only)
 //	preflight -quick          # config + environment only: no network
 //	preflight -deep           # bedrock: also fire a real 1-token Converse
@@ -15,10 +15,10 @@
 //	preflight -provider ollama -model qwen2:1.5b   # test an alternative setup
 //
 // Exit codes: 0 = ok, 1 = warnings only, 2 = blocked (a fatal check failed).
-// chat-app's own gate (preflight = strict, the default) exits 2 the same way,
+// onidia-chat's own gate (preflight = strict, the default) exits 2 the same way,
 // before its X window opens.
 //
-// Config resolution mirrors chat-app (flag > env > chat-app.ini > built-in
+// Config resolution mirrors onidia-chat (flag > env > chat-app.ini > built-in
 // default, sections ignored) with keep-in-sync constants - same rule as
 // cmd/geminitest.
 package main
@@ -35,12 +35,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/portege/chat-app/agent"
-	"github.com/portege/chat-app/internal/mic"
-	"github.com/portege/chat-app/internal/preflight"
+	"github.com/portege/onidia-chat/agent"
+	"github.com/portege/onidia-chat/internal/mic"
+	"github.com/portege/onidia-chat/internal/preflight"
 )
 
-// Keep-in-sync with chat-app (package main): chat.go defaultAPIKey/
+// Keep-in-sync with onidia-chat (package main): chat.go defaultAPIKey/
 // defaultAPIURL, providers.go defaultOllamaURL/defaultOpenRouterURL,
 // images.go defaultPixabayKey. They exist here because package main is not
 // importable; the resolution LOGIC is shared (preflight.ResolveModel).
@@ -54,7 +54,7 @@ const (
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout)) }
 
-// run parses args, resolves chat-app's configuration, executes the checks and
+// run parses args, resolves onidia-chat's configuration, executes the checks and
 // returns the exit code (0 ok / 1 warnings / 2 blocked).
 func run(args []string, out io.Writer) int {
 	fs := flag.NewFlagSet("preflight", flag.ContinueOnError)
@@ -82,7 +82,7 @@ func run(args []string, out io.Writer) int {
 	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
 
 	// Config file: -config wins, else the conventional ./chat-app.ini
-	// (chat-app's defaultConfigPath without the next-to-binary fallback,
+	// (onidia-chat's defaultConfigPath without the next-to-binary fallback,
 	// which only matters when the binary is relocated).
 	path := strings.TrimSpace(*configFlag)
 	if path == "" {
@@ -132,7 +132,7 @@ func run(args []string, out io.Writer) int {
 	return rep.ExitCode()
 }
 
-// resolveSpec reproduces chat-app main.go's flag > env > config > default
+// resolveSpec reproduces onidia-chat main.go's flag > env > config > default
 // precedence for the provider under test.
 func resolveSpec(kv map[string]string, explicit map[string]bool,
 	providerFlag, modelFlag, apiURLFlag, apiKeyFlag, profileFlag, regionFlag string, deep bool) preflight.Spec {
@@ -153,7 +153,7 @@ func resolveSpec(kv map[string]string, explicit map[string]bool,
 		provider = "gemini"
 	}
 
-	// Model: shared resolution - the same call chat-app's pickModel makes.
+	// Model: shared resolution - the same call onidia-chat's pickModel makes.
 	cfgModel := preflight.Get(kv, "model")
 	model, warn := preflight.ResolveModel(provider, modelFlag, explicit["model"], cfgModel)
 	if warn != "" {
@@ -401,7 +401,7 @@ func runMicReport(out io.Writer, want string, list, probe bool) int {
 	return 0
 }
 
-// micRecorder is the recorder chat-app would pick (see stt.go findSTTRecorder).
+// micRecorder is the recorder onidia-chat would pick (see stt.go findSTTRecorder).
 func micRecorder() string {
 	if r, err := exec.LookPath("pw-record"); err == nil {
 		if pipewireUp() {
@@ -417,7 +417,7 @@ func micRecorder() string {
 }
 
 // pipewireUp reports whether a PipeWire server socket exists, mirroring
-// chat-app's tts.go: on a PipeWire desktop the raw ALSA device is held by the
+// onidia-chat's tts.go: on a PipeWire desktop the raw ALSA device is held by the
 // server, so the native pw-record must win.
 func pipewireUp() bool {
 	dir := fmt.Sprintf("/run/user/%d", os.Getuid())

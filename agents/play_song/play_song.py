@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""play_song - chat-app media agent (protocol agent-line-v1).
+"""play_song - onidia-chat media agent (protocol agent-line-v1).
 
 Reads one "RUN {json}" line on stdin, fuzzy-matches query against the
 music folder index, launches a detached player, answers
@@ -76,14 +76,14 @@ def pick_player():
 
 
 # --- transport control -----------------------------------------------------
-# chat-app draws a play/pause/stop strip for whatever is playing, and its
+# onidia-chat draws a play/pause/stop strip for whatever is playing, and its
 # media_control agent drives the player. Both need to know WHICH process we
 # started, so every successful run records it in a small JSON session file.
 # None of this is required for playback: if the state dir cannot be written we
 # still answer OK, we just do not get a transport strip.
 
 def state_dir():
-    """Where session files live. chat-app exports CHAT_APP_STATE_DIR so the
+    """Where session files live. onidia-chat exports CHAT_APP_STATE_DIR so the
     app and its agents always agree; the fallbacks only matter for a manual
     `agentctl run`."""
     d = os.environ.get("CHAT_APP_STATE_DIR")

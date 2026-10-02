@@ -1,6 +1,6 @@
 // ini.go - a minimal chat-app.ini reader for the standalone preflight CLI.
 //
-// It intentionally mirrors chat-app's own parser (config.go LoadConfig): the
+// It intentionally mirrors onidia-chat's own parser (config.go LoadConfig): the
 // file is read flat - section headers are accepted but IGNORED and keys are
 // last-wins - with # / ; comments and ``` multi-line values. preflight must
 // see exactly the values the app will act on, quirks included.
@@ -13,7 +13,7 @@ import (
 )
 
 // ReadINI parses path into a flat key -> value map (sections ignored,
-// last occurrence wins), the way chat-app's LoadConfig resolves keys.
+// last occurrence wins), the way onidia-chat's LoadConfig resolves keys.
 func ReadINI(path string) (map[string]string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -76,7 +76,7 @@ func Get(kv map[string]string, key string) string {
 	return strings.TrimSpace(kv[key])
 }
 
-// DefaultINIPath mirrors chat-app's defaultConfigPath: ./chat-app.ini first,
+// DefaultINIPath mirrors onidia-chat's defaultConfigPath: ./chat-app.ini first,
 // then one next to the running binary. Returns "" when neither exists.
 func DefaultINIPath() string {
 	if _, err := os.Stat("chat-app.ini"); err == nil {

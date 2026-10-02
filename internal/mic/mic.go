@@ -4,7 +4,7 @@
 // "The mic is not recognised" is the most common speech-input problem, and it
 // has three very different causes: no capture device at all, the recorder
 // linked to a monitor or a null node instead of a real input, or a
-// muted/quiet device. So chat-app can be pointed at a specific device
+// muted/quiet device. So onidia-chat can be pointed at a specific device
 // (stt-device in chat-app.ini), and this package supplies the listing that
 // makes choosing one possible plus a short level probe that separates "no
 // device" from "device, but silence".
@@ -35,7 +35,7 @@ func errf(format string, args ...any) error {
 	return &errString{msg: fmt.Sprintf(format, args...)}
 }
 
-// sttSampleRate matches chat-app's capture rate (stt.go). The probe has to
+// sttSampleRate matches onidia-chat's capture rate (stt.go). The probe has to
 // record exactly what a real take records.
 const sttSampleRate = 16000
 
@@ -361,7 +361,7 @@ func Pick(mics []MicDevice, want string) (MicDevice, bool) {
 // ---- recording (the probe's own, self-contained) ---------------------------
 
 // startRecorder runs the given recorder for ~2s into a temp WAV. The probe
-// needs its own copy rather than chat-app's so this package stays independent
+// needs its own copy rather than onidia-chat's so this package stays independent
 // of the app: it only has to produce a WAV it can measure, not a real take.
 func startRecorder(recorder, device string) (path string, stop func(), cleanup func(), err error) {
 	f, err := os.CreateTemp("", "mic-probe-*.wav")
@@ -396,7 +396,7 @@ func startRecorder(recorder, device string) (path string, stop func(), cleanup f
 	return path, stop, cleanup, nil
 }
 
-// recordArgs mirrors chat-app's sttArgs: 16 kHz mono s16 WAV, with the
+// recordArgs mirrors onidia-chat's sttArgs: 16 kHz mono s16 WAV, with the
 // device spelled the way this recorder expects it.
 func recordArgs(recorder, device, path string) []string {
 	switch filepath.Base(recorder) {

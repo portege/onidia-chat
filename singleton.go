@@ -1,4 +1,4 @@
-// singleton.go - one chat-app per user session.
+// singleton.go - one onidia-chat per user session.
 //
 // Two instances fight over the same resources: the onidia say-FIFO (one
 // writer, and a second instance would fight the first over the pet), the
@@ -32,6 +32,13 @@ type instanceLock struct {
 // per-user, per-session runtime file (it is removed on logout, and is not
 // world-writable like /tmp). /tmp is the fallback for the odd desktop that
 // does not set it; the uid in the name keeps two users apart.
+//
+// Both filenames keep the app's old name, chat-app, and that is deliberate even
+// though the binary is now onidia-chat. This lock is the single-instance guard:
+// the whole point is that a second copy refuses to start. A user upgrading while
+// the old chat-app is still open would otherwise have the new onidia-chat take a
+// different lock, both would pass, and two windows would fight over the same
+// say-FIFO. Same reason the name has to outlive the rename.
 func lockPath() string {
 	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
 		return filepath.Join(dir, "chat-app.lock")
@@ -56,18 +63,18 @@ func acquireInstanceLock() (*instanceLock, error) {
 		}
 	}
 	if err != nil {
-		log.Printf("single-instance: lock unavailable (%v); another chat-app may be started", err)
+		log.Printf("single-instance: lock unavailable (%v); another onidia-chat may be started", err)
 		return nil, nil
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		holder := readLockHolder(f)
 		f.Close()
 		if holder != "" {
-			return nil, fmt.Errorf("another chat-app is already running (pid %s); "+
+			return nil, fmt.Errorf("another onidia-chat is already running (pid %s); "+
 				"close it first, or run one of the read-only modes "+
 				"(-stt-test, -preview) which do not take the lock", holder)
 		}
-		return nil, fmt.Errorf("another chat-app is already running (pid unknown); close it first")
+		return nil, fmt.Errorf("another onidia-chat is already running (pid unknown); close it first")
 	}
 	// Record who holds it, so the losing instance can name it. The file is
 	// truncated first because the previous holder's pid is still in it.

@@ -1,4 +1,4 @@
-// Package agent defines the plug-in contract every chat-app ability
+// Package agent defines the plug-in contract every onidia-chat ability
 // ("agent") implements, plus a tiny registry so the model's [AGENT: ...]
 // reply tags and the agentctl CLI can discover and run them.
 //
@@ -132,7 +132,7 @@ func Reset() {
 // A manifest can carry "disabled": true to switch one agent off, but that only
 // works for agents the user owns: on a packaged install the agents live in
 // /opt/onidia/share/agents, root-owned, so switching one off means sudo nano.
-// This set is the owner-independent switch - chat-app's agents-disabled config
+// This set is the owner-independent switch - onidia-chat's agents-disabled config
 // key (or -agents-disabled) fills it, and discovery skips those ids.
 //
 // Disabling is not the same as deleting: the agent stays on disk, keeps its

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 // echoAgent is a native (in-process) agent for bridge tests.

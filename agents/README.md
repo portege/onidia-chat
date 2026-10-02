@@ -1,10 +1,10 @@
-# Agents - pluggable abilities for chat-app
+# Agents - pluggable abilities for onidia-chat
 
 An agent is a small program the LLM can call with an `[AGENT: ...]` reply
 tag: play a song, read a story, control your lights - anything you can
-script. chat-app discovers them automatically: **drop a folder into the
+script. onidia-chat discovers them automatically: **drop a folder into the
 agents directory, restart, and the model can use it.** No rebuild, no code
-changes in chat-app.
+changes in onidia-chat.
 
 ```
 ~/.config/chat-app/agents/          # ($XDG_CONFIG_HOME/chat-app/agents)
@@ -22,8 +22,8 @@ make agentctl
 ./agentctl run hello_world name=Ada style=formal
 ```
 
-Then restart chat-app and ask it *"say hello through hello_world"* - the
-reply carries `[AGENT: hello_world name=Ada]`, chat-app runs the agent and
+Then restart onidia-chat and ask it *"say hello through hello_world"* - the
+reply carries `[AGENT: hello_world name=Ada]`, onidia-chat runs the agent and
 appends its `OK` message to the bubble.
 
 ## More than one ability, and chaining
@@ -35,7 +35,7 @@ One reply may carry several tags; they all run, **in parallel**, and every
 [AGENT: search_song query=havana] [AGENT: set_mood mood=party] on it!
 ```
 
-After the agents ran, chat-app hands their results back to the model (as a
+After the agents ran, onidia-chat hands their results back to the model (as a
 delimited, untrusted data block) so it can *chain* - use what one agent
 found to call the next one - or rephrase a call that failed:
 
@@ -62,7 +62,7 @@ Rules that keep this safe:
 ## Nothing to change for native tool calling
 
 When your provider supports function/tool calling (Gemini, OpenRouter-style
-endpoints, ollama ≥ 0.3, Bedrock), chat-app advertises your agent as a **tool**
+endpoints, ollama ≥ 0.3, Bedrock), onidia-chat advertises your agent as a **tool**
 instead of describing the `[AGENT: ...]` tag: the tool name is your `id`, the
 description your manifest `description`, and its parameters are your declared
 `params` as a JSON schema. The model then calls it with structured JSON
@@ -74,11 +74,11 @@ tag path, so one agent works everywhere (see
 Nothing changes for your agent: you still receive one `RUN` line and answer
 one `OK`/`ERR` line. Chaining is the *brain's* job.
 
-## Bundled with chat-app
+## Bundled with onidia-chat
 
 | id / folder | kind | what it does |
 |---|---|---|
-| `read_story` | **native** (in the binary) | tells an AI story through the chat/pet/TTS pipeline; params `theme`, `length` (short/medium/long). Native because it reuses the provider keys chat-app already holds - downloaded agents never see API keys |
+| `read_story` | **native** (in the binary) | tells an AI story through the chat/pet/TTS pipeline; params `theme`, `length` (short/medium/long). Native because it reuses the provider keys onidia-chat already holds - downloaded agents never see API keys |
 | `agents/play_song` | downloaded folder | fuzzy-searches your music folder and launches a detached player (`mpv` > `cvlc` > `vlc` > `ffplay`), then asks the pet to dance; param `query` (empty = random) |
 | `agents/play_movie` | downloaded folder | same for videos, with a `fullscreen` toggle |
 | `agents/media_control` | downloaded folder | **the transport buttons**: `pause` / `resume` / `stop` / `status` of whatever a `play_*` agent started, plus `target` (`any`/`song`/`movie`). Pauses mpv through its control socket, other players with `SIGSTOP`/`SIGCONT`; stops with `SIGINT` → `SIGTERM` → `SIGKILL` |
@@ -92,7 +92,7 @@ Media folders come from `music-dir` / `video-dir` in chat-app.ini (or
 
 ## Play, pause, stop
 
-When a `play_*` agent starts a player, chat-app shows a **NOW PLAYING** strip
+When a `play_*` agent starts a player, onidia-chat shows a **NOW PLAYING** strip
 above the input box, with the track name and two buttons: **play/pause** and
 **stop**. It appears when the player starts, flips to **PAUSED** when the pause
 took, and disappears when the player is gone (or the song ended).
@@ -141,7 +141,7 @@ Install them:
    - `description` is read by the LLM: say **when** to use the agent.
    - `params` are the ONLY keys the model may send. Types: `string`
      (default), `int`, `bool`, plus optional `enum` and `default`.
-     chat-app validates everything BEFORE your agent runs.
+     onidia-chat validates everything BEFORE your agent runs.
 
 2. Implement the line protocol (`docs/AGENT-PROTOCOL.md`): read one
    `RUN {json}` line from stdin, answer `OK <message>` or `ERR <why>` on
@@ -173,7 +173,7 @@ echo "OK Playing Havana by Camila Cabello"
 - **One agent per folder/zip**, `agent.json` at the root (one level of
   wrapper folder in zips is tolerated).
 - After `OK`/`ERR` you **must exit**. Long work: spawn it detached
-  (double-fork, `setsid`, systemd-run) and return immediately - chat-app
+  (double-fork, `setsid`, systemd-run) and return immediately - onidia-chat
   kills a still-running agent 2s after the terminal line.
 - `OK` message becomes part of the reply (keep it short, plain text, no
   markdown/emoji - the pet reads it aloud with a bitmap font).

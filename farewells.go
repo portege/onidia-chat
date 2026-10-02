@@ -13,7 +13,7 @@ package main
 // exit.
 //
 // WHY THE ASCII FILTERING: both renderers are hand-built 5x7 bitmap fonts -
-// chat-app's font5x7 (font.go) and the pet's fx.font5x7
+// onidia-chat's font5x7 (font.go) and the pet's fx.font5x7
 // (onidia/internal/fx/font.go). A rune with no glyph in those tables is
 // painted as blank space, so a goodbye written in its own script ("さようなら",
 // "До свидания", "إلى اللقاء") would come out of the bubble as a row of
@@ -220,7 +220,7 @@ var asciiFolds = map[rune]string{
 }
 
 // asciiFarewell folds one farewell to what the bitmap fonts can draw. Both
-// renderers (chat-app's font5x7 and the pet bubble's fx.font5x7) fall back to
+// renderers (onidia-chat's font5x7 and the pet bubble's fx.font5x7) fall back to
 // blank space for a rune they have no glyph for, and the say-FIFO is
 // line-oriented, so: line breaks and tabs become spaces, control characters
 // go, ASCII passes through, folded runes are replaced, and anything else

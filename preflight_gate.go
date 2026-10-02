@@ -1,4 +1,4 @@
-// preflight_gate.go - chat-app's startup requirements gate.
+// preflight_gate.go - onidia-chat's startup requirements gate.
 //
 // Runs the shared internal/preflight checks for the resolved configuration
 // BEFORE the X window opens, so a backend that cannot work is reported up
@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/portege/chat-app/internal/preflight"
+	"github.com/portege/onidia-chat/internal/preflight"
 )
 
 // startupGateTimeout bounds the whole startup run: live probes are one cheap

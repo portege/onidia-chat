@@ -1,5 +1,5 @@
 // env.go - the environment requirements checks: what the host must provide
-// for chat-app to be useful. All are SeverityWarn: a missing piece degrades
+// for onidia-chat to be useful. All are SeverityWarn: a missing piece degrades
 // speech/pet-forwarding/agents but never stops the window from opening.
 package preflight
 
@@ -14,7 +14,7 @@ import (
 )
 
 // Env is the resolved environment context, filled by the caller from the same
-// values chat-app already computed (flag > config > default precedence).
+// values onidia-chat already computed (flag > config > default precedence).
 type Env struct {
 	Pipe        string   // resolved pet say-FIFO ("" = forwarding disabled)
 	AgentsDirs  []string // agent discovery directories, in precedence order
@@ -25,11 +25,11 @@ type Env struct {
 	STTOn       bool     // speech input (microphone) requested
 }
 
-// ttsPlayerCandidates mirrors chat-app's tts.go player preference list
+// ttsPlayerCandidates mirrors onidia-chat's tts.go player preference list
 // (findTTSPlayer: pw-play/paplay first on PipeWire, then aplay/paplay/ffplay).
 var ttsPlayerCandidates = []string{"pw-play", "paplay", "aplay", "ffplay"}
 
-// sttRecorderCandidates mirrors chat-app's stt.go recorder preference list
+// sttRecorderCandidates mirrors onidia-chat's stt.go recorder preference list
 // (findSTTRecorder: pw-record/parecord first on PipeWire, then arecord/ffmpeg).
 var sttRecorderCandidates = []string{"pw-record", "parecord", "arecord", "ffmpeg"}
 
@@ -43,7 +43,7 @@ func EnvChecks(e Env) []Check {
 			Run: func(context.Context) Outcome {
 				d := os.Getenv("DISPLAY")
 				if d == "" {
-					return Fail("no DISPLAY - chat-app opens a plain X11 window",
+					return Fail("no DISPLAY - onidia-chat opens a plain X11 window",
 						"run inside an X session, or export DISPLAY=:0")
 				}
 				return Pass("DISPLAY=" + d)
@@ -100,7 +100,7 @@ func EnvChecks(e Env) []Check {
 					return Fail(e.Pipe+" exists but is not a FIFO",
 						"remove it and let the pet recreate its say-pipe")
 				}
-				// Non-blocking write-open: exactly chat-app's petPipeReady
+				// Non-blocking write-open: exactly onidia-chat's petPipeReady
 				// probe - ENXIO means the FIFO exists but nobody reads it.
 				f, err := os.OpenFile(e.Pipe, os.O_WRONLY|syscall.O_NONBLOCK, 0)
 				if err != nil {
@@ -169,7 +169,7 @@ func EnvChecks(e Env) []Check {
 				}
 				if e.PixabayKey == "" {
 					return Fail("image-source=pixabay but no API key",
-						"export PIXABAY_API_KEY or set pixabay-key in chat-app.ini (chat-app's built-in key also works)")
+						"export PIXABAY_API_KEY or set pixabay-key in chat-app.ini (onidia-chat's built-in key also works)")
 				}
 				return Pass("pixabay key " + MaskKey(e.PixabayKey))
 			},

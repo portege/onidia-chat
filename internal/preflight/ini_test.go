@@ -36,7 +36,7 @@ tts = on
 		t.Fatal(err)
 	}
 	// Sections are ignored and keys are flat / last-wins - exactly like
-	// chat-app's LoadConfig. (qwen2 beats gemini-3.6-flash: it is later.)
+	// onidia-chat's LoadConfig. (qwen2 beats gemini-3.6-flash: it is later.)
 	if Get(kv, "provider") != "bedrock" {
 		t.Errorf("provider = %q, want bedrock", Get(kv, "provider"))
 	}

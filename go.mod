@@ -1,4 +1,4 @@
-module github.com/portege/chat-app
+module github.com/portege/onidia-chat
 
 go 1.24.4
 

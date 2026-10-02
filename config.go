@@ -1,4 +1,4 @@
-// config.go - a tiny INI parser for chat-app configuration.
+// config.go - a tiny INI parser for onidia-chat configuration.
 //
 // Keeps zero external dependencies: the app uses only the Go standard
 // library. Supports:
@@ -335,7 +335,7 @@ func SetConfigValue(path, section, key, val string) error {
 		lines = strings.Split(string(raw), "\n")
 	case os.IsNotExist(err):
 		lines = []string{
-			"# chat-app configuration (INI format)",
+			"# onidia-chat configuration (INI format)",
 			"# Partially maintained by the in-app settings dialog.",
 			"",
 		}

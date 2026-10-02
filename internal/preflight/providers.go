@@ -18,7 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 )
 
-// Keep-in-sync defaults: these mirror chat-app's package-main constants
+// Keep-in-sync defaults: these mirror onidia-chat's package-main constants
 // (chat.go: defaultAPIURL/defaultModel, providers.go: defaultOllamaURL/
 // defaultOllamaModel/defaultOpenRouterURL/defaultOpenRouterModel/
 // defaultBedrockModelID). The CLI resolves them the same way main.go does;
@@ -35,7 +35,7 @@ const (
 )
 
 // Spec is the resolved provider configuration under test: exactly what
-// chat-app would launch with after flag/env/config precedence. APIKey is the
+// onidia-chat would launch with after flag/env/config precedence. APIKey is the
 // Gemini key for provider=gemini and the OpenRouter token for
 // provider=openrouter (the fields are shared across providers, like
 // chat-app.ini's single api-key); AWS* only matters for bedrock. Deep adds a
@@ -136,7 +136,7 @@ func orDefault(v, def string) string {
 	return v
 }
 
-// geminiChecks: the key must exist (warn - a missing key is chat-app's
+// geminiChecks: the key must exist (warn - a missing key is onidia-chat's
 // documented stub mode, the app still opens) and the API must accept it
 // (fatal). The probe is the free GET /v1beta/models listing, never a paid
 // generateContent call.
@@ -150,7 +150,7 @@ func geminiChecks(spec Spec) []Check {
 			Severity: SeverityWarn,
 			Run: func(context.Context) Outcome {
 				if key == "" {
-					return Fail("no API key - chat-app runs in stub mode (replies echo your message)",
+					return Fail("no API key - onidia-chat runs in stub mode (replies echo your message)",
 						"export GEMINI_API_KEY=... or set api-key in chat-app.ini (api-key = off forces stub mode)")
 				}
 				return Pass("key " + MaskKey(key))
@@ -191,7 +191,7 @@ func geminiChecks(spec Spec) []Check {
 }
 
 // ollamaChecks: the server must answer its own dialect (fatal), and the
-// configured model tag must exist on it (warn - chat-app would 404 on send).
+// configured model tag must exist on it (warn - onidia-chat would 404 on send).
 // Both probe GET /api/tags, the cheapest ollama-native liveness endpoint.
 func ollamaChecks(spec Spec) []Check {
 	base := orDefault(spec.APIURL, defaultOllamaURL)
@@ -270,7 +270,7 @@ func ollamaChecks(spec Spec) []Check {
 }
 
 // openrouterChecks: there is no built-in OpenRouter key (unlike Gemini), so
-// a missing one is fatal - chat-app would fail on the first send. The API
+// a missing one is fatal - onidia-chat would fail on the first send. The API
 // probe is the free GET /models listing of the OpenAI dialect.
 func openrouterChecks(spec Spec) []Check {
 	base := orDefault(spec.APIURL, defaultOpenRouterURL)
@@ -323,7 +323,7 @@ func openrouterChecks(spec Spec) []Check {
 }
 
 // bedrockChecks: the AWS SDK credential chain must resolve for the configured
-// profile/region (fatal - chat-app's provider construction even exits without
+// profile/region (fatal - onidia-chat's provider construction even exits without
 // it), plus an opt-in 1-token Converse call (Deep) proving model access.
 func bedrockChecks(spec Spec) []Check {
 	profile := strings.TrimSpace(spec.AWSProfile)

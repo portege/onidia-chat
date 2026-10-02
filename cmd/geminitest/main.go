@@ -1,6 +1,6 @@
 package main
 
-// geminitest - standalone Google Gemini API probe for debugging chat-app's
+// geminitest - standalone Google Gemini API probe for debugging onidia-chat's
 // brain, without the X11 UI in the way.
 //
 //   go run ./cmd/geminitest -models                # list models the key can use
@@ -64,19 +64,19 @@ func main() {
 		*key = os.Getenv("GOOGLE_API_KEY")
 	}
 	if *key == "" {
-		*key = defaultKey // same built-in key as chat-app
+		*key = defaultKey // same built-in key as onidia-chat
 	}
 	*key = strings.TrimSpace(*key)
 
 	client := &http.Client{Timeout: *timeout}
 
 	// Package-level helpers from the main package are not visible here, so the
-	// -image test is intentionally in the main binary (./chat-app -fetch-image).
+	// -image test is intentionally in the main binary (./onidia-chat -fetch-image).
 	// Keep this flag for future expansion.
 	_ = imgTest
 
 	if *imgTest != "" {
-		fmt.Println("image fetch test is now: ./chat-app -fetch-image <keyword>")
+		fmt.Println("image fetch test is now: ./onidia-chat -fetch-image <keyword>")
 		return
 	}
 

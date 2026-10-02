@@ -1,4 +1,4 @@
-// resolve.go - chat-app's provider/model/url resolution, shared by both
+// resolve.go - onidia-chat's provider/model/url resolution, shared by both
 // preflight surfaces so the CLI and the startup gate always test exactly what
 // the app will launch with.
 package preflight
@@ -8,7 +8,7 @@ import "strings"
 // Keep-in-sync: the model defaults themselves live beside the provider
 // checks in providers.go (defaultGeminiModel, defaultBedrockModel,
 // defaultOllamaModel, defaultOpenRouterModel) - values only. The logic below
-// is the single copy of chat-app's pickModel rules: main.go delegates here.
+// is the single copy of onidia-chat's pickModel rules: main.go delegates here.
 
 // ResolveModel picks the effective model ID: explicit -model flag > config
 // file value > provider default. A leftover model from the other provider
@@ -16,7 +16,7 @@ import "strings"
 // backend's default and reported in the returned warning - sending it would
 // fail with a confusing API error.
 //
-// This is chat-app main.go's pickModel: it is here so chat-app itself and
+// This is onidia-chat main.go's pickModel: it is here so onidia-chat itself and
 // cmd/preflight resolve the same model from the same inputs, always.
 func ResolveModel(provider, flagVal string, flagSet bool, cfgModel string) (model, warn string) {
 	model = strings.TrimSpace(flagVal)
@@ -65,7 +65,7 @@ func ResolveModel(provider, flagVal string, flagSet bool, cfgModel string) (mode
 	return model, ""
 }
 
-// q quotes a value the way chat-app's warnings do.
+// q quotes a value the way onidia-chat's warnings do.
 func q(s string) string { return `"` + s + `"` }
 
 // SpecContext is the report header metadata: what the spec resolved to
@@ -84,13 +84,13 @@ func SpecContext(spec Spec) map[string]string {
 }
 
 // isGeminiFamily reports whether an ID belongs to Google's Gemini family
-// (keep in sync with chat-app's isGeminiModel).
+// (keep in sync with onidia-chat's isGeminiModel).
 func isGeminiFamily(id string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(id)), "gemini-")
 }
 
 // isBedrockFamily reports whether an ID looks like a Bedrock foundation-model
-// identifier (keep in sync with chat-app's isBedrockModel).
+// identifier (keep in sync with onidia-chat's isBedrockModel).
 func isBedrockFamily(id string) bool {
 	id = strings.ToLower(strings.TrimSpace(id))
 	for _, prefix := range []string{

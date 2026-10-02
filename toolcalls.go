@@ -29,7 +29,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 // ToolDef is one ability advertised to the model as a callable function. The

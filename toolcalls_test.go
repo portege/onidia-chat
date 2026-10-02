@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 // toolScriptTurn is one scripted answer of toolScriptProvider.

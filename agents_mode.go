@@ -3,7 +3,7 @@ package main
 // Agent management without agentctl.
 //
 // agentctl is built but never shipped (see DISTRIBUTING.md), so a packaged
-// user has no way to list, install or remove an agent - and chat-app's own log
+// user has no way to list, install or remove an agent - and onidia-chat's own log
 // used to point them at a binary that was not there. These three modes close
 // that gap using the same agent-package functions agentctl calls, so the
 // behaviour is identical and there is exactly one implementation of install.
@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 // runAgentMode prints the result of -agents-list / -agents-install /
@@ -41,7 +41,7 @@ func agentList(searchDirs []string) int {
 	if len(items) == 0 {
 		fmt.Println("No agents installed.")
 		fmt.Printf("Searched: %s\n", strings.Join(searchDirs, ", "))
-		fmt.Println("Install one with:  chat-app -agents-install <folder|zip|url|registry-id>")
+		fmt.Println("Install one with:  onidia-chat -agents-install <folder|zip|url|registry-id>")
 		return 0
 	}
 	fmt.Printf("%-16s %-8s %-9s %s\n", "ID", "VERSION", "STATE", "LOCATION")
@@ -74,11 +74,11 @@ func agentList(searchDirs []string) int {
 func agentInstall(src string, cfg *Config) int {
 	dest := agent.DefaultDir()
 	if dest == "" {
-		fmt.Fprintln(os.Stderr, "chat-app: cannot determine your agents directory (no $HOME)")
+		fmt.Fprintln(os.Stderr, "onidia-chat: cannot determine your agents directory (no $HOME)")
 		return 2
 	}
 	if err := os.MkdirAll(dest, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "chat-app: cannot create %s: %v\n", dest, err)
+		fmt.Fprintf(os.Stderr, "onidia-chat: cannot create %s: %v\n", dest, err)
 		return 2
 	}
 
@@ -94,12 +94,12 @@ func agentInstall(src string, cfg *Config) int {
 	if agent.ValidID(src) && registry != "" && !looksLikePath(src) {
 		idx, err := agent.LoadIndex(registry)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "chat-app: cannot read registry %s: %v\n", registry, err)
+			fmt.Fprintf(os.Stderr, "onidia-chat: cannot read registry %s: %v\n", registry, err)
 			return 2
 		}
 		entry := idx.FindEntry(src)
 		if entry == nil {
-			fmt.Fprintf(os.Stderr, "chat-app: %q is not in the registry (%s)\n", src, registry)
+			fmt.Fprintf(os.Stderr, "onidia-chat: %q is not in the registry (%s)\n", src, registry)
 			return 2
 		}
 		target, sha = entry.URL, entry.SHA256
@@ -113,7 +113,7 @@ func agentInstall(src string, cfg *Config) int {
 			if pk, err := agent.ParsePublicKey(cfg.AgentsKey); err == nil {
 				pol.Key = pk
 			} else {
-				fmt.Fprintf(os.Stderr, "chat-app: invalid agents-key in config: %v\n", err)
+				fmt.Fprintf(os.Stderr, "onidia-chat: invalid agents-key in config: %v\n", err)
 				return 2
 			}
 		}
@@ -121,14 +121,14 @@ func agentInstall(src string, cfg *Config) int {
 
 	id, err := agent.InstallWithOptions(target, dest, agent.InstallOptions{SHA256: sha, Policy: pol})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "chat-app: install failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "onidia-chat: install failed: %v\n", err)
 		return 2
 	}
 	fmt.Printf("installed %s -> %s\n", id, filepath.Join(dest, id))
 	if agent.IsDisabled(id) {
 		fmt.Printf("note: %s is listed in agents-disabled, so it stays off until you remove it there\n", id)
 	}
-	fmt.Println("restart chat-app to load it (chat-app -agents-list shows it now)")
+	fmt.Println("restart onidia-chat to load it (onidia-chat -agents-list shows it now)")
 	return 0
 }
 
@@ -143,18 +143,18 @@ func agentRemove(id string, searchDirs []string) int {
 		}
 		if _, err := os.Stat(filepath.Join(dir, id)); err == nil {
 			fmt.Fprintf(os.Stderr,
-				"chat-app: %s belongs to the package (%s), not to you.\n"+
-					"Switch it off instead - it keeps its files: chat-app -agents-disabled %s\n",
+				"onidia-chat: %s belongs to the package (%s), not to you.\n"+
+					"Switch it off instead - it keeps its files: onidia-chat -agents-disabled %s\n",
 				id, dir, id)
 			return 2
 		}
 	}
 	if err := agent.Remove(id, userDir); err != nil {
-		fmt.Fprintf(os.Stderr, "chat-app: cannot remove %s: %v\n", id, err)
+		fmt.Fprintf(os.Stderr, "onidia-chat: cannot remove %s: %v\n", id, err)
 		return 2
 	}
 	fmt.Printf("removed %s from %s\n", id, userDir)
-	fmt.Println("restart chat-app to drop it from the catalog")
+	fmt.Println("restart onidia-chat to drop it from the catalog")
 	return 0
 }
 

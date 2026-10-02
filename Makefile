@@ -13,7 +13,7 @@ test:
 
 
 build:
-	go build -trimpath -ldflags="-s -w" -o chat-app .
+	go build -trimpath -ldflags="-s -w" -o onidia-chat .
 	go build -trimpath -ldflags="-s -w" -o preflight ./cmd/preflight
 
 agentctl:
@@ -21,7 +21,7 @@ agentctl:
 
 # Requirements check (the standalone preflight): is the selected LLM backend
 # reachable/credentialed and the environment sane BEFORE launching? Runs the
-# same checks chat-app's startup gate runs (strict by default there).
+# same checks onidia-chat's startup gate runs (strict by default there).
 # Exit codes: 0 ok, 1 warnings only, 2 blocked. Extras via ARGS, e.g.:
 #   make preflight ARGS="-all -json"    # probe every backend, machine-readable
 preflight:
@@ -31,7 +31,7 @@ preflight:
 doctor: preflight
 
 run:
-	./chat-app
+	./onidia-chat
 
 # Headless UI previews: renders chat_ui_*.png sample states and exits (same
 # idea as the desktop-pet's `make debug`).
@@ -46,7 +46,7 @@ test-api:
 	go run ./cmd/geminitest $(ARGS)
 
 clean:
-	rm -f chat-app preflight chat_ui_*.png
+	rm -f onidia-chat preflight chat_ui_*.png
 	rm -rf dist
 
 # Zip every shippable agent in agents/<name> into dist/agents/<name>.zip
@@ -119,39 +119,39 @@ $(DIST)/chat-app.ini: chat-app.ini.template
 
 # Release tarball. `pack` first, so the agents ship as zips the bundled
 # install.sh can register with agentctl on the target machine.
-# What actually ships: chat-app and chat-app.ini. preflight is a standalone
-# diagnostic (chat-app runs the same checks internally at startup), agentctl
+# What actually ships: onidia-chat and chat-app.ini. preflight is a standalone
+# diagnostic (onidia-chat runs the same checks internally at startup), agentctl
 # only installs the downloadable agents, and the agent zips are python scripts
 # the built-in story agent does not need. Kept building locally under `make
 # build`/`make agentctl`, just not distributed.
 dist: build $(DIST)/chat-app.ini
-	../packaging/mktar.sh --name chat-app --version $(VERSION) --arch $(ARCH) --out $(DIST) \
-		--file chat-app:bin/chat-app:0755 \
+	../packaging/mktar.sh --name onidia-chat --version $(VERSION) --arch $(ARCH) --out $(DIST) \
+		--file onidia-chat:bin/onidia-chat:0755 \
 		--file $(DIST)/chat-app.ini:share/chat-app.ini:0644 \
 		--file README.md:share/README.md:0644 \
 		--file ../packaging/install.sh:install.sh:0755 \
-		--file ../packaging/desktop/chat-app.desktop:share/chat-app.desktop:0644 \
+		--file ../packaging/desktop/onidia-chat.desktop:share/onidia-chat.desktop:0644 \
 		--file ../DISTRIBUTING.md:DISTRIBUTING.md:0644 \
 		--file ../RELEASE.md:RELEASE.md:0644 \
 		--dir ../packaging/icons:share/icons
 
 # Debian package. The config example lands next to the binary in /opt so it is
-# found but NOT auto-loaded (chat-app only auto-loads ./chat-app.ini); copying
+# found but NOT auto-loaded (onidia-chat only auto-loads ./chat-app.ini); copying
 # it to ~/.config/chat-app/chat-app.ini is the user's one deliberate step.
 deb: build $(DIST)/chat-app.ini
 	@mkdir -p $(DIST)
-	sed 's|Exec=__BIN__/|Exec=|' ../packaging/desktop/chat-app.desktop > $(DIST)/chat-app.desktop
-	../packaging/mkdeb.sh --name chat-app --version $(VERSION) --arch $(ARCH) \
+	sed 's|Exec=__BIN__/|Exec=|' ../packaging/desktop/onidia-chat.desktop > $(DIST)/onidia-chat.desktop
+	../packaging/mkdeb.sh --name onidia-chat --version $(VERSION) --arch $(ARCH) \
 		--maintainer "$(MAINTAINER)" \
 		--section utils \
 		--homepage https://github.com/portege/onidia-chat \
 		--description "Chat window with a desktop-pet voice and speech to text (pure Go, raw X11)" \
 		--out $(DIST)/deb \
-		--file chat-app:opt/chat-app/bin/chat-app:0755 \
-		--file $(DIST)/chat-app.ini:opt/chat-app/bin/chat-app.ini:0644 \
-		--file README.md:usr/share/doc/chat-app/README.md:0644 \
-		--file ../DISTRIBUTING.md:usr/share/doc/chat-app/DISTRIBUTING.md:0644 \
-		--file ../RELEASE.md:usr/share/doc/chat-app/RELEASE.md:0644 \
-		--file $(DIST)/chat-app.desktop:usr/share/applications/chat-app.desktop:0644 \
-		--file ../packaging/icons/chat-app.svg:usr/share/icons/hicolor/scalable/apps/chat-app.svg:0644 \
-		--link /opt/chat-app/bin/chat-app:usr/bin/chat-app
+		--file onidia-chat:opt/onidia-chat/bin/onidia-chat:0755 \
+		--file $(DIST)/chat-app.ini:opt/onidia-chat/bin/chat-app.ini:0644 \
+		--file README.md:usr/share/doc/onidia-chat/README.md:0644 \
+		--file ../DISTRIBUTING.md:usr/share/doc/onidia-chat/DISTRIBUTING.md:0644 \
+		--file ../RELEASE.md:usr/share/doc/onidia-chat/RELEASE.md:0644 \
+		--file $(DIST)/onidia-chat.desktop:usr/share/applications/onidia-chat.desktop:0644 \
+		--file ../packaging/icons/onidia-chat.svg:usr/share/icons/hicolor/scalable/apps/onidia-chat.svg:0644 \
+		--link /opt/onidia-chat/bin/onidia-chat:usr/bin/onidia-chat

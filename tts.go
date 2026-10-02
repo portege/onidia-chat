@@ -273,9 +273,9 @@ type ttsOutputSpec struct {
 	AudioFormat string `json:"audio_format"`
 }
 
-// writeWav stores raw WAV bytes in a fresh /tmp/chat-app-tts-*.wav file.
+// writeWav stores raw WAV bytes in a fresh /tmp/onidia-chat-tts-*.wav file.
 func writeWav(data []byte) (string, error) {
-	f, err := os.CreateTemp("", "chat-app-tts-*.wav")
+	f, err := os.CreateTemp("", "onidia-chat-tts-*.wav")
 	if err != nil {
 		return "", err
 	}

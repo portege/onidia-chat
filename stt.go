@@ -153,7 +153,7 @@ func startSTTRecorder(recorder, device string) (*sttRecorder, error) {
 		return nil, sttErrf("no audio recorder found (tried pw-record, parecord, arecord, ffmpeg) - " +
 			"install pipewire-utils or alsa-utils, or set stt = off")
 	}
-	f, err := os.CreateTemp("", "chat-app-stt-*.wav")
+	f, err := os.CreateTemp("", "onidia-chat-stt-*.wav")
 	if err != nil {
 		return nil, fmt.Errorf("create temp wav: %w", err)
 	}

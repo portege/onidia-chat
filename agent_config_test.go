@@ -37,7 +37,7 @@ func TestAgentConfigKeys(t *testing.T) {
 		t.Errorf("agents-disabled = %q, want play_movie and media_control", cfg.AgentsDisabled)
 	}
 	// Phase 4 signature and registry keys
-	p2 := filepath.Join(t.TempDir(), "chat-app-sec.ini")
+	p2 := filepath.Join(t.TempDir(), "onidia-chat-sec.ini")
 	ini2 := "agents-key = deadbeef\n" +
 		"agents-require-sig = true\n" +
 		"agents-registry = https://example.com/registry.json\n"

@@ -63,7 +63,7 @@ func FetchImage(keyword string, client *http.Client) *ImageResult {
 		return &ImageResult{Err: err}
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "chat-app/1.0")
+	req.Header.Set("User-Agent", "onidia-chat/1.0")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -123,7 +123,7 @@ func fetchPixabayImage(keyword, apiKey, baseURL string, client *http.Client) *Im
 		return &ImageResult{Err: err}
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "chat-app/1.0")
+	req.Header.Set("User-Agent", "onidia-chat/1.0")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -184,7 +184,7 @@ func downloadImage(imgURL string, client *http.Client) (image.Image, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "chat-app/1.0")
+	req.Header.Set("User-Agent", "onidia-chat/1.0")
 
 	resp, err := client.Do(req)
 	if err != nil {

@@ -5,7 +5,7 @@ package main
 // (middle-click) selections; paste requests arriving from other applications
 // are answered from the stored text. No external helper (xclip & co) is
 // involved: the window answers SelectionRequest events itself, which is also
-// what keeps the offer alive for as long as chat-app runs.
+// what keeps the offer alive for as long as onidia-chat runs.
 
 import (
 	"fmt"

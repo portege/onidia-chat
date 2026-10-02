@@ -1,14 +1,14 @@
 package main
 
 // pet_control_test.go - the agent and the brain's pet-command tables must
-// agree. The agent resolves a request in Python; chat-app re-validates the
+// agree. The agent resolves a request in Python; onidia-chat re-validates the
 // result here in Go. If a name exists on one side only, the line is silently
 // dropped at runtime ("ignoring unknown pet command") and the character just
 // does nothing - which is exactly the bug these tests exist to prevent.
 //
-// The first test drives the real script for EVERY name chat-app knows, so a
+// The first test drives the real script for EVERY name onidia-chat knows, so a
 // new action or face added to the pet cannot land without the agent catching
-// up. That direction matters more than the other: an unknown-to-chat-app line
+// up. That direction matters more than the other: an unknown-to-onidia-chat line
 // is invisible, whereas a name the pet rejects is at least logged.
 
 import (
@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 const petControlAgent = "agents/pet_control"
@@ -64,8 +64,8 @@ func petLineOf(t *testing.T, args string) string {
 	return ""
 }
 
-// Every name chat-app accepts must be reachable through the agent, and the
-// agent's answer must survive chat-app's own validation.
+// Every name onidia-chat accepts must be reachable through the agent, and the
+// agent's answer must survive onidia-chat's own validation.
 // An agent's PET line has to be routed to the right pipe. Expressions are the
 // exception: the pet has no cmd-FIFO verb for them, so "expr <mood>" has to
 // leave as a bare say-line. Getting this backwards is invisible - the pet just
@@ -366,21 +366,21 @@ func TestPetControlCoversEveryKnownName(t *testing.T) {
 		if got := petLineOf(t, `{"kind":"expression","name":"`+name+`"}`); got != "expr "+name {
 			t.Errorf("expression %q -> %q, want %q", name, got, "expr "+name)
 		} else if !knownPetCmd(got) {
-			t.Errorf("chat-app rejects its own expression line %q", got)
+			t.Errorf("onidia-chat rejects its own expression line %q", got)
 		}
 	}
 	for name := range petActions {
 		if got := petLineOf(t, `{"kind":"action","name":"`+name+`"}`); got != "action "+name {
 			t.Errorf("action %q -> %q, want %q", name, got, "action "+name)
 		} else if !knownPetCmd(got) {
-			t.Errorf("chat-app rejects its own action line %q", got)
+			t.Errorf("onidia-chat rejects its own action line %q", got)
 		}
 	}
 	for name := range petEvents {
 		if got := petLineOf(t, `{"kind":"event","name":"`+name+`"}`); got != "event "+name {
 			t.Errorf("event %q -> %q, want %q", name, got, "event "+name)
 		} else if !knownPetCmd(got) {
-			t.Errorf("chat-app rejects its own event line %q", got)
+			t.Errorf("onidia-chat rejects its own event line %q", got)
 		}
 	}
 	// Movement verbs reach the pet bare ("jump"), not as "move jump": the
@@ -393,7 +393,7 @@ func TestPetControlCoversEveryKnownName(t *testing.T) {
 		}
 		got := petLineOf(t, `{"kind":"move","name":"`+name+`"}`)
 		if !knownPetCmd(got) {
-			t.Errorf("move %q -> %q, which chat-app rejects", name, got)
+			t.Errorf("move %q -> %q, which onidia-chat rejects", name, got)
 		}
 		if strings.HasPrefix(got, "move ") {
 			t.Errorf("move %q -> %q: the pet takes no 'move' prefix", name, got)
@@ -468,7 +468,7 @@ func TestPetControlCannotInjectASecondCommand(t *testing.T) {
 			t.Errorf("%s -> %q: carries more than one command", args, got)
 		}
 		if !knownPetCmd(got) {
-			t.Errorf("%s -> %q, which chat-app rejects", args, got)
+			t.Errorf("%s -> %q, which onidia-chat rejects", args, got)
 		}
 	}
 }

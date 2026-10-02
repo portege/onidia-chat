@@ -13,7 +13,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 // stubControl is a native stand-in for the media_control agent: it records what
@@ -55,12 +55,14 @@ func writeSession(t *testing.T, dir, name string, pid int, started int64, paused
 }
 
 func TestMediaStateDirPrefersEnv(t *testing.T) {
-	t.Setenv("CHAT_APP_STATE_DIR", "/tmp/chat-app-state-test")
-	if got := mediaStateDir(); got != "/tmp/chat-app-state-test" {
+	t.Setenv("CHAT_APP_STATE_DIR", "/tmp/onidia-chat-state-test")
+	if got := mediaStateDir(); got != "/tmp/onidia-chat-state-test" {
 		t.Errorf("mediaStateDir = %q, want the env value", got)
 	}
 	t.Setenv("CHAT_APP_STATE_DIR", "")
 	t.Setenv("XDG_STATE_HOME", "/tmp/xdg")
+	// "chat-app", not "onidia-chat": mediaStateDir keeps the old dir name so it
+	// matches what media_control.py resolves on its own. See mediaStateDir.
 	if got, want := mediaStateDir(), "/tmp/xdg/chat-app"; got != want {
 		t.Errorf("mediaStateDir = %q, want %q", got, want)
 	}

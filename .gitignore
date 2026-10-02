@@ -1,7 +1,7 @@
 # Binaries
 *.exe
 *.test
-chat-app
+onidia-chat
 /agentctl
 /preflight
 chat_live_test.go

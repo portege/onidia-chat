@@ -6,7 +6,7 @@ package main
 // story's paragraph newlines become bubble pages for free).
 //
 // It is NATIVE (not a downloaded folder) because it needs the provider
-// credentials chat-app already holds - downloaded agents run as plain
+// credentials onidia-chat already holds - downloaded agents run as plain
 // child processes and should never require handing them API keys.
 
 import (
@@ -16,7 +16,7 @@ import (
 	"math/rand"
 	"strings"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 // storySystem is the storyteller persona: plain text only, paragraphs

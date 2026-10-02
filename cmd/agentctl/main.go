@@ -1,6 +1,6 @@
 package main
 
-// agentctl - manage chat-app's pluggable agents without opening the chat
+// agentctl - manage onidia-chat's pluggable agents without opening the chat
 // window: list installed ones, install new ones (folder, .zip or URL),
 // test-run an agent exactly as the reply pipeline would, and validate a
 // folder before you package it.
@@ -12,9 +12,9 @@ package main
 //	./agentctl run hello_world name=Ada style=formal
 //	./agentctl validate ./my-agent-folder
 //
-// Discovery and Run go through the same agent/ package chat-app uses, so
+// Discovery and Run go through the same agent/ package onidia-chat uses, so
 // "it works in agentctl" means "it works in the chat". The default
-// directory matches chat-app's -agents-dir / config agents-dir.
+// directory matches onidia-chat's -agents-dir / config agents-dir.
 
 import (
 	"flag"
@@ -25,11 +25,11 @@ import (
 
 	"crypto/ed25519"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 func main() {
-	dir := flag.String("dir", "", "agents directory (default: chat-app's agents-dir)")
+	dir := flag.String("dir", "", "agents directory (default: onidia-chat's agents-dir)")
 	registryURL := flag.String("registry", os.Getenv("CHAT_APP_AGENTS_REGISTRY"), "registry URL or file (default: $CHAT_APP_AGENTS_REGISTRY)")
 	trustedKeyHex := flag.String("key", "", "trusted Ed25519 public key hex for verification")
 	requireSig := flag.Bool("require-signature", false, "require a valid signature to install or run")
@@ -230,7 +230,7 @@ func cmdInstall(src, agentsDir, registrySrc, explicitSHA string, pol agent.Polic
 		fatalf("%v", err)
 	}
 	fmt.Printf("installed %s -> %s\n", id, filepath.Join(agentsDir, id))
-	fmt.Println("restart chat-app to pick it up (agentctl list shows it now)")
+	fmt.Println("restart onidia-chat to pick it up (agentctl list shows it now)")
 }
 
 // cmdUpdate queries registry and upgrades installed agents when newer versions exist.

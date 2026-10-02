@@ -27,6 +27,11 @@ import (
 
 // DefaultDir returns the conventional per-user agents directory
 // ($XDG_CONFIG_HOME/chat-app/agents or ~/.config/chat-app/agents).
+//
+// The "chat-app" component is the app's former name and is kept on purpose:
+// this directory is where every already-installed agent lives, alongside the
+// ini holding the user's key. Renaming it to "onidia-chat" would make a fresh
+// install look as though no agents were installed at all.
 func DefaultDir() string {
 	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
 		return filepath.Join(x, "chat-app", "agents")
@@ -39,7 +44,7 @@ func DefaultDir() string {
 }
 
 // SystemDir is where a package install keeps the bundled agents. The combined
-// onidia package puts them in /opt/onidia/share/agents, and chat-app used to
+// onidia package puts them in /opt/onidia/share/agents, and onidia-chat used to
 // miss them entirely: discovery only ever looked in the per-user directory,
 // so on a fresh install every bundled agent - including pet_control, the one
 // that makes the pet act - was simply absent.

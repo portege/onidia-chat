@@ -162,6 +162,12 @@ func (w *Win) setupHints() {
 	w.initClipAtoms()
 	w.setStrProp(mustInternAtom(w.conn, "WM_NAME"), utf8, "chat - ai-helper")
 	w.setStrProp(mustInternAtom(w.conn, "_NET_WM_NAME"), utf8, "chat - ai-helper")
+	// WM_CLASS is frozen at the app's old name, chat-app, even though the binary
+	// and the menu entry are now "onidia-chat". It is the handle window managers
+	// and scripts match on - an openbox/blackbox rule, a `wmctrl -c`, an
+	// `xdotool search --class` - and changing it silently stops all of them
+	// matching an existing rule, with no error anywhere. Renaming a binary is
+	// cheap; renaming this is not, so it waits for a deliberate migration.
 	w.setStrProp(mustInternAtom(w.conn, "WM_CLASS"), xproto.AtomString, "chat-app\x00ChatApp\x00")
 	setAtomProp(w.conn, w.win, mustInternAtom(w.conn, "WM_PROTOCOLS"),
 		xproto.AtomAtom, []xproto.Atom{w.atomDeleteWindow})

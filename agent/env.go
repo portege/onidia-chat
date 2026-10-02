@@ -1,7 +1,7 @@
 package agent
 
 // env.go - extra environment passed to every spawned agent process.
-// chat-app resolves user config (media folders etc.) into CHAT_APP_* vars
+// onidia-chat resolves user config (media folders etc.) into CHAT_APP_* vars
 // ONCE at startup; agents inherit them on top of the normal environment.
 // Empty values are skipped so an agent's own defaults (~/Music, ...) apply.
 

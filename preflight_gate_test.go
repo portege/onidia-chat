@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"testing"
 
-	"github.com/portege/chat-app/internal/preflight"
+	"github.com/portege/onidia-chat/internal/preflight"
 )
 
 func TestResolvePreflightMode(t *testing.T) {
@@ -48,7 +48,7 @@ func TestRunStartupPreflightNonBlockingModes(t *testing.T) {
 }
 
 // TestRunStartupPreflightStrictBlocks is the subprocess form: strict mode on
-// a dead backend must exit 2 (which is what stops chat-app before its window).
+// a dead backend must exit 2 (which is what stops onidia-chat before its window).
 func TestRunStartupPreflightStrictBlocks(t *testing.T) {
 	if os.Getenv("PREFLIGHT_GATE_CHILD") == "1" {
 		runStartupPreflight(preflight.Spec{

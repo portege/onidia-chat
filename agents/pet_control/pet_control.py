@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pet_control - chat-app character agent (protocol agent-line-v1).
+"""pet_control - onidia-chat character agent (protocol agent-line-v1).
 
 The pet already knows how to change her face, fire an effect, perform an
 animation and walk around; this agent only turns "cheer" into the right
@@ -9,15 +9,15 @@ tables (aliases and all), and answers with a single PET line.
 Two channels, because the pet itself has two:
 
   * action / event / move travel on the pet's cmd-FIFO ("action dance",
-    "event love", "walk left") - emitted as PET lines that chat-app writes.
+    "event love", "walk left") - emitted as PET lines that onidia-chat writes.
   * expression has NO cmd-FIFO verb. The pet's face is set from its
     say-FIFO by a bare [mood] tag with no text, which holds the face for
     a few seconds without opening a speech bubble. So the agent still
-    emits "PET expr <mood>" and chat-app routes that one verb to the
+    emits "PET expr <mood>" and onidia-chat routes that one verb to the
     say-pipe. The agent never touches a pipe itself.
 
 Every name is resolved to its canonical spelling here, so what reaches
-chat-app always passes its own validation table. The tables mirror
+onidia-chat always passes its own validation table. The tables mirror
 desktop-pet's registries (characters.MoodExpr, eventRegistry,
 actionRegistry, Behavior.HandleCommand); an unknown word is reported with
 the valid list rather than sent for the pet to reject in silence.
@@ -110,7 +110,7 @@ KINDS = {
     "move": sorted(set(MOVE_WALK) | set(MOVES_NOARG)),
 }
 
-# The pet's wire verbs. These are NOT the same as our kind names: chat-app
+# The pet's wire verbs. These are NOT the same as our kind names: onidia-chat
 # validates the verb against its own table, and it knows "expr", not
 # "expression". Getting this wrong is silent - the line is just dropped.
 # Movement is the exception: those verbs are bare on the wire already

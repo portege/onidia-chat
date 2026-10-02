@@ -1,4 +1,11 @@
-# 💬 chat-app — a Gemini-powered chatbot window with a desktop-pet voice
+# 💬 onidia-chat — a Gemini-powered chatbot window with a desktop-pet voice
+
+> **Renamed from `chat-app`.** The binary, the applications-menu entry and this
+> folder are now `onidia-chat`. Nothing you already have moves: your config,
+> your API key, your downloaded agents and the whisper helper stay exactly where
+> they were, so an existing install just keeps working. See
+> [Upgrading from chat-app](#upgrading-from-chat-app) below for the few names
+> that intentionally did *not* change.
 
 A tiny desktop chat window written in **pure Go** on raw X11
 ([`github.com/jezek/xgb`](https://github.com/jezek/xgb)) — the same
@@ -56,7 +63,7 @@ message plus a hint). The key is read from `-api-key`, `$GEMINI_API_KEY`, or
 
 ### Other LLM providers
 
-chat-app selects its backend with `-provider`. Gemini is the default; Bedrock and
+onidia-chat selects its backend with `-provider`. Gemini is the default; Bedrock and
 OpenRouter are also built in (documented in `chat-app.ini`):
 
 | backend     | endpoint                                          | key                                | example `-model`               |
@@ -74,13 +81,13 @@ same code path also works against a **vendor's native** `/chat/completions` API
 ```sh
 # OpenRouter (any model they expose, e.g. DeepSeek or Kimi):
 export OPENROUTER_API_KEY="your-key"
-./chat-app -provider openrouter -model deepseek/deepseek-chat-v3-0324
+./onidia-chat -provider openrouter -model deepseek/deepseek-chat-v3-0324
 
 # ...or DeepSeek's native /chat/completions endpoint (no OpenRouter):
-./chat-app -provider openrouter -api-url https://api.deepseek.com -model deepseek-chat
+./onidia-chat -provider openrouter -api-url https://api.deepseek.com -model deepseek-chat
 
 # ...or Kimi/Moonshot native endpoint:
-./chat-app -provider openrouter -api-url https://api.moonshot.cn/v1 -model kimi-k2-0905-preview
+./onidia-chat -provider openrouter -api-url https://api.moonshot.cn/v1 -model kimi-k2-0905-preview
 ```
 
 With `-provider openrouter` replies stream over **SSE** by default: the chat bubble
@@ -239,7 +246,7 @@ headerless PCM.
 
 ```bash
 pip install faster-whisper          # once; the first run also downloads the model
-./chat-app -stt whisper
+./onidia-chat -stt whisper
 ```
 
 A `tiny` model transcribes a sentence in a few seconds on a Pi; `base` (the
@@ -301,7 +308,7 @@ present, it is never a microphone, and recording it yields pure silence.
 
 ## Preflight: requirements check (before launch)
 
-`chat-app` verifies its own requirements **before the X window opens**: is the
+`onidia-chat` verifies its own requirements **before the X window opens**: is the
 selected LLM backend actually usable, and is the environment sane? The checks
 live in `internal/preflight` and run in two places:
 
@@ -321,7 +328,7 @@ live in `internal/preflight` and run in two places:
 | `env.display`, `env.audio-player`, `env.pet-pipe`, `env.agents-dir`, `env.images` | warn | `$DISPLAY`, an audio player on `PATH`, the pet's say-FIFO, `agents-dir`, the image-source key |
 
 ```sh
-./preflight                     # exactly what ./chat-app would launch with
+./preflight                     # exactly what ./onidia-chat would launch with
 ./preflight -all                # ...plus the other backends (informational)
 ./preflight -quick              # config + environment only: no network probes
 ./preflight -deep               # bedrock: also fire a real 1-token Converse
@@ -346,13 +353,13 @@ preflight = strict   # default: failed fatal check -> report + exit 2, no window
 ## Configuration file (`chat-app.ini`)
 
 All settings can live in an INI file so you don't need long command lines.
-`./chat-app` (and `make run`) **auto-loads `chat-app.ini`** from the working
+`./onidia-chat` (and `make run`) **auto-loads `chat-app.ini`** from the working
 directory or the binary's directory; pass `-config <path>` to use a different
 file, or edit `chat-app.ini` in place and just relaunch.
 
 ```sh
-./chat-app               # auto-loads ./chat-app.ini when present
-./chat-app -config chat-app.ini   # explicit (same result)
+./onidia-chat               # auto-loads ./chat-app.ini when present
+./onidia-chat -config chat-app.ini   # explicit (same result)
 ```
 
 Example `chat-app.ini`:
@@ -479,10 +486,10 @@ Wikipedia, or asks Gemini to generate an illustration, depending on
 - The Pixabay source uses a bundled free key; override with `-pixabay-key`,
   `$PIXABAY_API_KEY`, or `pixabay-key` in `chat-app.ini`.
 - The image is best-effort: if the source fails, the reply is text-only.
-- Disable entirely: `./chat-app -image-source off` (or legacy `-images=false`).
-- Force a keyword for testing: `./chat-app -force-image Bali`.
-- Test just the fetch path: `./chat-app -fetch-image Bali`.
-- Test just the generation path: `./chat-app -gen-image "a cute robot in Bali"`.
+- Disable entirely: `./onidia-chat -image-source off` (or legacy `-images=false`).
+- Force a keyword for testing: `./onidia-chat -force-image Bali`.
+- Test just the fetch path: `./onidia-chat -fetch-image Bali`.
+- Test just the generation path: `./onidia-chat -gen-image "a cute robot in Bali"`.
 
 ## Bedrock support
 
@@ -492,7 +499,7 @@ override it with `-model`.
 
 ```sh
 # Use the AWS "default" profile and region from ~/.aws/config.
-./chat-app -provider bedrock -aws-profile default -aws-region us-east-1
+./onidia-chat -provider bedrock -aws-profile default -aws-region us-east-1
 
 # Or in chat-app.ini:
 provider = bedrock
@@ -529,7 +536,7 @@ who is Marie Curie
 API problems can be isolated from window/render issues:
 
 ```sh
-cd chat-app
+cd onidia-chat
 
 # 1. Which models does this key actually see? (resolves any model-name doubt)
 go run ./cmd/geminitest -models          # or: make test-api ARGS="-models"
@@ -540,7 +547,7 @@ go run ./cmd/geminitest "tell me a joke in five words"
 # 3. Try a specific model / explicit key / see the request body
 go run ./cmd/geminitest -model gemini-2.0-flash -key AIza... -v "hi"
 
-# 4. Test with a custom system instruction (matches the chat-app's persona)
+# 4. Test with a custom system instruction (matches the onidia-chat's persona)
 go run ./cmd/geminitest -system "you are a grumpy robot" "hello"
 go run ./cmd/geminitest -system-file prompt.txt "hello"
 ```
@@ -574,11 +581,11 @@ make preview     # renders chat_ui_*.png sample states and exits
 ## Build & run
 
 ```sh
-make build       # produces ./chat-app
+make build       # produces ./onidia-chat
 make run
 ```
 
-Or without make: `go build -trimpath -ldflags="-s -w" -o chat-app .`
+Or without make: `go build -trimpath -ldflags="-s -w" -o onidia-chat .`
 `make` targets: `build`, `run`, `preview`, `clean`.
 
 Building from source is optional. The top-level `make dist` produces a
@@ -587,18 +594,53 @@ a Debian package, and `make apt-repo` an apt repository you can host
 yourself - see [`../DISTRIBUTING.md`](../DISTRIBUTING.md) (packages) and
 [`../RELEASE.md`](../RELEASE.md) (cutting and publishing a release).
 
+### Upgrading from chat-app
+
+The app used to be called `chat-app` and the binary `chat-app`. It is
+`onidia-chat` now. What changed, and what deliberately did not:
+
+| | now | why |
+|---|---|---|
+| binary | `onidia-chat` | the rename itself |
+| menu entry | `Onidia Chat` (`onidia-chat.desktop`) | so the launcher, its icon and `desktop-file-utils` all agree on one name |
+| icon | `onidia-chat.svg` | same reason |
+| source folder | `onidia-chat/` | same reason |
+| Go module | `github.com/portege/onidia-chat` | internal; nothing outside this module imports it |
+| config file | **still `chat-app.ini`** | it is read from three fixed locations; a rename would silently disable everyone's key |
+| config dir | **still `~/.config/chat-app/`** | it holds the key, the agents and the whisper helper |
+| `CHAT_APP_*` env vars | **unchanged** | the public contract with every agent, including third-party ones |
+| `chat-app.lock` | **unchanged** | so old and new binaries still exclude each other (see *One instance only*) |
+| WM_CLASS | **still `chat-app`** | window-manager rules and `wmctrl`/`xdotool` scripts match on it |
+| `chat-app-say-*.png` | **unchanged** | the wire format `pet_control` writes |
+
+Upgrading:
+
+- **`.deb`** — `apt install ./onidia_*.deb`. dpkg drops `/usr/bin/chat-app` and
+  the old `chat-app.desktop`/`chat-app.svg` because they are gone from the new
+  package.
+- **tarball** — unpack the new one over the old and re-run `install.sh`. It
+  removes the stale `bin/chat-app`, `chat-app.desktop` and `chat-app.svg` so you
+  do not end up with two menu entries. Your config is never touched.
+- **source checkout** — the folder is now `onidia-chat/`; `make build` produces
+  `./onidia-chat`.
+
 ### One instance only
 
-A second `chat-app` refuses to start:
+A second `onidia-chat` refuses to start:
 
 ```
-chat-app: another chat-app is already running (pid 12345); close it first
+onidia-chat: another onidia-chat is already running (pid 12345); close it first
 ```
 
 This is a `flock` on `$XDG_RUNTIME_DIR/chat-app.lock` (falling back to
 `/tmp/chat-app-<uid>.lock`), taken before the window opens. A second window
 would fight the first over the pet's say-FIFO, and would sit invisibly behind
 it accepting keystrokes nobody can see.
+
+The lock filename still says `chat-app`, and that is deliberate. It is the
+single-instance guard, so the old and the new binary have to contend for the
+*same* lock: upgrade while a `chat-app` is still open and you want the new
+`onidia-chat` to refuse to start, not to open a second window beside it.
 
 The lock is a kernel `flock`, not a PID file, so a crash or `kill -9` cannot
 leave the app permanently unlaunchable — the lock dies with the process and
@@ -609,15 +651,15 @@ The read-only diagnostic modes deliberately do **not** take the lock, because
 they are most useful *while* the app is running:
 
 ```sh
-chat-app -stt-test     # diagnose the microphone while the app is open
-chat-app -preview      # render PNGs
+onidia-chat -stt-test     # diagnose the microphone while the app is open
+onidia-chat -preview      # render PNGs
 ```
 
 To run a second copy on purpose (two accounts, two chats), give one of them
 its own runtime directory — they will not see each other:
 
 ```sh
-XDG_RUNTIME_DIR=/tmp/chat-b chat-app
+XDG_RUNTIME_DIR=/tmp/chat-b onidia-chat
 ```
 
 ### Thinking clouds (`<THINKING>`)
@@ -738,7 +780,7 @@ The model can invoke **agents**: small programs discovered at startup from
 the agents directory (`~/.config/chat-app/agents`, override with
 `-agents-dir` / `agents-dir`). Each registered agent is advertised in the
 system prompt catalog, so the reply can lead with
-`[AGENT: play_song title="Havana"]` - chat-app strips the tag, validates
+`[AGENT: play_song title="Havana"]` - onidia-chat strips the tag, validates
 the parameters against the agent's declared `params` (the model can only
 send what the manifest declares), runs the agent, and folds its `OK`
 message into the reply (spoken by the pet too). The tag never reaches the
@@ -762,7 +804,7 @@ make pack                                 # zip shippable agents -> dist/agents/
 ```
 
 Drop-in, no rebuild: write `agent.json` + any executable speaking the
-3-line protocol, zip it, `agentctl install` - restart chat-app and the
+3-line protocol, zip it, `agentctl install` - restart onidia-chat and the
 model can use it. Full guide: [`agents/README.md`](agents/README.md),
 wire protocol: [`docs/AGENT-PROTOCOL.md`](docs/AGENT-PROTOCOL.md).
 Disable with `-agents-off` / `agents-off = true`.
@@ -782,7 +824,7 @@ all travel the same pipe:
 `expr` is the odd one out: the pet has no cmd-FIFO verb for expressions at
 all - its face is set by a bare `[mood]` tag with no text, which holds the
 expression without opening a speech bubble. The agent still writes `PET
-expr <mood>`; chat-app is what routes it to the other pipe. Names are
+expr <mood>`; onidia-chat is what routes it to the other pipe. Names are
 validated twice (shape in the agent package, name against the pet's tables
 in the brain), so an agent can only pick a pose, face or step the pet
 really has ([details](docs/AGENT-PROTOCOL.md#control-the-character-pet)).
@@ -841,7 +883,7 @@ rephrase exactly like on the tag path (same 4-at-a-time concurrency, 60 s
 budget, 3-round limit and dedupe).
 
 The `[AGENT: ...]` tag path is **kept as the fallback**: a provider, server or
-model without tool support makes the first tool request fail, and chat-app
+model without tool support makes the first tool request fail, and onidia-chat
 answers through the tags instead - so one agent works everywhere. See
 [`docs/AGENT-PROTOCOL.md`](docs/AGENT-PROTOCOL.md#native-tool-calling-phase-3---preferred-when-the-provider-supports-it).
 
@@ -862,5 +904,5 @@ mpv/cvlc/vlc/ffplay fallback). Install the latter two with
 | "gemini call failed: ..." bubbles | check network, key validity, or pick another `-model` |
 | Buddy doesn't speak | start the desktop-pet first (it creates the FIFO); check `-pet-pipe` |
 | Want silence from the buddy | run with `-pet-pipe off` |
-| `/tmp` filling up with `chat-app-stt-*.wav`, and a `pw-record` that never ends | an orphaned take from a build before the recorder-lifecycle fix: those recorders outlive the app. `pkill pw-record; rm -f /tmp/chat-app-stt-*.wav`, then rebuild. Current builds kill every take on exit, so this cannot recur |
+| `/tmp` filling up with `onidia-chat-stt-*.wav`, and a `pw-record` that never ends | an orphaned take from a build before the recorder-lifecycle fix: those recorders outlive the app. `pkill pw-record; rm -f /tmp/onidia-chat-stt-*.wav`, then rebuild. Current builds kill every take on exit, so this cannot recur |
 | `context deadline exceeded` on every call, while other sites work | your network filters `generativelanguage.googleapis.com`. Options: run behind a proxy (`export HTTPS_PROXY=...`, Go honors it), a VPN, or point `-api-url` at a relay you control that forwards to Gemini (any service that proxies `POST <base>/v1beta/models/*:generateContent` transparently). Debug with `go run ./cmd/geminitest -models`. |

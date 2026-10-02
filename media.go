@@ -8,7 +8,7 @@
 // The buttons do NOT talk to the player themselves - they call the very same
 // media_control agent the model would ("pause the music"), so "pause" means one
 // thing in the whole system, and an ability that drives a different player
-// keeps working without a chat-app change. With that agent not installed there
+// keeps working without a onidia-chat change. With that agent not installed there
 // is simply no strip (mediaControlInstalled), so nothing breaks.
 
 package main
@@ -24,7 +24,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 const (
@@ -55,9 +55,13 @@ type MediaState struct {
 	Title  string
 }
 
-// mediaStateDir is where session files live. chat-app exports it to its agents
+// mediaStateDir is where session files live. onidia-chat exports it to its agents
 // (see main.go) so both halves always agree; the fallbacks only matter when
 // media_control is run outside the app, e.g. from a source checkout.
+//
+// The directory name stays "chat-app" even though the app is onidia-chat now:
+// media_control.py resolves this the same way, and a one-sided rename would make
+// the two halves disagree and silently show no sessions.
 func mediaStateDir() string {
 	if d := strings.TrimSpace(os.Getenv("CHAT_APP_STATE_DIR")); d != "" {
 		return d

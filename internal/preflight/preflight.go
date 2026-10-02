@@ -1,4 +1,4 @@
-// Package preflight runs chat-app's startup requirements checks: is the
+// Package preflight runs onidia-chat's startup requirements checks: is the
 // selected LLM provider actually usable (ollama server up, Gemini/Bedrock/
 // OpenRouter credentials valid), and is the environment sane (display, audio
 // player, pet pipe, agents dir, image source)? - "and other stuff later"
@@ -6,7 +6,7 @@
 //
 // The package is deliberately importable so both surfaces share one behavior:
 //   - the standalone CLI, cmd/preflight (the deep/human/scripting surface), and
-//   - chat-app's own startup gate in preflight_gate.go (blocks before the X
+//   - onidia-chat's own startup gate in preflight_gate.go (blocks before the X
 //     window opens when a fatal check fails).
 //
 // Severity drives the exit code / gating: Fatal fails block, Warn fails only
@@ -33,7 +33,7 @@ const (
 	// SeverityInfo failures never affect the exit code (informational rows,
 	// e.g. the non-selected backends in the CLI's -all mode).
 	SeverityInfo
-	// SeverityFatal failures block: exit code 2, and chat-app's gate refuses
+	// SeverityFatal failures block: exit code 2, and onidia-chat's gate refuses
 	// to open the window.
 	SeverityFatal
 )
@@ -149,7 +149,7 @@ type Counts struct {
 	Skip int
 }
 
-// Blocked reports whether any fatal check failed: chat-app's gate and the
+// Blocked reports whether any fatal check failed: onidia-chat's gate and the
 // standalone exit code both key off this.
 func (r Report) Blocked() bool {
 	for _, it := range r.Items {

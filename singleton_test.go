@@ -15,7 +15,7 @@ import (
 func TestInstanceLockIsExclusive(t *testing.T) {
 	releaseInstanceLock()
 	defer releaseInstanceLock()
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir()) // isolate from a live chat-app
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir()) // isolate from a live onidia-chat
 
 	first, err := acquireInstanceLock()
 	if err != nil || first == nil {
@@ -56,7 +56,7 @@ func TestInstanceLockSurvivesHolderDeath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
-	// Hold the lock from a child process, the way a second chat-app would.
+	// Hold the lock from a child process, the way a second onidia-chat would.
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("locate the test binary: %v", err)

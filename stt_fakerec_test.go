@@ -130,7 +130,7 @@ func TestRecorderCleanupKillsStubbornRecorder(t *testing.T) {
 
 // TestRecorderIsOwnProcessGroup pins the mechanism the kill depends on: the
 // recorder leads its own process group, so signalGroup reaches it without
-// touching chat-app itself. The polite stand-in is the one to use here - it
+// touching onidia-chat itself. The polite stand-in is the one to use here - it
 // exits on SIGINT, so this also proves the group signal is actually wired to
 // the recorder and not swallowed.
 func TestRecorderIsOwnProcessGroup(t *testing.T) {

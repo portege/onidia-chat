@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 func buildAgentctl(t *testing.T) string {

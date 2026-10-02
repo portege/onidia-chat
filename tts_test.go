@@ -156,7 +156,7 @@ func TestWriteWav(t *testing.T) {
 		t.Fatalf("writeWav: %v", err)
 	}
 	defer os.Remove(path)
-	if !strings.HasPrefix(path, "/tmp/") || !strings.Contains(path, "chat-app-tts-") {
+	if !strings.HasPrefix(path, "/tmp/") || !strings.Contains(path, "onidia-chat-tts-") {
 		t.Errorf("unexpected temp path: %q", path)
 	}
 	b, err := os.ReadFile(path)
@@ -253,7 +253,7 @@ func TestTruncate(t *testing.T) {
 }
 
 func TestLoadConfigTTSCases(t *testing.T) {
-	tmp, err := os.CreateTemp("", "chat-app-config-tts-*.ini")
+	tmp, err := os.CreateTemp("", "onidia-chat-config-tts-*.ini")
 	if err != nil {
 		t.Fatal(err)
 	}
