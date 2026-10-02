@@ -560,10 +560,25 @@ func (s *STTSession) finish(userErr error) {
 			return
 		}
 		go func() {
+			// Cleanup runs BEFORE the result is posted, not after. The take is
+			// over the moment transcription returns, and a caller that has the
+			// transcript has no reason to expect the WAV still sitting on
+			// disk - so the WAV is already unlinked by the time Done fires.
+			//
+			// The order used to be the other way round (defer cleanup, then
+			// deliver), which left a window where Done had fired and the file
+			// was still there. Harmless in the app, but it is exactly what
+			// TestSTTSessionLifecycle asserts and it failed intermittently
+			// because of it.
+			//
+			// cleanup is idempotent (kill ignores errors, unregister is a map
+			// delete, os.Remove ignores ENOENT), so the deferred call stays as
+			// a net for a panic in the backend.
 			defer rec.cleanup()
 			ctx, cancel := context.WithTimeout(context.Background(), sttTranscribeTimeout)
 			defer cancel()
 			text, err := s.backend.Transcribe(ctx, path)
+			rec.cleanup()
 			s.deliver(sttResult{Text: strings.TrimSpace(text), Err: err})
 		}()
 	})
