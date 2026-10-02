@@ -3041,7 +3041,11 @@ func thinkLobes(tw, th, base int) []thinkBlob {
 	thetas := thinkArcAngles(a, b, base)
 	out := make([]thinkBlob, 0, len(thetas))
 	for i, t := range thetas {
-		frac := int(uint32(i*2654435761) % 1000)
+		// The multiply is done in uint32, not int: 2654435761 (0x9E3779B1, the
+		// golden-ratio step) does not fit a 32-bit int, so `i*2654435761` is a
+		// compile error on GOARCH=arm. Wrapping here is the same value the 64-bit
+		// build got from truncating the 64-bit product to its low 32 bits.
+		frac := int((uint32(i) * 2654435761) % 1000)
 		r := base * (80 + frac*40/1000) / 100
 		ct, st := math.Cos(t), math.Sin(t)
 		nx, ny := b*ct, a*st // outward normal, normalised
