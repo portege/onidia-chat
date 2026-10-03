@@ -2,9 +2,10 @@
 .PHONY: test
 .PHONY: archinfo
 
-# Cross-compilation. Default is this machine (a Pi 5, so arm64). Set
-# GOARCH=arm GOARM=7 for the 32-bit ARM boards (Pi Zero/1, NanoPi NEO Core
-# v1.1 - Allwinner H3 Cortex-A7); `make dist deb TARGET=armhf` sets both.
+# Cross-compilation. Default is this machine (a Pi 5, so arm64). For 32-bit set
+# GOARCH=arm with GOARM=6 or 7 - `make dist deb TARGET=armhf` / `=armel` does
+# both. GOARM 6 vs 7 is not cosmetic: the BCM2835 in an original Pi Zero / Pi 1
+# is ARMv6 and SIGILLs on a GOARM=7 build.
 # CGO_ENABLED=0 keeps the binary static: no cgo in this project, and it drops
 # the glibc-version floor so one build runs on any Linux of the same arch.
 export CGO_ENABLED ?= 0

@@ -103,11 +103,18 @@ Rules:
 
 - at most **one** `PET` line per run, and only before `OK`/`ERR`; a second one
   is a protocol error (a run cannot quietly swap its command);
-- the payload must be `action|event` + **one** name (`[a-z][a-z0-9_]*`) -
-  `PET action dance; rm -rf /` is rejected and the run fails. The line ends up
-  in the pet's command FIFO, so nothing else may ride in it;
-- the name must be one the pet knows, else onidia-chat logs
-  `ignoring unknown pet command` and drops it - the reply still succeeds;
+- the verb is one of **`action`**, **`event`**, **`expr`** (note: `expr`,
+  not `expression` - that longer word is `pet_control`'s *input* vocabulary,
+  not the wire format), or a **movement** verb: `stand`, `idle`, `jump`,
+  `parachute`, `skateboard` and synonyms used bare, or `walk|go|move` plus
+  `left|right`. `action|event|expr` then take **one** name matching
+  `[a-z][a-z0-9_]*` - `PET action dance; rm -rf /` is rejected and the run
+  fails. The line ends up in the pet's command FIFO, so nothing else may ride
+  in it;
+- **an unknown verb fails the whole run** (`agent <id>: PET: unknown command
+  "..."`) - the reply is discarded, not softened. **An unknown *name* does not**:
+  the shape is right, the pet just does not know it, so onidia-chat logs
+  `ignoring unknown pet command`, drops it, and the reply still succeeds;
 - it is a **fallback**: when the model already used `[ACTION: ...]` /
   `[EVENT: ...]` for that reply, the model's choice wins;
 - with `-pet-pipe off` (pet forwarding disabled) nothing is written;
