@@ -114,7 +114,8 @@ confusing API error.
                                no markdown/emoji, optional [mood] tag)
 -system-file /path/system.txt  load system instruction from file (overrides default)
 -config    chat-app.ini        INI file with defaults (flags and env override it;
-                               auto-loads ./chat-app.ini when not given)
+                               auto-loads ./chat-app.ini, then one next to the binary, then
+                               ~/.config/chat-app/chat-app.ini)
 -provider gemini              LLM backend: "gemini" (default), "bedrock", "ollama", or "openrouter"
 -aws-profile default          AWS shared profile for Bedrock
 -aws-region us-east-1         AWS region for Bedrock
@@ -353,9 +354,14 @@ preflight = strict   # default: failed fatal check -> report + exit 2, no window
 ## Configuration file (`chat-app.ini`)
 
 All settings can live in an INI file so you don't need long command lines.
-`./onidia-chat` (and `make run`) **auto-loads `chat-app.ini`** from the working
-directory or the binary's directory; pass `-config <path>` to use a different
-file, or edit `chat-app.ini` in place and just relaunch.
+`./onidia-chat` (and `make run`) **auto-loads `chat-app.ini`**. It tries three
+places in order: the working directory, the binary's own directory, then
+`~/.config/chat-app/chat-app.ini`. A package install deliberately puts the
+shipped template in `/opt/onidia/share/`, which is none of those three, so
+copying it into `~/.config/chat-app/` is what makes it load. Pass
+`-config <path>` to name a different file, or edit the loaded one in place and
+just relaunch. `onidia` (the pet) resolves the same three paths, so both
+programs read the same file.
 
 ```sh
 ./onidia-chat               # auto-loads ./chat-app.ini when present

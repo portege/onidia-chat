@@ -25,62 +25,19 @@ import (
 	"time"
 
 	"github.com/portege/onidia-chat/agent"
+	"github.com/portege/onidia-chat/internal/confpath"
 	"github.com/portege/onidia-chat/internal/mic"
 	"github.com/portege/onidia-chat/internal/preflight"
 )
 
-// defaultConfigPath returns the conventional chat-app.ini to auto-load when
-// -config is not given, in order:
+// defaultConfigPath returns the chat-app.ini to auto-load when -config is not
+// given: ./chat-app.ini, then one next to the binary, then the user's config
+// dir. Returns "" when none exists (config stays disabled).
 //
-//  1. ./chat-app.ini           - running from a checkout or a config directory
-//  2. next to the binary       - a portable/relocated install
-//  3. $XDG_CONFIG_HOME/chat-app/chat-app.ini, else ~/.config/chat-app/chat-app.ini
-//
-// The third one is where a package install has to put it: a .deb puts the
-// binary in /opt/onidia/bin and the config in /opt/onidia/share, so neither of
-// the first two can ever see it, and ~/.config/chat-app is already this app's
-// config home (agent.DefaultDir() puts agents in ~/.config/chat-app/agents and
-// the whisper helper in ~/.config/chat-app/stt-whisper.py).
-//
-// Returns "" when none exists (config stays disabled).
-func defaultConfigPath() string {
-	if _, err := os.Stat("chat-app.ini"); err == nil {
-		return "chat-app.ini"
-	}
-	if exe, err := os.Executable(); err == nil {
-		p := filepath.Join(filepath.Dir(exe), "chat-app.ini")
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	if p := userConfigDir(); p != "" {
-		p = filepath.Join(p, "chat-app.ini")
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return ""
-}
-
-// userConfigDir is $XDG_CONFIG_HOME/chat-app, falling back to
-// ~/.config/chat-app. Returns "" when the home directory cannot be determined,
-// so callers get a path that does not exist rather than a bare relative one.
-//
-// The directory name is deliberately NOT "onidia-chat". The app was renamed
-// from chat-app to onidia-chat, but this path holds the user's api-key, their
-// downloaded agents and the whisper helper, and a rename would orphan all three
-// on every existing machine. The old name stays until a future release ships a
-// real migration.
-func userConfigDir() string {
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		return filepath.Join(x, "chat-app")
-	}
-	h, err := os.UserHomeDir()
-	if err != nil || h == "" {
-		return ""
-	}
-	return filepath.Join(h, ".config", "chat-app")
-}
+// The list itself lives in internal/confpath, because preflight needs exactly
+// the same answer and its hand-written copy had already drifted into checking
+// only the first path - which is never there on a package install.
+func defaultConfigPath() string { return confpath.Default() }
 
 // firstNonEmpty returns the first non-blank argument (flag > config).
 func firstNonEmpty(vals ...string) string {

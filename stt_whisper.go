@@ -156,7 +156,7 @@ func findWhisperPython() string {
 // app already keeps its own files. Falls back to the temp dir when HOME is
 // not usable.
 //
-// Same frozen "chat-app" directory as userConfigDir() - this is where an
+// Same frozen "chat-app" directory as confpath.Dir() - this is where an
 // already-installed stt-whisper.py lives, and pointing somewhere new would
 // download the helper again and leave the old one behind.
 func sttUserDir() string {

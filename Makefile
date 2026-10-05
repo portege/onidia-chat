@@ -136,9 +136,14 @@ dist: build $(DIST)/chat-app.ini
 		--file ../RELEASE.md:RELEASE.md:0644 \
 		--dir ../packaging/icons:share/icons
 
-# Debian package. The config example lands next to the binary in /opt so it is
-# found but NOT auto-loaded (onidia-chat only auto-loads ./chat-app.ini); copying
-# it to ~/.config/chat-app/chat-app.ini is the user's one deliberate step.
+# Debian package. The config template goes in share/, deliberately NOT in bin/
+# next to the binary: onidia-chat resolves its config as ./chat-app.ini, then
+# its own directory, then ~/.config/chat-app/chat-app.ini (internal/confpath),
+# so a file in bin/ would be auto-loaded root-owned and win over the user's
+# own copy - the documented "cp it across to ~/.config" step would then do
+# nothing at all. Sitting in share/, it is found when asked for and never
+# loaded. Copying it to ~/.config/chat-app/chat-app.ini stays the user's one
+# deliberate step (see ../DISTRIBUTING.md).
 deb: build $(DIST)/chat-app.ini
 	@mkdir -p $(DIST)
 	sed 's|Exec=__BIN__/|Exec=|' ../packaging/desktop/onidia-chat.desktop > $(DIST)/onidia-chat.desktop
@@ -149,7 +154,7 @@ deb: build $(DIST)/chat-app.ini
 		--description "Chat window with a desktop-pet voice and speech to text (pure Go, raw X11)" \
 		--out $(DIST)/deb \
 		--file onidia-chat:opt/onidia-chat/bin/onidia-chat:0755 \
-		--file $(DIST)/chat-app.ini:opt/onidia-chat/bin/chat-app.ini:0644 \
+		--file $(DIST)/chat-app.ini:opt/onidia-chat/share/chat-app.ini:0644 \
 		--file README.md:usr/share/doc/onidia-chat/README.md:0644 \
 		--file ../DISTRIBUTING.md:usr/share/doc/onidia-chat/DISTRIBUTING.md:0644 \
 		--file ../RELEASE.md:usr/share/doc/onidia-chat/RELEASE.md:0644 \

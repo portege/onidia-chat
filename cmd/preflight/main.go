@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/portege/onidia-chat/agent"
+	"github.com/portege/onidia-chat/internal/confpath"
 	"github.com/portege/onidia-chat/internal/mic"
 	"github.com/portege/onidia-chat/internal/preflight"
 )
@@ -81,12 +82,14 @@ func run(args []string, out io.Writer) int {
 	explicit := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
 
-	// Config file: -config wins, else the conventional ./chat-app.ini
-	// (onidia-chat's defaultConfigPath without the next-to-binary fallback,
-	// which only matters when the binary is relocated).
+	// Config file: -config wins, else the same list onidia-chat itself walks
+	// (internal/confpath): ./chat-app.ini, next to the binary, then the user's
+	// config dir. Sharing it rather than keeping a copy matters here - the copy
+	// checked only the first path, which is never present on a package install,
+	// so this reported keys as missing that were set all along.
 	path := strings.TrimSpace(*configFlag)
 	if path == "" {
-		path = preflight.DefaultINIPath()
+		path = confpath.Default()
 	}
 	kv := map[string]string{}
 	if path != "" {

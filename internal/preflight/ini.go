@@ -75,12 +75,3 @@ func ReadINI(path string) (map[string]string, error) {
 func Get(kv map[string]string, key string) string {
 	return strings.TrimSpace(kv[key])
 }
-
-// DefaultINIPath mirrors onidia-chat's defaultConfigPath: ./chat-app.ini first,
-// then one next to the running binary. Returns "" when neither exists.
-func DefaultINIPath() string {
-	if _, err := os.Stat("chat-app.ini"); err == nil {
-		return "chat-app.ini"
-	}
-	return ""
-}
