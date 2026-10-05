@@ -120,6 +120,22 @@ var petProc *os.Process // the onidia instance onidia-chat launched, if any
 // the pet's own chat-app.ini lookup: a sibling onidia/ directory, a sibling
 // desktop-pet/ directory (older layout), or the conventional absolute repo
 // path. Returns "" when no candidate is executable.
+//
+// TODO: the config-path bug again, pointed at the pet binary instead of the
+// config file, and left open because the fix belongs with its own commit.
+// Nothing here knows about a package install. The exe-relative candidate is
+// <exedir>/../onidia/onidia, which from /opt/onidia/bin resolves to
+// /opt/onidia/onidia/onidia - it does not exist, while the .deb really puts
+// the pet at /opt/onidia/bin/onidia. The two /home/boi/... entries below are
+// therefore the only candidates a .deb install can satisfy, and they satisfy
+// it only on the machine whose username was typed in; there LaunchPet then
+// starts the development checkout instead of the installed binary. Everywhere
+// else LaunchPet returns "onidia binary not found" and no pet starts at all.
+//
+// The fix is the one confpath.Candidates already has for chat-app.ini: try
+// the binary's own directory too (<exedir>/onidia) and drop the literal home
+// paths, leaving working directory then next-to-binary first. Deliberately
+// not folded into the config-path commit, which touched the file lookup only.
 func onidiaPath() string {
 	if p, err := os.Stat("onidia/onidia"); err == nil && !p.IsDir() && p.Mode()&0o111 != 0 {
 		return "onidia/onidia"

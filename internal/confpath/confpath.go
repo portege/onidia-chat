@@ -56,7 +56,11 @@ func Dir() string {
 // The pet walks the same list; see configCandidates in the sibling onidia
 // module's sleep.go. The two are separate Go modules and cannot share this
 // function, so the order is what has to be kept in step - if it is not, the
-// window and the pet will disagree about when she goes to sleep.
+// window and the pet will disagree about when she goes to sleep. The order is
+// pinned here by TestDefaultFallsBackToUserConfig, from the pet's side by
+// onidia's TestConfigCandidatesMatchChatWindow, and written down for humans in
+// web/docs/setup-gemini.html under "Where she looks for it". Three places, one
+// order, and none of them can import the others.
 func Candidates() []string {
 	out := []string{Name}
 	if exe, err := os.Executable(); err == nil {
