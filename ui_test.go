@@ -377,6 +377,34 @@ func TestAboutModal(t *testing.T) {
 	}
 }
 
+// TestAboutConfigPathDisplay guards the About page's answer to "which config
+// is the app reading?". u.savePath is set from confpath.Default() (or falls
+// back to chat-app.ini); configPathForDisplay must resolve it absolute so the
+// line is unambiguous, and Render must actually paint the "Config" label.
+// Without this test a refactor could silently drop the line and the busy-time
+// mystery (two chat-app.ini files, pet reading the other one) would resurface
+// with no on-screen witness.
+func TestAboutConfigPathDisplay(t *testing.T) {
+	u := NewUI(380, 520)
+	u.savePath = filepath.Join(t.TempDir(), "chat-app.ini")
+	got := u.configPathForDisplay()
+	if !filepath.IsAbs(got) {
+		t.Fatalf("configPathForDisplay = %q, want absolute", got)
+	}
+	if got != u.savePath {
+		t.Fatalf("configPathForDisplay = %q, want %q", got, u.savePath)
+	}
+	// Relative savePath (the chat-app.ini fallback) absolutises against cwd.
+	u.savePath = "chat-app.ini"
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := u.configPathForDisplay(); got != filepath.Join(cwd, "chat-app.ini") {
+		t.Fatalf("relative savePath resolved to %q", got)
+	}
+}
+
 // TestAboutModalNarrow checks the About modal degrades gracefully in a narrow
 // window: the panel clamps to the window, the hero strip drops the badge and
 // still fits the word-art name, the credit survives (link only) and nothing
@@ -421,6 +449,80 @@ func TestAboutModalNarrow(t *testing.T) {
 		if n := countColourIn(frame, outer, c); n > 4 {
 			t.Errorf("art leaked past the hero strip (%d pixels of %v)", n, c)
 		}
+	}
+}
+
+// TestAboutShowsBusyConfigPath is the regression test for the busy-mode
+// mystery: the character and the chat settings read DIFFERENT copies of
+// chat-app.ini, so busy-time = 08:00-08:30 sat the pet down at 14:57 while
+// the settings window denied any busy window. main.go must hand the UI the
+// resolved path (confpath.Default, i.e. the pet's candidate #1) and About
+// must surface it verbatim so the next such mismatch is diagnosed, not
+// debugged. The fixture uses a short absolute path on purpose: long paths
+// are trimmed to the tail by design (see TestAboutTrimsLongConfigPath), and
+// this test asserts the full path survives when it fits.
+func TestAboutShowsBusyConfigPath(t *testing.T) {
+	// Short absolute path on purpose: the panel fits ~50 runes of
+	// label+path (6px per glyph at scale 1, 300px available), and a
+	// t.TempDir() prefix alone blows past that - long paths are trimmed
+	// to the tail by design (see TestAboutTrimsLongConfigPath). /tmp/c.ini
+	// is not on any loader's candidate list, so writing the busy-time
+	// fixture here cannot leak into other tests.
+	ini := "/tmp/c.ini"
+	if err := os.WriteFile(ini, []byte("busy-time = 08:00-08:30\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(ini) })
+
+	u := NewUI(380, 560)
+	u.collapsed = false
+	u.savePath = ini
+	u.openAbout()
+	frame := u.Render()
+	if !frameHasString(frame, "Config", 1, colMuted) {
+		t.Error("About should label the config path (\"Config\" in muted)")
+	}
+	if !frameHasString(frame, ini, 1, colHeader) {
+		t.Errorf("About should render the resolved config path %q in teal", ini)
+	}
+}
+
+// TestAboutTrimsLongConfigPath locks in the overflow rule a short path
+// cannot reach: when the label+path pair is too wide the label is dropped,
+// and when the path alone is still too wide only its tail survives, so the
+// distinguishing segments (the last directories, the filename) stay legible.
+func TestAboutTrimsLongConfigPath(t *testing.T) {
+	deep := filepath.Join(append([]string{t.TempDir()}, "a", "very", "deep", "nest")...)
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	u := NewUI(380, 560)
+	u.collapsed = false
+	u.savePath = filepath.Join(deep, "chat-app.ini")
+	u.openAbout()
+	frame := u.Render()
+	if frameHasString(frame, "Config", 1, colMuted) {
+		t.Error("About should drop the \"Config\" label when the pair overflows")
+	}
+	if !frameHasString(frame, "chat-app.ini", 1, colHeader) {
+		t.Error("About should keep the filename legible when trimming a long path")
+	}
+}
+
+// TestConfigPathForDisplayAbsolutisesCwdRelativeSave verifies the About line
+// never shows a bare filename: with no candidate on disk main.go falls back
+// to "chat-app.ini", which would otherwise answer "which file?" with a path
+// meaningful only in one directory.
+func TestConfigPathForDisplayAbsolutisesCwdRelativeSave(t *testing.T) {
+	u := NewUI(380, 560)
+	u.savePath = "chat-app.ini"
+	got := u.configPathForDisplay()
+	if !filepath.IsAbs(got) || filepath.Base(got) != "chat-app.ini" {
+		t.Errorf("configPathForDisplay() = %q, want the absolute cwd-joined path", got)
+	}
+	u.savePath = ""
+	if got := u.configPathForDisplay(); got != "" {
+		t.Errorf("configPathForDisplay() with no savePath = %q, want \"\"", got)
 	}
 }
 

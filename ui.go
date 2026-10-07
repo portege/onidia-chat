@@ -15,6 +15,7 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -235,10 +236,12 @@ const (
 	autoStopRowY = 426
 
 	// About modal layout (drawAbout): a small informational panel shown by
-	// the header's About button.
+	// the header's About button. 300 rather than 280 because the panel now
+	// carries the loaded config path between the divider and the credit -
+	// a line that has to be read, not squashed against the OK button.
 	aboutPanelW = 340 // panel width
-	aboutPanelH = 280 // panel height (hero art + tagline + status + credit + OK)
-	minAboutH   = 300 // window height forced while the About modal is open
+	aboutPanelH = 300 // panel height (hero art + tagline + status + config + credit + OK)
+	minAboutH   = 320 // window height forced while the About modal is open
 	aboutBtnW   = 90  // OK button width
 
 	maxNameChars = 16 // character-name field rune cap
@@ -2385,25 +2388,93 @@ func (u *UI) drawAbout(frame *image.NRGBA) {
 	fillDisc(frame, sx+4, lineY+36, 3, dot)
 	drawText(frame, sx+12, lineY+32, status, 1, colText)
 
-	// Hairline divider between the status and the credit.
+	// Hairline divider between the status and the system lines below it.
 	fillRect(frame, p.Min.X+modalPad, lineY+72, p.Dx()-2*modalPad, 1, colInputBorder)
+
+	// The exact INI this process is reading, so "which config is it using?" is
+	// answerable on screen instead of from a log line. Two chat-app.ini files
+	// can exist on one machine and disagree about the busy window, and the
+	// desktop pet resolves its own list independently - so what the chat window
+	// loaded is not necessarily what the character is acting on, and this line
+	// is how you tell.
+	//
+	// Rendered exactly like the credit below: label dropped when the pair is
+	// too wide, then the path itself trimmed from the left. Trimming from the
+	// left, not the right, because the tail carries the directory segments that
+	// distinguish ~/.config/chat-app from a checkout's onidia-chat.
+	const cfgLabel = "Config "
+	avail := p.Dx() - 2*modalPad
+	if path := u.configPathForDisplay(); path != "" {
+		line := cfgLabel + path
+		if textWidth(line, 1) > avail {
+			line = path
+		}
+		if textWidth(line, 1) > avail {
+			line = leftEllipsis(path, avail)
+		}
+		cx := p.Min.X + (p.Dx()-textWidth(line, 1))/2
+		if strings.HasPrefix(line, cfgLabel) {
+			drawText(frame, cx, lineY+84, cfgLabel, 1, colMuted)
+			drawText(frame, cx+textWidth(cfgLabel, 1), lineY+84, line[len(cfgLabel):], 1, colHeader)
+		} else {
+			drawText(frame, cx, lineY+84, line, 1, colHeader)
+		}
+	}
 
 	// Engineering credit on one line, two-tone: muted label + teal link.
 	// On a narrow panel the label is dropped so the link still fits.
 	const label, link = "Engineered by ", "https://mas-mas.it"
 	line := label + link
-	if textWidth(line, 1) > p.Dx()-2*modalPad {
+	if textWidth(line, 1) > avail {
 		line = link
 	}
 	cx := p.Min.X + (p.Dx()-textWidth(line, 1))/2
 	if line == link {
-		drawText(frame, cx, lineY+84, link, 1, colHeader)
+		drawText(frame, cx, lineY+100, link, 1, colHeader)
 	} else {
-		drawText(frame, cx, lineY+84, label, 1, colMuted)
-		drawText(frame, cx+textWidth(label, 1), lineY+84, link, 1, colHeader)
+		drawText(frame, cx, lineY+100, label, 1, colMuted)
+		drawText(frame, cx+textWidth(label, 1), lineY+100, link, 1, colHeader)
 	}
 
 	u.drawModalButton(frame, u.aboutOKRect(), WAboutOK, "OK")
+}
+
+// configPathForDisplay is the loaded INI, resolved absolute so the About line
+// answers "which file?" without the reader having to know the working
+// directory. The value is savePath, which main.go sets from confpath.Default()
+// and falls back to "chat-app.ini" when no candidate exists - a relative path
+// that is only meaningful once absolutised, since a save would create exactly
+// that file relative to the cwd.
+func (u *UI) configPathForDisplay() string {
+	if u.savePath == "" {
+		return ""
+	}
+	if filepath.IsAbs(u.savePath) {
+		return u.savePath
+	}
+	if a, err := filepath.Abs(u.savePath); err == nil {
+		return a
+	}
+	return u.savePath
+}
+
+// leftEllipsis trims s from the left until it fits width at scale 1, keeping the
+// tail. For a config path the tail is the useful half: the last directory
+// segments plus the filename are what tell two candidate files apart, while the
+// leading /home/<user> is boilerplate on every one of them.
+func leftEllipsis(s string, width int) string {
+	if textWidth(s, 1) <= width {
+		return s
+	}
+	const ell = "..."
+	r := []rune(s)
+	for len(r) > 0 && textWidth(ell+string(r), 1) > width {
+		r = r[1:]
+	}
+	if len(r) == 0 {
+		return ""
+	}
+	return ell + string(r)
 }
 
 // Settings modal -------------------------------------------------------------
