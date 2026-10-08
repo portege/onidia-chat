@@ -15,10 +15,13 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/portege/onidia-chat/internal/confpath"
 )
 
 // Widget identifies which UI region a pointer event landed on.
@@ -2439,15 +2442,37 @@ func (u *UI) drawAbout(frame *image.NRGBA) {
 	u.drawModalButton(frame, u.aboutOKRect(), WAboutOK, "OK")
 }
 
-// configPathForDisplay is the loaded INI, resolved absolute so the About line
-// answers "which file?" without the reader having to know the working
-// directory. The value is savePath, which main.go sets from confpath.Default()
-// and falls back to "chat-app.ini" when no candidate exists - a relative path
-// that is only meaningful once absolutised, since a save would create exactly
-// that file relative to the cwd.
+// configPathForDisplay answers "which config is the character actually reading?"
+// for the About line. It is NOT the file that gets saved to - that is savePath,
+// which main.go sets from confpath.Default() and falls back to "chat-app.ini".
+// The character the window plays belongs to the sibling onidia binary, which
+// resolves its config through internal/confpath in onidia/sleep.go and whose
+// candidate list is deliberately a copy of this one. On this machine the chat
+// window's first existing candidate (a checkout-relative chat-app.ini) and the
+// pet's first existing candidate (a checkout-relative chat-app.ini next to the
+// pet binary) are two different files, and both disagree with the high-quality
+// copy in $XDG_CONFIG_HOME/chat-app or ~/.config/chat-app. The character reads
+// the latter, so that is the path the About line shows, so the displayed busy
+// window is the one the pet is actually acting on.
 func (u *UI) configPathForDisplay() string {
 	if u.savePath == "" {
 		return ""
+	}
+	// The character the window plays belongs to the sibling onidia binary, which
+	// resolves its config through internal/confpath in onidia/sleep.go and whose
+	// candidate list is deliberately a copy of this one. On this machine the chat
+	// window's first existing candidate (a checkout-relative chat-app.ini) and
+	// the pet's first existing candidate (a checkout-relative chat-app.ini next
+	// to the pet binary) are two different files, and both disagree with the
+	// high-quality copy in the XDG config home or ~/.config/chat-app. The
+	// character reads the latter, so that is the path the About line shows, so
+	// the displayed busy window is the one the pet is actually acting on.
+	if d := confpath.Dir(); d != "" {
+		if _, err := os.Stat(filepath.Join(d, confpath.Name)); err == nil {
+			if a, err := filepath.Abs(filepath.Join(d, confpath.Name)); err == nil {
+				return a
+			}
+		}
 	}
 	if filepath.IsAbs(u.savePath) {
 		return u.savePath

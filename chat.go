@@ -515,11 +515,14 @@ func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 	// abilities - they run here (concurrently, under one cancel token) and
 	// their results are handed back so the model can finalize the reply or
 	// chain one more ability. A reply with no [AGENT: ...] tag pays nothing.
-	rawReply, runs, err := b.runAgentLoop(sys, clean, sanitizeUserInput(userText))
+	// runAgentLoop returns the agent-decoded chart image as its third value:
+	// the agent's IMG png line wins over any [IMG:] model tag (see
+	// finishReply).
+	rawReply, runs, agentImg, err := b.runAgentLoop(sys, clean, sanitizeUserInput(userText))
 	if err != nil {
 		return ReplyResult{Text: fmt.Sprintf("ouch - %s call failed: %v", b.Provider.Name(), err)}
 	}
-	return b.finishReply(rawReply, runs)
+	return b.finishReply(rawReply, runs, agentImg)
 }
 
 // generateText performs one model call: streaming through OnDelta when the
@@ -558,7 +561,7 @@ func (b *Bot) Greeting() ReplyResult {
 	}
 	// Greetings run no abilities (the prompt asks for plain text); nil runs
 	// simply means any stray [AGENT: ...] tag is stripped from display.
-	return b.finishReply(rawReply, nil)
+	return b.finishReply(rawReply, nil, nil)
 }
 
 // quietNow reports whether the current time falls inside the sleep or busy
@@ -585,7 +588,7 @@ func (b *Bot) quietNow() bool {
 // runs holds the abilities the agent loop already executed (nil for
 // greetings): their messages join the reply text and the first pet command
 // they produced is forwarded when the model sent no [ACTION:]/[EVENT:] tag.
-func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
+func (b *Bot) finishReply(rawReply string, runs []agentRun, agentImg image.Image) ReplyResult {
 	// Split off the mood, image, action and event tags: chat shows bare text,
 	// the pet gets the mood plus an optional action/event command, and the
 	// image tag drives the picture (if enabled). Leftover [AGENT: ...] tags
@@ -631,7 +634,12 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 	}
 
 	var img image.Image
-	if imgDesc != "" && b.ImageSource != "off" {
+	// Phase 3 precedence: the agent's decoded IMG png line wins over any
+	// [IMG:] model tag. If the agent produced no chart, fall back to the
+	// model's [IMG:] tag so wiki/gemini/pixabay still drives the picture.
+	if agentImg != nil {
+		img = agentImg
+	} else if imgDesc != "" && b.ImageSource != "off" {
 		switch b.ImageSource {
 		case "gemini":
 			var err error

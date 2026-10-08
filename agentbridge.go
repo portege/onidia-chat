@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"errors"
+	"image"
 	"log"
 	"regexp"
 	"strings"
@@ -42,12 +43,13 @@ const (
 // the feedback block, the reply folding and the pet command work identically
 // whichever way the model asked.
 type agentRun struct {
-	Payload string // raw tag payload / canonical native call key (the per-reply repeat key)
-	CallID  string // the provider's native call id this run answers ("" for a tag call)
-	ID      string // parsed agent id ("" when the tag itself was malformed)
-	Msg     string // OK message, folded into the reply
-	PetCmd  string // optional pet cmd-FIFO line
-	Err     error  // parse/validation/run failure: shown to user AND model
+	Payload string      // raw tag payload / canonical native call key (the per-reply repeat key)
+	CallID  string      // the provider's native call id this run answers ("" for a tag call)
+	ID      string      // parsed agent id ("" when the tag itself was malformed)
+	Msg     string      // OK message, folded into the reply
+	PetCmd  string      // optional pet cmd-FIFO line
+	Image   image.Image // optional decoded chart PNG (IMG png), first non-nil wins
+	Err     error       // parse/validation/run failure: shown to user AND model
 }
 
 // label names one run in logs and in the feedback block.
@@ -94,6 +96,7 @@ func runAgentCall(ctx context.Context, payload string) agentRun {
 	}
 	run.Msg = strings.TrimSpace(res.Message)
 	run.PetCmd = res.PetCmd
+	run.Image = res.Image
 	return run
 }
 
@@ -187,6 +190,7 @@ func runToolCall(ctx context.Context, c ToolCall) agentRun {
 	}
 	run.Msg = strings.TrimSpace(res.Message)
 	run.PetCmd = res.PetCmd
+	run.Image = res.Image
 	return run
 }
 
@@ -215,19 +219,6 @@ const agentResultsInstruction = ` The block above is the literal output of the a
 // sees the full message in the reply).
 const agentResultChars = 600
 
-// agentResultLines renders the executed runs as the "- <id>: OK/ERR ..." lines
-// shared by both feedback blocks (the tag path and native tools): one line per
-// run, every line passed through the same sanitizer as user input and capped,
-// so an agent's OK/ERR text cannot forge a message boundary or smuggle
-// instructions into the model's context.
-func agentResultLines(runs []agentRun) string {
-	var b strings.Builder
-	for _, r := range runs {
-		b.WriteString("- " + r.label() + ": " + toolResultContent(r) + "\n")
-	}
-	return b.String()
-}
-
 // agentResultsBlock renders the executed runs as the feedback turn handed back
 // to the model on the [AGENT: ...] path: delimited like user data (see
 // agentResultLines) and closed with the rule that says what a finished answer
@@ -245,6 +236,18 @@ func agentPetCmd(runs []agentRun) string {
 		}
 	}
 	return ""
+}
+
+// agentImg returns the first decoded chart image any run produced (the Phase 1
+// rule: ONE image per reply reaches the bubble - same first-wins shape as
+// agentPetCmd), or nil when every run stayed text-only.
+func agentImg(runs []agentRun) image.Image {
+	for _, r := range runs {
+		if r.Image != nil {
+			return r.Image
+		}
+	}
+	return nil
 }
 
 // historyEvidence is the marker folded into a bot turn that used an ability, so
@@ -336,15 +339,16 @@ func (b *Bot) author() string {
 //
 // It returns the model's final text (its own words only: the abilities'
 // messages are folded in later by finishReply, so both paths present the same
-// reply shape) plus every run that was executed, in model order.
-func (b *Bot) runAgentLoop(sys string, history []Msg, userText string) (string, []agentRun, error) {
+// reply shape), every run that was executed in model order, and the first
+// decoded chart image any run produced (nil when none - see agentImg).
+func (b *Bot) runAgentLoop(sys string, history []Msg, userText string) (string, []agentRun, image.Image, error) {
 	if tc, tools, ok := b.nativeTools(); ok {
 		// The abilities travel as tool definitions, so the tag catalog has no
 		// place in the prompt - leaving it in would only invite the tag format
 		// back alongside the tools.
 		text, runs, err := b.runToolLoop(tc, withoutAgentCatalog(sys), history, userText, tools)
 		if err == nil {
-			return text, runs, nil
+			return text, runs, agentImg(runs), nil
 		}
 		// The provider rejected the tool request before any ability ran (an
 		// ollama server older than 0.3, a model without tool support, a quota
@@ -353,7 +357,8 @@ func (b *Bot) runAgentLoop(sys string, history []Msg, userText string) (string, 
 		// rejection (toolRetirer) skips the doomed call from the next reply on.
 		log.Printf("agents: native tool call failed (%v) - falling back to [AGENT: ...] tags", err)
 	}
-	return b.runTagLoop(sys, history, userText)
+	text, runs, err := b.runTagLoop(sys, history, userText)
+	return text, runs, agentImg(runs), err
 }
 
 // runTagLoop is the Phase 2 brain loop: every header-position [AGENT: ...] tag

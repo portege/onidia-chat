@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/jezek/xgb/xproto"
+	"github.com/portege/onidia-chat/internal/confpath"
 	"image"
 	"image/color"
 	"image/draw"
@@ -8,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/jezek/xgb/xproto"
 )
 
 // frameHasString reports whether the frame contains s rendered in the bitmap
@@ -377,32 +377,84 @@ func TestAboutModal(t *testing.T) {
 	}
 }
 
-// TestAboutConfigPathDisplay guards the About page's answer to "which config
-// is the app reading?". u.savePath is set from confpath.Default() (or falls
-// back to chat-app.ini); configPathForDisplay must resolve it absolute so the
-// line is unambiguous, and Render must actually paint the "Config" label.
-// Without this test a refactor could silently drop the line and the busy-time
-// mystery (two chat-app.ini files, pet reading the other one) would resurface
-// with no on-screen witness.
+// TestAboutConfigPathDisplay guards the About page's answer to "which config is
+// the character actually reading?". The pet (the sibling onidia binary) resolves
+// its config through internal/confpath in onidia/sleep.go, whose candidate list
+// is a copy of this module's; on a checkout the chat window loads a
+// checkout-relative chat-app.ini while the pet reads
+// $XDG_CONFIG_HOME/chat-app/chat-app.ini. configPathForDisplay therefore must
+// show the path the pet reads, not the file the chat window saves to, so the
+// About line and the busy-time it displays cannot lie about which file carries
+// TestAboutConfigPathDisplay guards the About page's answer to "which config is
+// the character actually reading?". The pet (the sibling onidia binary) resolves
+// its config through internal/confpath in onidia/sleep.go, whose candidate list
+// is a copy of this module's; on a checkout the chat window loads a
+// checkout-relative chat-app.ini while the pet reads
+// $XDG_CONFIG_HOME/chat-app/chat-app.ini. configPathForDisplay therefore must
+// show the path the pet reads, not the file the chat window saves to, so the
+// About line and the busy-time it displays cannot lie about which file carries
+// the window. The test is split into two cases:
+//
+//  1. the user config the pet reads exists: the About line must surface that
+//     path (its "Config" label and path), not the file the chat window saves
+//     to;
+//  2. the user config does NOT exist: the About line falls back to the
+//     chat window's savePath, absolute.
 func TestAboutConfigPathDisplay(t *testing.T) {
-	u := NewUI(380, 520)
-	u.savePath = filepath.Join(t.TempDir(), "chat-app.ini")
-	got := u.configPathForDisplay()
-	if !filepath.IsAbs(got) {
-		t.Fatalf("configPathForDisplay = %q, want absolute", got)
-	}
-	if got != u.savePath {
-		t.Fatalf("configPathForDisplay = %q, want %q", got, u.savePath)
-	}
-	// Relative savePath (the chat-app.ini fallback) absolutises against cwd.
-	u.savePath = "chat-app.ini"
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := u.configPathForDisplay(); got != filepath.Join(cwd, "chat-app.ini") {
-		t.Fatalf("relative savePath resolved to %q", got)
-	}
+	// Case 1: the user config the pet reads exists. Leave the real XDG
+	//_CONFIG_HOME; the pet's config (Dir()/chat-app.ini) is on disk, so the
+	// About line must surface that, not savePath.
+	t.Run("user config present: surface the pet's resolved config", func(t *testing.T) {
+		u := NewUI(380, 520)
+		u.savePath = filepath.Join(t.TempDir(), "chat-app.ini")
+		got := u.configPathForDisplay()
+		want := filepath.Join(confpath.Dir(), confpath.Name)
+		if got != want {
+			t.Fatalf("configPathForDisplay = %q, want the pet's resolved config %q", got, want)
+		}
+		if !filepath.IsAbs(got) {
+			t.Fatalf("configPathForDisplay = %q, want absolute", got)
+		}
+		// Render must actually paint the "Config" label and the path.
+		u.openAbout()
+		frame := u.Render()
+		if !frameHasString(frame, "Config", 1, colMuted) {
+			t.Error("About should label the config path (\"Config\" in muted)")
+		}
+		if !frameHasString(frame, want, 1, colHeader) {
+			t.Errorf("About should render the resolved config path %q in teal", want)
+		}
+	})
+
+	// Case 2: the user config does NOT exist. Point XDG_CONFIG_HOME at a temp
+	// dir that holds no chat-app.ini, so confpath.Dir()/chat-app.ini does not
+	// exist and the About line falls back to the absolute savePath.
+	t.Run("user config absent: fall back to absolute savePath", func(t *testing.T) {
+		orig := os.Getenv("XDG_CONFIG_HOME")
+		xdg := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", xdg)
+		t.Cleanup(func() { t.Setenv("XDG_CONFIG_HOME", orig) })
+
+		// A short absolute savePath keeps the rendered frame deterministic
+		// (the bitmap-font matcher is exact and path lengths matter).
+		const shortSave = "/tmp/short"
+		u := NewUI(380, 520)
+		u.savePath = shortSave
+		got := u.configPathForDisplay()
+		want := shortSave
+		if got != want {
+			t.Fatalf("configPathForDisplay = %q, want the absolute savePath %q", got, want)
+		}
+		if !filepath.IsAbs(got) {
+			t.Fatalf("configPathForDisplay = %q, want absolute", got)
+		}
+		// Render: the About line must paint the path in teal.
+		u.openAbout()
+		frame := u.Render()
+		if !frameHasString(frame, want, 1, colHeader) {
+			t.Errorf("About should render the savePath %q in teal", want)
+		}
+	})
 }
 
 // TestAboutModalNarrow checks the About modal degrades gracefully in a narrow
@@ -487,25 +539,46 @@ func TestAboutShowsBusyConfigPath(t *testing.T) {
 	}
 }
 
-// TestAboutTrimsLongConfigPath locks in the overflow rule a short path
-// cannot reach: when the label+path pair is too wide the label is dropped,
-// and when the path alone is still too wide only its tail survives, so the
-// distinguishing segments (the last directories, the filename) stay legible.
+// TestAboutTrimsLongConfigPath locks in the overflow rule: when the config path
+// the About line must surface (the pet's resolved config, see
+// TestAboutConfigPathDisplay) is too wide to fit, the "Config" label is dropped
+// and only the tail of the path survives, so the last directory segments and the
+// filename — the parts that distinguish two chat-app.ini files — stay legible.
+// The test raises XDG_CONFIG_HOME to a very long value so the resolved config
+// path exceeds the panel width, then asserts the label is dropped and the
+// tail (the filename) is kept.
 func TestAboutTrimsLongConfigPath(t *testing.T) {
-	deep := filepath.Join(append([]string{t.TempDir()}, "a", "very", "deep", "nest")...)
-	if err := os.MkdirAll(deep, 0o755); err != nil {
+	// Construct a path that is long enough to overflow a 300px panel at scale 1
+	// (roughly 45 runes). confpath.Dir() comes from $XDG_CONFIG_HOME, and the
+	// About line surfaces the user config (confpath.Dir()/chat-app.ini), so
+	// pointing XDG_CONFIG_HOME at a very long prefix makes the resolved config
+	// path overflow. Then assert the "Config" label is dropped and only the
+	// tail (the filename) survives.
+	longDir := filepath.Join(t.TempDir(), `a/really/deep/nested/`+
+		`slow/relative/prefix/that/forces/the/config/path/to/over//flow`)
+	if err := os.MkdirAll(longDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	orig := os.Getenv("XDG_CONFIG_HOME")
+	t.Setenv("XDG_CONFIG_HOME", longDir)
+	t.Cleanup(func() { t.Setenv("XDG_CONFIG_HOME", orig) })
+
+	// The About line surfaces the user config (confpath.Dir()/chat-app.ini),
+	// which we have ensured exceeds the panel width.
 	u := NewUI(380, 560)
 	u.collapsed = false
-	u.savePath = filepath.Join(deep, "chat-app.ini")
+	u.savePath = filepath.Join(longDir, confpath.Name)
 	u.openAbout()
 	frame := u.Render()
+	got := u.configPathForDisplay()
 	if frameHasString(frame, "Config", 1, colMuted) {
 		t.Error("About should drop the \"Config\" label when the pair overflows")
 	}
-	if !frameHasString(frame, "chat-app.ini", 1, colHeader) {
-		t.Error("About should keep the filename legible when trimming a long path")
+	if !frameHasString(frame, filepath.Base(got), 1, colHeader) {
+		t.Errorf("About should keep the filename %q when trimming a long path", filepath.Base(got))
+	}
+	if frameHasString(frame, got, 1, colHeader) {
+		t.Errorf("About should trim the long config path %q, got untrimmed", got)
 	}
 }
 

@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -198,5 +202,63 @@ func TestAgentctlPackSearchInstallUpdate(t *testing.T) {
 	listOut2, _ := exec.Command(agentctl, "-dir", agentsDir, "list").CombinedOutput()
 	if !strings.Contains(string(listOut2), "sample_tool 1.1.0") {
 		t.Errorf("list missing updated 1.1.0: %s", listOut2)
+	}
+}
+
+// TestAgentctlRunPrintsChartImagePath: a run that carried an IMG png answers
+// with the caption plus a path to the decoded chart on disk - agentctl's way
+// of showing what the chat shows inside the bubble. The image is built with
+// a real png.Encode so the path round-trips through the same magic-bytes
+// validation the reply pipeline applies.
+func TestAgentctlRunPrintsChartImagePath(t *testing.T) {
+	agentctl := buildAgentctl(t)
+
+	img := image.NewRGBA(image.Rect(0, 0, 6, 4))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	payload := base64.StdEncoding.EncodeToString(buf.Bytes())
+
+	agentsDir := t.TempDir()
+	agentDir := filepath.Join(agentsDir, "imgchart")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"id":"imgchart","version":"1.0.0","description":"chart dummy","exec":["/bin/sh","-c","echo 'IMG png ` + payload + `'; echo 'OK drew it'"]}`
+	if err := os.WriteFile(filepath.Join(agentDir, "agent.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command(agentctl, "-dir", agentsDir, "run", "imgchart").CombinedOutput()
+	if err != nil {
+		t.Fatalf("agentctl run failed: %v / %s", err, out)
+	}
+	if !strings.Contains(string(out), "drew it") {
+		t.Errorf("run output missing the caption: %s", out)
+	}
+
+	const marker = "(chart image: "
+	at := strings.Index(string(out), marker)
+	if at < 0 {
+		t.Fatalf("no chart image path in output: %s", out)
+	}
+	rest := string(out)[at+len(marker):]
+	end := strings.Index(rest, ")")
+	if end < 0 {
+		t.Fatalf("malformed chart image line: %s", out)
+	}
+	path := rest[:end]
+
+	pngBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("chart file: %v", err)
+	}
+	decoded, err := png.Decode(bytes.NewReader(pngBytes))
+	if err != nil {
+		t.Fatalf("chart file is not a decodable PNG: %v", err)
+	}
+	if b := decoded.Bounds(); b.Dx() != 6 || b.Dy() != 4 {
+		t.Errorf("chart size = %dx%d, want 6x4", b.Dx(), b.Dy())
 	}
 }

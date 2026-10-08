@@ -19,6 +19,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -303,9 +305,41 @@ func cmdRun(agentsDir, id string, kv []string, pol agent.Policy) {
 	if res.Message != "" {
 		fmt.Println(res.Message)
 	}
+	// The chat puts the run's chart (IMG png) inside the bubble; the terminal
+	// cannot draw it, so the decoded PNG is written to a temp file and the
+	// path is printed instead. A failed save is a note on stderr, not a
+	// failed run - the agent already answered.
+	if res.Image != nil {
+		path, err := saveChart(res.Image)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "chart not saved:", err)
+		} else {
+			fmt.Println("(chart image: " + path + ")")
+		}
+	}
 	if res.PetCmd != "" {
 		fmt.Printf("(pet command: %s)\n", res.PetCmd)
 	}
+}
+
+// saveChart writes an agent's decoded chart image to a temp file and returns
+// the path. The file is the caller's to keep or delete - like any other
+// debug artifact, agentctl only prints where it landed.
+func saveChart(img image.Image) (string, error) {
+	f, err := os.CreateTemp("", "agentctl-chart-*.png")
+	if err != nil {
+		return "", err
+	}
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }
 
 // cmdValidate checks a folder's manifest + exec without installing it.

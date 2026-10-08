@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
 	"math"
 	"regexp"
 	"sort"
@@ -42,10 +43,13 @@ type Param struct {
 // Result is what one agent run produced. Message is appended to the chat
 // reply (and therefore spoken by the pet); PetCmd optionally drives the
 // desktop-pet's cmd-FIFO ("action dance", "event love") when the model did
-// not emit its own [ACTION:]/[EVENT:] tag.
+// not emit its own [ACTION:]/[EVENT:] tag. Image optionally carries one
+// decoded chart (see the IMG line in docs/AGENT-PROTOCOL.md); the app
+// renders it next to Message, which stays the TTS/fallback caption.
 type Result struct {
 	Message string
 	PetCmd  string
+	Image   image.Image
 }
 
 // Agent is one callable ability.

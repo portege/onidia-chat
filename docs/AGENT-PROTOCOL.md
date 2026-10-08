@@ -71,6 +71,7 @@ after that). Working directory = the agent's folder.
 brain -> agent   RUN <json-object>\n
 agent -> brain   INFO <text>\n           # optional, repeatable: logged only
 agent -> brain   PET <command>\n        # optional, before OK: drive the pet
+agent -> brain   IMG png <base64>\n      # optional, before OK: one chart image
 agent -> brain   OK <message>\n          # terminal: message joins the reply
                | ERR <text>\n            # terminal: shown as the failure
 ```
@@ -128,6 +129,30 @@ Names come from the pet's own tables - the same ones the model may use:
 | `skip` `juggle` `dance` `eat` `work` `guitar` `sneeze` `sixseven` `basketball` `drive` `ride` `kitten` `wave` | `love` `idea` `celebration` `sleep` `peace` `halloween` `matrix` `magic` `robot` |
 
 (`disappear`/`appear` are internal pet states - never use them.)
+
+### Attach one chart image (IMG)
+
+`agent -> brain   IMG png <base64>` - optional, before `OK`: attach one
+chart (line graph, bar chart, table-as-image) rendered by the app next to
+the text. Shape: the literal kind `png`, one space, then base64 (std
+encoding, single line, no whitespace) of PNG bytes. At most ONE per run,
+only before `OK`/`ERR` - a second `IMG` fails the whole run (`agent <id>:
+duplicate IMG line`), the same rule as `PET`. Caps: the encoded line must
+fit the 1 MB scanner; the decoded PNG must be at most 800x600px (examples
+target 260x200, the pet bubble box). The decoder checks PNG magic bytes
+and decodes with `image/png`; bad base64, non-PNG bytes, or oversized dims
+fail the run with `agent <id>: IMG: ...` and the reply is discarded, like a
+bad `PET`. On an `ERR` run the image is dropped (same as `PET`). The text
+`OK` message is still required - it is the TTS/fallback caption, because
+the spoken reply has no "chart" concept. Native agents do the same by
+returning `agent.Result{Message: "...", Image: img}` (`image.Image`).
+
+```python
+# agent side (any language): print one IMG line, then the OK caption
+import base64
+print("IMG png " + base64.b64encode(png_bytes).decode(), flush=True)
+print("OK AAPL 333.15 USD, up 4.12% today", flush=True)
+```
 
 ### Minimal agent (any language)
 

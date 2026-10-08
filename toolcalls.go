@@ -236,6 +236,29 @@ func toolResultContent(r agentRun) string {
 	}
 }
 
+// agentResultLines renders the executed runs as the "- <id>: OK/ERR ... lines
+// shared by both feedback blocks (the tag path and native tools): one line per
+// run, every line passed through the same sanitizer as user input and capped,
+// so an agent OK/ERR text cannot forge a message boundary or smuggle
+// instructions into the model context.
+func agentResultLines(runs []agentRun) string {
+	var b strings.Builder
+	for _, r := range runs {
+		b.WriteString("- " + r.label() + ": " + toolResultContent(r) + chartNote(r) + "\n")
+	}
+	return b.String()
+}
+
+// chartNote appends "(+chart image)" to a feedback line when the run carried a
+// decoded chart image - the model own feedback must stay text-only, so the
+// image is noted but never embedded in the text it reads back.
+func chartNote(r agentRun) string {
+	if r.Image != nil {
+		return " (+chart image)"
+	}
+	return ""
+}
+
 // toolOwnText is the model's own turn as it is fed back into the conversation:
 // its visible text with any [AGENT: ...] tag removed (a model may still write
 // the tag format out of habit - re-feeding it would only invite a repeat of a

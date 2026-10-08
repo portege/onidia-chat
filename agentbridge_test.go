@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"image"
 	"slices"
 	"strings"
 	"testing"
@@ -221,6 +222,28 @@ func (b *bogusCmdAgent) Params() []agent.Param {
 }
 func (b *bogusCmdAgent) Run(_ context.Context, args map[string]string) (agent.Result, error) {
 	return agent.Result{Message: "echo: " + args["text"], PetCmd: "action moonwalk"}, nil
+}
+
+// TestAgentImg: the reply's chart image is the FIRST run-decoded IMG png,
+// the same one-per-reply first-wins rule as agentPetCmd - nil when no run
+// carried an image.
+func TestAgentImg(t *testing.T) {
+	if got := agentImg(nil); got != nil {
+		t.Errorf("agentImg(nil) = %v, want nil", got)
+	}
+	if got := agentImg([]agentRun{{ID: "a", Msg: "ok"}}); got != nil {
+		t.Errorf("agentImg(text-only run) = %v, want nil", got)
+	}
+	first := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	second := image.NewRGBA(image.Rect(0, 0, 3, 3))
+	runs := []agentRun{
+		{ID: "plain", Msg: "ok"},
+		{ID: "chart1", Msg: "plotted", Image: first},
+		{ID: "chart2", Msg: "plotted", Image: second},
+	}
+	if got := agentImg(runs); got != first {
+		t.Errorf("agentImg(runs) returned the wrong chart, want the first non-nil image")
+	}
 }
 
 func TestEffectiveSystemAgentCatalog(t *testing.T) {

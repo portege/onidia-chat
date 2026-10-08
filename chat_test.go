@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"image"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -154,7 +157,7 @@ func TestBubbleHidesTagMarkup(t *testing.T) {
 		{"<THINKING>maybe [pet_control] first</THINKING>done!", "done!", "maybe first"},
 	}
 	for _, tc := range cases {
-		res := bot.finishReply(tc.raw, nil)
+		res := bot.finishReply(tc.raw, nil, nil)
 		if res.Text != tc.wantText || res.Thinking != tc.wantThink {
 			t.Errorf("finishReply(%q) = text(%q) thinking(%q), want text(%q) thinking(%q)",
 				tc.raw, res.Text, res.Thinking, tc.wantText, tc.wantThink)
@@ -520,5 +523,35 @@ func TestReplyStreamsDeltas(t *testing.T) {
 		SystemInstruction: "You are Buddy.", ImageSource: "off"}
 	if res := plain.Reply([]Msg{{From: "you", Text: "hi"}}, "hi"); res.Text != "streamed reply" {
 		t.Errorf("plain reply text = %q, want %q", res.Text, "streamed reply")
+	}
+}
+
+// failTransport fails every HTTP round trip instantly: the tests below prove
+// that NO image fetch runs (the agent chart wins) without touching the network.
+type failTransport struct{}
+
+func (failTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("test transport: no network expected")
+}
+
+// TestFinishReplyAgentChartWins: the chart an agent decoded from an IMG png
+// line is the reply picture, and it wins over the model's own [IMG: ...] tag -
+// the wiki fetch the tag would otherwise drive fails fast on the transport, so
+// a regression that preferred the tag would end with no image at all.
+func TestFinishReplyAgentChartWins(t *testing.T) {
+	chart := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	bot := &Bot{ImageSource: "wiki", HTTP: &http.Client{Transport: failTransport{}}}
+	res := bot.finishReply("[IMG: some photo] here is the chart!", nil, chart)
+	if res.Image != chart {
+		t.Errorf("reply image = %v, want the agent chart", res.Image)
+	}
+	if strings.Contains(res.Text, "[IMG:") {
+		t.Errorf("reply text %q kept the image tag", res.Text)
+	}
+	// No agent chart: the model tag drives the picture as before - with
+	// image sources off there is nothing to fetch, so no image at all.
+	off := &Bot{ImageSource: "off"}
+	if res := off.finishReply("[IMG: some photo] plain.", nil, nil); res.Image != nil {
+		t.Errorf("reply image = %v, want nil (off, no agent chart)", res.Image)
 	}
 }

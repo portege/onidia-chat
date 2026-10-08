@@ -59,7 +59,7 @@ func Dir() string {
 // window and the pet will disagree about when she goes to sleep. The order is
 // pinned here by TestDefaultFallsBackToUserConfig, from the pet's side by
 // onidia's TestConfigCandidatesMatchChatWindow, and written down for humans in
-// web/docs/setup-gemini.html under "Where she looks for it". Three places, one
+// web/docs/setup-gemini.html under "Where she looks for it" - three places, one
 // order, and none of them can import the others.
 func Candidates() []string {
 	out := []string{Name}

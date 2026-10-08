@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"log"
 	"os"
@@ -41,6 +44,9 @@ const (
 	graceExit      = 2 * time.Second  // wait after OK/ERR before SIGKILL
 	maxStderrBytes = 8 << 10          // keep of the agent's stderr for errors
 	maxInfoLines   = 50               // cap INFO lines logged per run
+	maxImgBytes    = 400 << 10        // cap decoded PNG bytes per IMG line
+	maxImgWidth    = 800              // cap decoded chart width in px
+	maxImgHeight   = 600              // cap decoded chart height in px
 )
 
 // ExternalAgent is an Agent backed by a child process speaking
@@ -183,8 +189,10 @@ func (e *ExternalAgent) Run(ctx context.Context, args map[string]string) (Result
 		failed bool
 		done   bool
 		infos  int
-		petCmd string // optional character command from a PET line
-		petErr error  // malformed/unsupported PET directive
+		petCmd string      // optional character command from a PET line
+		petErr error       // malformed/unsupported PET directive
+		img    image.Image // optional chart from an IMG line
+		imgErr error       // malformed/duplicate IMG directive
 	)
 scan:
 	for {
@@ -208,6 +216,17 @@ scan:
 						petErr = errors.New("duplicate PET directive")
 					} else {
 						petCmd, petErr = normalizePetCmd(strings.TrimSpace(line[3:]))
+					}
+				}
+			case line == "IMG" || strings.HasPrefix(line, "IMG "):
+				// Optional chart image, emitted at most once and before OK.
+				// Same shape as PET: the first directive wins, a second is a
+				// protocol error, a malformed one fails the run.
+				if imgErr == nil {
+					if img != nil {
+						imgErr = errors.New("duplicate IMG line")
+					} else {
+						img, imgErr = decodeAgentImage(strings.TrimSpace(line[3:]))
 					}
 				}
 			default: // INFO lines and anything unknown (forward-compat) are logged
@@ -255,7 +274,10 @@ scan:
 		if petErr != nil {
 			return Result{}, fmt.Errorf("agent %s: %w", e.m.ID, petErr)
 		}
-		return Result{Message: term, PetCmd: petCmd}, nil
+		if imgErr != nil {
+			return Result{}, fmt.Errorf("agent %s: %w", e.m.ID, imgErr)
+		}
+		return Result{Message: term, PetCmd: petCmd, Image: img}, nil
 	}
 	// No terminal line: crashed, hung, or wrong protocol.
 	if ctx.Err() != nil {
@@ -279,6 +301,45 @@ func stderrSuffix(b *bytes.Buffer) string {
 		return ": " + s
 	}
 	return ""
+}
+
+// pngMagic is the 8-byte signature every PNG starts with. Checked before
+// decoding so a text mix-up ("IMG hello") fails fast with a clear error
+// instead of a generic decode complaint.
+var pngMagic = []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+
+// decodeAgentImage validates the payload of an "IMG ..." line and returns
+// the decoded chart. Shape is strict: the literal kind "png", one payload,
+// nothing else - decoded bytes are rendered as pixels, never executed, but
+// a corrupt or hostile image must still fail the run, not the app.
+func decodeAgentImage(s string) (image.Image, error) {
+	kind, payload, _ := strings.Cut(strings.TrimSpace(s), " ")
+	kind = strings.ToLower(kind)
+	payload = strings.TrimSpace(payload)
+	if kind == "" || payload == "" {
+		return nil, fmt.Errorf("IMG: want \"IMG png <base64>\"")
+	}
+	if kind != "png" {
+		return nil, fmt.Errorf("IMG: unsupported kind %q (want png)", kind)
+	}
+	raw, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return nil, fmt.Errorf("IMG: bad base64: %w", err)
+	}
+	if len(raw) > maxImgBytes {
+		return nil, fmt.Errorf("IMG: decoded %d bytes, cap %d", len(raw), maxImgBytes)
+	}
+	if len(raw) < len(pngMagic) || !bytes.Equal(raw[:len(pngMagic)], pngMagic) {
+		return nil, fmt.Errorf("IMG: not PNG bytes")
+	}
+	img, err := png.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("IMG: corrupt PNG: %w", err)
+	}
+	if w, h := img.Bounds().Dx(), img.Bounds().Dy(); w > maxImgWidth || h > maxImgHeight {
+		return nil, fmt.Errorf("IMG: %dx%d, cap %dx%d", w, h, maxImgWidth, maxImgHeight)
+	}
+	return img, nil
 }
 
 // petNameRe matches a pet pose/FX/face name as the brain spells it on the

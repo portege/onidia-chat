@@ -1,7 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -224,6 +229,76 @@ func TestNormalizePetCmd(t *testing.T) {
 	} {
 		if got, err := normalizePetCmd(bad); err == nil {
 			t.Errorf("normalizePetCmd(%q) = %q, want error", bad, got)
+		}
+	}
+}
+
+func TestExternalAgentImg(t *testing.T) {
+	mkPNG := func(t *testing.T, w, h int) string {
+		t.Helper()
+		img := image.NewRGBA(image.Rect(0, 0, w, h))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				img.Set(x, y, color.RGBA{R: 200, G: 30, B: 30, A: 255})
+			}
+		}
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, img); err != nil {
+			t.Fatal(err)
+		}
+		return base64.StdEncoding.EncodeToString(buf.Bytes())
+	}
+
+	// Valid IMG passes through with its dims + caption.
+	small := mkPNG(t, 4, 3)
+	res, err := runScriptAgent(t, "echo 'IMG png "+small+"'\necho 'OK caption'\n")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Message != "caption" {
+		t.Errorf("Message = %q, want caption", res.Message)
+	}
+	if res.Image == nil {
+		t.Fatal("Image is nil, want decoded chart")
+	}
+	if w, h := res.Image.Bounds().Dx(), res.Image.Bounds().Dy(); w != 4 || h != 3 {
+		t.Errorf("Image = %dx%d, want 4x3", w, h)
+	}
+
+	// No IMG line at all stays valid: it is optional.
+	res, err = runScriptAgent(t, "echo 'OK plain'\n")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Image != nil {
+		t.Errorf("Image = %v, want nil", res.Image)
+	}
+
+	// An IMG line on an ERR run is dropped with the reply, like PET.
+	_, err = runScriptAgent(t, "echo 'IMG png "+small+"'\necho 'ERR nope'\n")
+	if err == nil || !strings.Contains(err.Error(), "nope") {
+		t.Errorf("error = %v, want the ERR payload", err)
+	}
+
+	// A second IMG cannot overwrite the first one.
+	_, err = runScriptAgent(t, "echo 'IMG png "+small+"'\necho 'IMG png "+small+"'\necho 'OK x'\n")
+	if err == nil || !strings.Contains(err.Error(), "duplicate IMG") {
+		t.Errorf("duplicate IMG: error = %v, want duplicate-IMG error", err)
+	}
+
+	// Malformed directives fail the run (never rendered).
+	badPayload := base64.StdEncoding.EncodeToString([]byte("hello, not a png"))
+	for _, bad := range []struct{ line, want string }{
+		{"IMG", "want"},
+		{"IMG png", "want"},
+		{"IMG jpg " + small, "unsupported kind"},
+		{"IMG png !!!not-base64!!!", "bad base64"},
+		{"IMG png " + badPayload, "not PNG"},
+		{"IMG png " + mkPNG(t, 801, 1), "cap"},
+	} {
+		_, err := runScriptAgent(t, "echo '"+bad.line+"'\necho 'OK x'\n")
+		if err == nil || !strings.Contains(err.Error(), bad.want) {
+			t.Errorf("IMG %q: error = %v, want one containing %q", bad.line, err, bad.want)
 		}
 	}
 }
