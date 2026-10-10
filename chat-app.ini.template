@@ -21,13 +21,14 @@
 #                  Credentials: AWS SDK chain (~/.aws/credentials, ~/.aws/config,
 #                  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars) by profile.
 #                  The actual key is NEVER stored in this file.
-#   - ollama    -> [ollama] section: api-url / model. No API key.
-#   - openrouter -> [openrouter] section: api-key / api-url / model. OpenAI-
-#                   compatible gateway: OpenRouter by default (one key, any
-#                   vendor - DeepSeek, Kimi/Moonshot, ...). Also run against a
-#                   vendor's native /chat/completions endpoint (e.g.
-#                   https://api.deepseek.com) by pointing api-url at it.
-#                   Credentials: api-key (config, or $OPENROUTER_API_KEY).
+#   - ollama    -> [ollama] section: ollama-api-url / ollama-model. No API key.
+#                  Namespaced keys, NOT the shared api-url / model (flat INI).
+#   - openrouter -> [openrouter] section: api-key / openrouter-api-url /
+#                   openrouter-model. OpenAI-compatible gateway: OpenRouter by
+#                   default (one key, any vendor - DeepSeek, Kimi/Moonshot, ...).
+#                   Also run against a vendor's native /chat/completions endpoint
+#                   (e.g. https://api.deepseek.com) by pointing openrouter-api-url
+#                   at it. Credentials: api-key (config, or $OPENROUTER_API_KEY).
 #
 # The provider key picks which section the app reads. Each section is named
 # after its provider so the mapping is obvious: provider = bedrock reads
@@ -61,26 +62,28 @@ bedrock-model = amazon.nova-lite-v1:0
 
 [ollama]
 # ollama-compatible /api/chat server (Ollama or the hailo llama.cpp server).
-# Default: http://localhost:8000  (override with -api-url or here)
-api-url = http://localhost:8000
+# Namespaced like the gemini/bedrock keys (flat INI, last key wins), so these
+# never collide with another provider's model/api-url.
+# Default endpoint: http://localhost:8000  (override with -api-url or here)
+ollama-api-url = http://localhost:8000
 # Server-side model tag. Default: qwen2:1.5b  (override with -model or here)
-model = qwen2:1.5b
+ollama-model = qwen2:1.5b
 
 # [openrouter] example (commented out). Set `provider = openrouter` and uncomment
 # to use OpenRouter or any OpenAI-compatible gateway:
 #   - Key: export $OPENROUTER_API_KEY, or put it in api-key below (the api-key
 #     field is shared across providers, so use a separate launch / -api-key
 #     when switching providers rather than relying on chat-app.ini's gemini key).
-#   - Endpoint: default https://openrouter.ai/api/v1; point api-url at a
-#     vendor's native /chat/completions endpoint to skip OpenRouter
+#   - Endpoint: default https://openrouter.ai/api/v1; point openrouter-api-url
+#     at a vendor's native /chat/completions endpoint to skip OpenRouter
 #     (e.g. https://api.deepseek.com, https://api.moonshot.cn/v1).
 #   - Streaming: default on - replies arrive over SSE and fill the chat
 #     bubble word-by-word while the model generates. Set stream = false
 #     for the old single-shot behavior.
 # [openrouter]
 # api-key = <your OpenRouter key>
-# api-url = https://openrouter.ai/api/v1
-# model = deepseek/deepseek-chat-v3-0324
+# openrouter-api-url = https://openrouter.ai/api/v1
+# openrouter-model = deepseek/deepseek-chat-v3-0324
 # stream = true
 
 

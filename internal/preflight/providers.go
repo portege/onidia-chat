@@ -241,10 +241,10 @@ func ollamaChecks(spec Spec) []Check {
 					return Pass(fmt.Sprintf("%s answers /api/tags", base))
 				case detail == "unparseable /api/tags body" || strings.HasPrefix(detail, "HTTP"):
 					return Fail(fmt.Sprintf("%s returned %s - not an ollama-compatible server?", base, detail),
-						"check api-url in chat-app.ini (default http://localhost:8000)")
+						"check ollama-api-url in chat-app.ini (default http://localhost:8000)")
 				default:
 					return Fail("no answer from "+base+"/api/tags: "+detail,
-						"start the server (ollama serve, or the llama.cpp server on the hailo box) or point api-url at it")
+						"start the server (ollama serve, or the llama.cpp server on the hailo box) or point ollama-api-url at it")
 				}
 			},
 		},
@@ -263,7 +263,7 @@ func ollamaChecks(spec Spec) []Check {
 					}
 				}
 				return Fail(fmt.Sprintf("model %q not on the server (%d available)", model, len(models)),
-					fmt.Sprintf("ollama pull %s (or set model in chat-app.ini)", model))
+					fmt.Sprintf("ollama pull %s (or set ollama-model in chat-app.ini)", model))
 			},
 		},
 	}
@@ -300,7 +300,7 @@ func openrouterChecks(spec Spec) []Check {
 					map[string]string{"Authorization": "Bearer " + key})
 				if err != nil {
 					return Fail("cannot reach "+base+"/models: "+errDetail(err),
-						"check connectivity, or point api-url at the gateway you meant (default https://openrouter.ai/api/v1)")
+						"check connectivity, or point openrouter-api-url at the gateway you meant (default https://openrouter.ai/api/v1)")
 				}
 				if st == 401 || st == 403 {
 					return Fail(fmt.Sprintf("HTTP %d - the key was rejected", st),
@@ -308,7 +308,7 @@ func openrouterChecks(spec Spec) []Check {
 				}
 				if st != 200 {
 					return Fail(fmt.Sprintf("HTTP %d from %s/models", st, urlHost(base)),
-						"check api-url: it must speak the OpenAI dialect (GET /models)")
+						"check openrouter-api-url: it must speak the OpenAI dialect (GET /models)")
 				}
 				var out struct {
 					Data []json.RawMessage `json:"data"`

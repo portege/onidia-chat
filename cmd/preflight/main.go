@@ -157,29 +157,36 @@ func resolveSpec(kv map[string]string, explicit map[string]bool,
 	}
 
 	// Model: shared resolution - the same call onidia-chat's pickModel makes.
-	// gemini reads gemini-model, bedrock reads bedrock-model, the others read
-	// the shared `model`. Separate keys so a [ollama] model later in the flat
-	// INI cannot leak into a gemini/bedrock run (mirrors main.go / config.go).
+	// Each provider reads its OWN namespaced model key so a value in one
+	// section cannot leak into another in the flat INI (mirrors main.go).
 	cfgModel := preflight.Get(kv, "model")
 	switch provider {
 	case "gemini":
 		cfgModel = preflight.Get(kv, "gemini-model")
 	case "bedrock":
 		cfgModel = preflight.Get(kv, "bedrock-model")
+	case "ollama":
+		cfgModel = preflight.Get(kv, "ollama-model")
+	case "openrouter":
+		cfgModel = preflight.Get(kv, "openrouter-model")
 	}
 	model, warn := preflight.ResolveModel(provider, modelFlag, explicit["model"], cfgModel)
 	if warn != "" {
 		fmt.Fprintf(os.Stderr, "preflight: warning: %s\n", warn)
 	}
 
-	// Endpoint: flag > config > provider default. Gemini reads the namespaced
-	// gemini-api-url; the other providers read the shared api-url.
+	// Endpoint: flag > config > provider default. Each provider reads its OWN
+	// namespaced api-url key (bedrock has none - AWS SDK), so a value cannot
+	// leak between sections in the flat INI.
 	apiURL := strings.TrimSpace(apiURLFlag)
 	if apiURL == "" {
-		if provider == "gemini" {
+		switch provider {
+		case "gemini":
 			apiURL = preflight.Get(kv, "gemini-api-url")
-		} else {
-			apiURL = preflight.Get(kv, "api-url")
+		case "ollama":
+			apiURL = preflight.Get(kv, "ollama-api-url")
+		case "openrouter":
+			apiURL = preflight.Get(kv, "openrouter-api-url")
 		}
 	}
 	if apiURL == "" {

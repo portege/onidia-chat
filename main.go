@@ -274,10 +274,10 @@ func main() {
 	// leftover model from the other provider family (e.g. a Gemini ID in
 	// chat-app.ini while provider=bedrock) is auto-swapped and warned about.
 	//
-	// Which config key supplies the fallback depends on the provider: gemini
-	// reads gemini-model, bedrock reads bedrock-model, everything else reads
-	// the shared `model`. They are separate keys precisely so a [ollama] model
-	// later in the flat INI cannot leak into a gemini/bedrock run (config.go).
+	// Which config key supplies the fallback depends on the provider: each
+	// provider reads its OWN namespaced model key (gemini-model, bedrock-model,
+	// ollama-model, openrouter-model) so a value in one section cannot leak into
+	// another in the flat INI. The shared `model` key is no longer read.
 	var cfgModel string
 	if cfg != nil {
 		switch providerVal {
@@ -285,8 +285,10 @@ func main() {
 			cfgModel = cfg.GeminiModel
 		case "bedrock":
 			cfgModel = cfg.BedrockModel
-		default:
-			cfgModel = cfg.Model
+		case "ollama":
+			cfgModel = cfg.OllamaModel
+		case "openrouter":
+			cfgModel = cfg.OpenRouterModel
 		}
 	}
 	modelVal, modelWarn := pickModel(*model, explicitFlags["model"], cfgModel, providerVal)
@@ -294,14 +296,20 @@ func main() {
 		log.Printf("warning: %s", modelWarn)
 	}
 
-	// API URL: explicit flag > config file > default. Gemini reads the
-	// namespaced gemini-api-url; the other providers read the shared api-url.
+	// API URL: explicit flag > config file > default. Each provider reads its
+	// OWN namespaced api-url key (gemini-api-url, ollama-api-url,
+	// openrouter-api-url) so a value cannot leak between sections in the flat
+	// INI. Bedrock has no api-url (AWS SDK), so it falls through to the
+	// default switch below (which is a no-op for it).
 	urlVal := strings.TrimSpace(*apiURL)
 	if urlVal == "" && cfg != nil {
-		if providerVal == "gemini" {
+		switch providerVal {
+		case "gemini":
 			urlVal = strings.TrimSpace(cfg.GeminiAPIURL)
-		} else {
-			urlVal = strings.TrimSpace(cfg.APIURL)
+		case "ollama":
+			urlVal = strings.TrimSpace(cfg.OllamaAPIURL)
+		case "openrouter":
+			urlVal = strings.TrimSpace(cfg.OpenRouterAPIURL)
 		}
 	}
 	if urlVal == "" {

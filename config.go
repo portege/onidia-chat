@@ -36,6 +36,14 @@ type Config struct {
 	// would let a [ollama]/[gemini] model leak into a bedrock run. Bedrock has
 	// no api-url (it goes through the AWS SDK), so only the model is split out.
 	BedrockModel string `ini:"bedrock-model"`
+	// OllamaModel / OllamaAPIURL and OpenRouterModel / OpenRouterAPIURL finish
+	// the per-provider namespacing: with these in place no provider reads the
+	// shared `model` / `api-url` any more, so nothing can leak between sections
+	// in the flat INI. Same no-fallback rule as the gemini/bedrock keys above.
+	OllamaModel      string `ini:"ollama-model"`
+	OllamaAPIURL     string `ini:"ollama-api-url"`
+	OpenRouterModel  string `ini:"openrouter-model"`
+	OpenRouterAPIURL string `ini:"openrouter-api-url"`
 	PetPipe          string `ini:"pet-pipe"`
 	SystemPrompt     string `ini:"system-prompt"`
 	SystemFile       string `ini:"system-file"`
@@ -177,6 +185,14 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.GeminiAPIURL = val
 	case "bedrock-model":
 		cfg.BedrockModel = val
+	case "ollama-model":
+		cfg.OllamaModel = val
+	case "ollama-api-url":
+		cfg.OllamaAPIURL = val
+	case "openrouter-model":
+		cfg.OpenRouterModel = val
+	case "openrouter-api-url":
+		cfg.OpenRouterAPIURL = val
 	case "pet-pipe":
 		cfg.PetPipe = val
 	case "system-prompt":
