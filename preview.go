@@ -143,7 +143,7 @@ func dumpPreviews() {
 	writePNG("chat_ui_paged.png", u10.Render())
 
 	// About modal: the teal hero strip with the word-art name and the round
-	// character badge, the tagline, the live pet status and the credit.
+	// character badge, the tagline, the live buddy status and the credit.
 	u11 := NewUI(defaultWinW, defaultWinH)
 	u11.collapsed = false
 	seedConvo(u11)

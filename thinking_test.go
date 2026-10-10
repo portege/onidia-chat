@@ -2,7 +2,7 @@ package main
 
 // thinking_test.go - the <THINKING> block is peeled off before anything else
 // looks at the reply, so a tag written while the model is reasoning can never
-// reach the pet, the pager or an ability. That ordering is the whole point of
+// reach the buddy, the pager or an ability. That ordering is the whole point of
 // the feature and is easy to break by accident.
 
 import (
@@ -44,7 +44,7 @@ func TestSplitThinkingPeelsTheBlock(t *testing.T) {
 
 // A stream caught mid-block has no closing tag yet. The partial text must be
 // treated as reasoning, not leaked into the answer bubble where it would be
-// read aloud by the pet.
+// read aloud by the buddy.
 func TestSplitThinkingHandlesUnclosedBlock(t *testing.T) {
 	think, rest := splitThinking("<THINKING>the user wants a song, maybe")
 	if think != "the user wants a song, maybe" {
@@ -94,7 +94,7 @@ func TestTagsInsideThinkingCannotFireAnything(t *testing.T) {
 }
 
 // Reasoning must not be SPOKEN or shown in the chat. It is now deliberately on
-// the pet say-line - that is how the pet learns to draw it in her own cloud -
+// the buddy say-line - that is how the buddy learns to draw it in her own cloud -
 // so the assertion is about the caption and the TTS line, not the pipe payload.
 func TestThinkingIsNotSpokenOrDisplayed(t *testing.T) {
 	fp := &fakeProvider{canned: "<THINKING>secret internal reasoning here</THINKING>[happy] hi there"}
@@ -107,9 +107,9 @@ func TestThinkingIsNotSpokenOrDisplayed(t *testing.T) {
 	if strings.Contains(res.Text, "secret internal") {
 		t.Errorf("the reasoning leaked into Text: %q", res.Text)
 	}
-	// It IS forwarded, inside its own tag, so the pet can render a cloud. What
+	// It IS forwarded, inside its own tag, so the buddy can render a cloud. What
 	// matters is that it is tagged as reasoning and not glued onto the caption
-	// the pet speaks.
+	// the buddy speaks.
 	if !strings.Contains(res.petLine, thinkTagOpen+"secret internal reasoning here"+thinkTagClose) {
 		t.Errorf("petLine = %q, want the reasoning forwarded inside a <THINKING> tag", res.petLine)
 	}

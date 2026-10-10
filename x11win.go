@@ -2,7 +2,7 @@ package main
 
 // x11win.go - one WM-managed X11 window with a 32-bit ARGB visual, rendered
 // entirely in software (same approach as the desktop-pet: no cgo, no GUI
-// toolkit, just X protocol PutImage uploads). Unlike the pet this is a
+// toolkit, just X protocol PutImage uploads). Unlike the buddy this is a
 // regular managed window: the user can move, resize and close it normally.
 
 import (

@@ -57,7 +57,7 @@ type Config struct {
 	TTSVoice         string `ini:"tts-voice"`           // Typecast voice id
 	Mute             bool   `ini:"mute"`                // true = never speak replies (settings dialog checkbox)
 	Thinking         string `ini:"thinking"`            // "on" (default) | "off": draw the reasoning cloud (settings dialog checkbox)
-	DemoMode         bool   `ini:"demo-mode"`           // true = pet roams & chatters on its own (settings dialog checkbox; default off = planted)
+	DemoMode         bool   `ini:"demo-mode"`           // true = buddy roams & chatters on its own (settings dialog checkbox; default off = planted)
 	AutoSubmit       bool   `ini:"auto-submit"`         // true = send a spoken transcript automatically (settings dialog checkbox; default off = the user sends it)
 	AutoStop         bool   `ini:"auto-stop"`           // true = end a take on silence, with no second click (settings dialog checkbox; default off)
 	Provider         string `ini:"provider"`            // "gemini" (default) | "bedrock" | "ollama" | "openrouter"
@@ -68,7 +68,7 @@ type Config struct {
 	AWSRegion        string `ini:"aws-region"`       // AWS region for Bedrock
 	CharacterAge     int    `ini:"character-age"`    // chat character's age (settings dialog, 7-13)
 	CharacterName    string `ini:"character-name"`   // chat character's name (settings dialog)
-	Gender           string `ini:"character-gender"` // pet gender: "girl" launches Onidia, "boy" launches Kama (settings dialog)
+	Gender           string `ini:"character-gender"` // buddy gender: "girl" launches Onidia, "boy" launches Kama (settings dialog)
 	SleepSet         bool   // sleep-time was present in the config
 	SleepFromH       int    // sleep-window start hour (0-23), from sleep-time
 	SleepFromM       int    // sleep-window start minute (0/15/30/45), from sleep-time

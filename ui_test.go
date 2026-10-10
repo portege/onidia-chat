@@ -272,7 +272,7 @@ func TestHaiyaButton(t *testing.T) {
 
 	// One-shot: the flag was consumed by the WantPet() read above. No later
 	// click - toggle button or plain title bar - may re-fire the launch/quit
-	// action; the stale flag used to poof the running pet whenever the
+	// action; the stale flag used to poof the running buddy whenever the
 	// header was clicked to collapse/expand.
 	u.Press(WToggle)
 	if !u.Release(WToggle) || u.WantPet() {
@@ -284,7 +284,7 @@ func TestHaiyaButton(t *testing.T) {
 	}
 
 	// The header area immediately around the button still hit-tests as the
-	// drag handle, and clicking it does nothing (no toggle, no pet request).
+	// drag handle, and clicking it does nothing (no toggle, no buddy request).
 	u2 := NewUI(380, 520)
 	if u2.HitTest(u2.haiyaRect().Min.X-8, headerH/2) != WHeader {
 		t.Error("left of the Haiya button should fall through to WHeader (drag handle)")
@@ -378,31 +378,31 @@ func TestAboutModal(t *testing.T) {
 }
 
 // TestAboutConfigPathDisplay guards the About page's answer to "which config is
-// the character actually reading?". The pet (the sibling onidia binary) resolves
+// the character actually reading?". The buddy (the sibling onidia binary) resolves
 // its config through internal/confpath in onidia/sleep.go, whose candidate list
 // is a copy of this module's; on a checkout the chat window loads a
-// checkout-relative chat-app.ini while the pet reads
+// checkout-relative chat-app.ini while the buddy reads
 // $XDG_CONFIG_HOME/chat-app/chat-app.ini. configPathForDisplay therefore must
-// show the path the pet reads, not the file the chat window saves to, so the
+// show the path the buddy reads, not the file the chat window saves to, so the
 // About line and the busy-time it displays cannot lie about which file carries
 // TestAboutConfigPathDisplay guards the About page's answer to "which config is
-// the character actually reading?". The pet (the sibling onidia binary) resolves
+// the character actually reading?". The buddy (the sibling onidia binary) resolves
 // its config through internal/confpath in onidia/sleep.go, whose candidate list
 // is a copy of this module's; on a checkout the chat window loads a
-// checkout-relative chat-app.ini while the pet reads
+// checkout-relative chat-app.ini while the buddy reads
 // $XDG_CONFIG_HOME/chat-app/chat-app.ini. configPathForDisplay therefore must
-// show the path the pet reads, not the file the chat window saves to, so the
+// show the path the buddy reads, not the file the chat window saves to, so the
 // About line and the busy-time it displays cannot lie about which file carries
 // the window. The test is split into two cases:
 //
-//  1. the user config the pet reads exists: the About line must surface that
+//  1. the user config the buddy reads exists: the About line must surface that
 //     path (its "Config" label and path), not the file the chat window saves
 //     to;
 //  2. the user config does NOT exist: the About line falls back to the
 //     chat window's savePath, absolute.
 func TestAboutConfigPathDisplay(t *testing.T) {
-	// Case 1: the user config the pet reads exists. Leave the real XDG
-	//_CONFIG_HOME; the pet's config (Dir()/chat-app.ini) is on disk, so the
+	// Case 1: the user config the buddy reads exists. Leave the real XDG
+	//_CONFIG_HOME; the buddy's config (Dir()/chat-app.ini) is on disk, so the
 	// About line must surface that, not savePath.
 	t.Run("user config present: surface the pet's resolved config", func(t *testing.T) {
 		u := NewUI(380, 520)
@@ -506,9 +506,9 @@ func TestAboutModalNarrow(t *testing.T) {
 
 // TestAboutShowsBusyConfigPath is the regression test for the busy-mode
 // mystery: the character and the chat settings read DIFFERENT copies of
-// chat-app.ini, so busy-time = 08:00-08:30 sat the pet down at 14:57 while
+// chat-app.ini, so busy-time = 08:00-08:30 sat the buddy down at 14:57 while
 // the settings window denied any busy window. main.go must hand the UI the
-// resolved path (confpath.Default, i.e. the pet's candidate #1) and About
+// resolved path (confpath.Default, i.e. the buddy's candidate #1) and About
 // must surface it verbatim so the next such mismatch is diagnosed, not
 // debugged. The fixture uses a short absolute path on purpose: long paths
 // are trimmed to the tail by design (see TestAboutTrimsLongConfigPath), and
@@ -540,7 +540,7 @@ func TestAboutShowsBusyConfigPath(t *testing.T) {
 }
 
 // TestAboutTrimsLongConfigPath locks in the overflow rule: when the config path
-// the About line must surface (the pet's resolved config, see
+// the About line must surface (the buddy's resolved config, see
 // TestAboutConfigPathDisplay) is too wide to fit, the "Config" label is dropped
 // and only the tail of the path survives, so the last directory segments and the
 // filename — the parts that distinguish two chat-app.ini files — stay legible.
@@ -1544,7 +1544,7 @@ func TestSettingsThinkingCheckbox(t *testing.T) {
 	if u.think {
 		t.Error("committed thinking should be false after saving the unchecked box")
 	}
-	// The same save must reach the pet bridge, or the character keeps drawing a
+	// The same save must reach the buddy bridge, or the character keeps drawing a
 	// cloud from the say-line the window has stopped drawing.
 	if !u.Bot.PetThinkingOff {
 		t.Error("saving thinking = off should also stop the pet's cloud")
@@ -1892,7 +1892,7 @@ func TestSettingsAutoSubmitReadsBack(t *testing.T) {
 // below MUTE SPEECH): it hit-tests as WDemo, toggles the draft on click
 // (committing only on SAVE), re-seeds from the committed value when the
 // dialog reopens, SAVE persists "demo-mode" to the INI, and flipping it
-// while a pet is running flags the restart so the mode takes effect at
+// while a buddy is running flags the restart so the mode takes effect at
 // once.
 func TestSettingsDemoCheckbox(t *testing.T) {
 	path := writeTempINI(t, "[character]\ncharacter-age = 7\n")
@@ -1958,8 +1958,8 @@ func TestSettingsDemoCheckbox(t *testing.T) {
 		t.Fatal("reopen should seed the draft from the committed demo mode")
 	}
 
-	// Flipping it while the pet runs must schedule a restart, so the new
-	// mode reaches the running pet immediately instead of on the next
+	// Flipping it while the buddy runs must schedule a restart, so the new
+	// mode reaches the running buddy immediately instead of on the next
 	// manual Haiya! click.
 	u.SetPetRunning(true)
 	dr = u.demoRect()

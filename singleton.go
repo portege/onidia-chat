@@ -1,7 +1,7 @@
 // singleton.go - one onidia-chat per user session.
 //
 // Two instances fight over the same resources: the onidia say-FIFO (one
-// writer, and a second instance would fight the first over the pet), the
+// writer, and a second instance would fight the first over the buddy), the
 // settings in chat-app.ini, and the user's attention - the second window
 // would just sit behind the first, accepting keystrokes nobody can see.
 //

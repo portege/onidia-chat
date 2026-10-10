@@ -12,7 +12,7 @@ func TestEffectiveSystem(t *testing.T) {
 	cases := []struct {
 		base, source string
 		wantIMG      bool // should the result mention [IMG: ...] ?
-		wantVisual   bool // should the pet visual-language block be appended?
+		wantVisual   bool // should the buddy visual-language block be appended?
 	}{
 		{"", "wiki", true, true},
 		{"", "pixabay", true, true},
@@ -171,7 +171,7 @@ func TestBubbleHidesTagMarkup(t *testing.T) {
 
 // TestReplyForwardsPetActionEvent verifies that [ACTION: ...] / [EVENT: ...]
 // reply tags are stripped from the displayed text and turned into a command
-// line ready for the pet's cmd-FIFO (with the mood still heading the say-line).
+// line ready for the buddy's cmd-FIFO (with the mood still heading the say-line).
 func TestReplyForwardsPetActionEvent(t *testing.T) {
 	fp := &fakeProvider{canned: "[ACTION: dance]\n[happy] let's party!"}
 	bot := &Bot{Provider: fp, SystemInstruction: "You are Buddy.", ImageSource: "off", PetPipe: "/tmp/desktop-pet--0.say"}
@@ -191,7 +191,7 @@ func TestReplyForwardsPetActionEvent(t *testing.T) {
 		t.Errorf("petLine = %q, want a [happy] say-line", res.petLine)
 	}
 
-	// Now an event with the pet pipe disabled -> no cmd forwarding.
+	// Now an event with the buddy pipe disabled -> no cmd forwarding.
 	fp2 := &fakeProvider{canned: "[EVENT: love] you rule"}
 	bot2 := &Bot{Provider: fp2, SystemInstruction: "You are Buddy.", ImageSource: "off", PetPipe: ""}
 	res2 := bot2.Reply([]Msg{{From: "you", Text: "thanks"}}, "thanks")
@@ -200,7 +200,7 @@ func TestReplyForwardsPetActionEvent(t *testing.T) {
 	}
 }
 
-// TestInferMoodFallback verifies the keyword classifier that fills in a pet
+// TestInferMoodFallback verifies the keyword classifier that fills in a buddy
 // mood when the model forgets the [mood] tag - the replies must never land on
 // a blank neutral face for an emotionally-charged answer.
 func TestInferMoodFallback(t *testing.T) {
@@ -231,7 +231,7 @@ func TestInferMoodFallback(t *testing.T) {
 }
 
 // TestReplyInfersMoodWhenTagMissing verifies that a model reply with no [mood]
-// tag still carries an inferred mood into the pet say-line, while an explicit
+// tag still carries an inferred mood into the buddy say-line, while an explicit
 // tag always wins.
 func TestReplyInfersMoodWhenTagMissing(t *testing.T) {
 	fp := &fakeProvider{canned: "I'm really sorry, that sounds so sad."}

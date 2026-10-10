@@ -1,6 +1,6 @@
 package main
 
-// pet_test.go - the pet say-pipe bridge: path auto-detection, flag/config
+// pet_test.go - the buddy say-pipe bridge: path auto-detection, flag/config
 // resolution precedence (including the "auto" keyword), and the say-line
 // composition for text + image replies.
 
@@ -18,7 +18,7 @@ import (
 
 func TestResolvePetPipe(t *testing.T) {
 	t.Setenv("DISPLAY", ":0")
-	const want = "/tmp/desktop-pet--0.say" // ":0" maps to "-0" like the pet
+	const want = "/tmp/desktop-pet--0.say" // ":0" maps to "-0" like the buddy
 
 	cases := []struct {
 		name            string
@@ -51,7 +51,7 @@ func TestPetPipePath(t *testing.T) {
 		{":1", "/tmp/desktop-pet--1.say"},
 		{"", ""}, // no DISPLAY -> forwarding disabled
 		// The same desktop spelled four ways must give the same pipe, or the
-		// pet listens where we never write (the pet canonicalises too - see
+		// buddy listens where we never write (the buddy canonicalises too - see
 		// onidia's internal/single, and keep the two in step).
 		{":0.0", "/tmp/desktop-pet--0.say"},
 		{"localhost:0.0", "/tmp/desktop-pet--0.say"},
@@ -107,7 +107,7 @@ func TestPetLaunchArgs(t *testing.T) {
 }
 
 // TestPetCmdDeliversCommand checks that petCmd writes the exact command line to
-// the pet's cmd FIFO (action/event forward from the LLM reply tags).
+// the buddy's cmd FIFO (action/event forward from the LLM reply tags).
 func TestPetCmdDeliversCommand(t *testing.T) {
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "test.cmd")
@@ -144,9 +144,9 @@ func TestPetCmdDeliversCommand(t *testing.T) {
 	}
 }
 
-// TestQuitPet checks that QuitPet delivers the bare "quit" line to the pet's
-// cmd FIFO - the command the pet answers with its poof-out animation - and
-// reports `gone` once the FIFO's reader disappears (i.e. the pet exited).
+// TestQuitPet checks that QuitPet delivers the bare "quit" line to the buddy's
+// cmd FIFO - the command the buddy answers with its poof-out animation - and
+// reports `gone` once the FIFO's reader disappears (i.e. the buddy exited).
 func TestQuitPet(t *testing.T) {
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "test.cmd")
@@ -198,14 +198,14 @@ func TestBuildSayLine(t *testing.T) {
 		{"mood first", "happy", "hello", "", "", "[happy] hello"},
 		{"image then caption", "wink", "look!", "", "/tmp/p.png", "[wink] [image /tmp/p.png] look!"},
 		{"image with empty caption", "", "", "", "/tmp/p.png", "[image /tmp/p.png] "},
-		// The thinking block rides the say-pipe so the pet can show it in her
+		// The thinking block rides the say-pipe so the buddy can show it in her
 		// own cloud. It sits after the mood tag and before the caption, and it
 		// is NOT part of what she speaks.
 		{"thinking", "happy", "hi", "hmm", "", "[happy] <THINKING>hmm</THINKING> hi"},
 		{"thinking only, no mood", "", "hi", "hmm", "", "<THINKING>hmm</THINKING> hi"},
 		{"thinking before image", "wink", "ok", "hmm", "/tmp/p.png",
 			"[wink] <THINKING>hmm</THINKING> [image /tmp/p.png] ok"},
-		// Newlines would be read by the pet as a second message.
+		// Newlines would be read by the buddy as a second message.
 		{"multiline thinking collapses", "", "hi", "a\nb\nc", "", "<THINKING>a b c</THINKING> hi"},
 		{"blank thinking is dropped", "happy", "hi", "   ", "", "[happy] hi"},
 	}
@@ -221,7 +221,7 @@ func TestBuildSayLine(t *testing.T) {
 }
 
 // TestPetLineHonoursThinkingSetting: the THINKING BUBBLE setting has to govern
-// the pet's cloud as well as the window's. onidia parses the <THINKING> block
+// the buddy's cloud as well as the window's. onidia parses the <THINKING> block
 // out of the say-line and draws a thought cloud of her own, so a say-line that
 // still carries the block re-introduces the very bubble the user turned off.
 // The window's own decision is untouched: ReplyResult.Thinking stays populated
@@ -359,7 +359,7 @@ func TestPetSayFailureCleansTempImage(t *testing.T) {
 }
 
 // TestPetClearWritesToken checks that petClear pushes the reserved token line
-// so the pet can dismiss its bubble exactly when audio playback ends.
+// so the buddy can dismiss its bubble exactly when audio playback ends.
 func TestPetClearWritesToken(t *testing.T) {
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "clear.say")
@@ -405,7 +405,7 @@ func TestBuildPetSayLineEmpty(t *testing.T) {
 	if got := buildPetSayLine("/tmp/x.say", "happy", "", "", nil); got != "" {
 		t.Errorf("buildPetSayLine with empty text returned %q, want \"\"", got)
 	}
-	// Whitespace-only text is still a mood-only line (the pet shows the face
+	// Whitespace-only text is still a mood-only line (the buddy shows the face
 	// without a bubble) - kept for compatibility with petSay.
 	if got := buildPetSayLine("/tmp/x.say", "happy", "  ", "", nil); got != "[happy]   " {
 		t.Errorf("buildPetSayLine with blank text returned %q, want a mood-only line", got)

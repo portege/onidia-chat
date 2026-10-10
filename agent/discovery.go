@@ -47,7 +47,7 @@ func DefaultDir() string {
 // onidia package puts them in /opt/onidia/share/agents, and onidia-chat used to
 // miss them entirely: discovery only ever looked in the per-user directory,
 // so on a fresh install every bundled agent - including pet_control, the one
-// that makes the pet act - was simply absent.
+// that makes the buddy act - was simply absent.
 //
 // It is a var rather than a const for one reason: the packaged path needs root
 // to create, so as a const the one behaviour that matters could only be tested

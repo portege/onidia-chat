@@ -5,7 +5,7 @@ package main
 // Like the desktop-pet, the whole interface is composed in software into one
 // NRGBA frame per redraw: a header strip, a scrollable message list drawn
 // into a clipped layer, and an input bar with the textarea and the SEND
-// (submit) button. The palette reuses the pet's colors so both apps feel
+// (submit) button. The palette reuses the buddy's colors so both apps feel
 // like one family.
 
 import (
@@ -34,7 +34,7 @@ const (
 	WInput
 	WButton
 	WClose
-	WHaiya  // header "Haiya!" button: launches the onidia pet application
+	WHaiya  // header "Haiya!" button: launches the onidia buddy application
 	WAbout  // header "About" button: opens the About modal
 	WToggle // header +/- button: shows/hides the conversation history
 
@@ -106,14 +106,14 @@ type Msg struct {
 
 // Palette - shared with the desktop-pet (plum outlines, pastel teal).
 var (
-	colHeader      = color.RGBA{95, 207, 214, 255}  // pastel teal (pet hair)
+	colHeader      = color.RGBA{95, 207, 214, 255}  // pastel teal (buddy hair)
 	colTealShade   = color.RGBA{65, 174, 182, 255}  // darker teal
 	colHairLight   = color.RGBA{165, 236, 239, 255} // light teal (user bubbles)
 	colPlum        = color.RGBA{47, 34, 62, 255}    // deep plum outlines
 	colText        = color.RGBA{45, 38, 60, 255}    // bubble text
 	colMuted       = color.RGBA{148, 138, 164, 255} // secondary text
 	colBg          = color.RGBA{246, 243, 250, 255} // soft lilac-white
-	colBubbleFill  = color.RGBA{252, 250, 255, 255} // pet speech-bubble white
+	colBubbleFill  = color.RGBA{252, 250, 255, 255} // buddy speech-bubble white
 	colBtn         = color.RGBA{95, 207, 214, 255}  // SEND button (teal)
 	colBtnOff      = color.RGBA{221, 216, 230, 255} // disabled button
 	colInputBorder = color.RGBA{216, 210, 226, 255}
@@ -126,7 +126,7 @@ var (
 	colCloudFill = color.RGBA{236, 232, 246, 255} // pale lilac
 	colCloudEdge = color.RGBA{186, 178, 208, 255} // soft grey-lilac rim
 
-	// Haiya! button while the onidia pet is running: bubblegum pink so the
+	// Haiya! button while the onidia buddy is running: bubblegum pink so the
 	// state change is obvious at a glance (teal = launch, pink = click quits).
 	colHaiyaPink   = color.RGBA{236, 96, 156, 255}  // base fill
 	colHaiyaPinkHi = color.RGBA{252, 150, 194, 255} // hover (lighter)
@@ -325,7 +325,7 @@ type UI struct {
 
 	wantClose  bool // set by a click on the header's close button
 	wantPet    bool // set by a click on the header's "Haiya!" button
-	petRunning bool // onidia pet is running: the button is pink and quits it
+	petRunning bool // onidia buddy is running: the button is pink and quits it
 
 	// About modal state (see drawAbout): a small informational panel with an
 	// OK button, opened from the header's About button.
@@ -353,14 +353,14 @@ type UI struct {
 	busyToMinDraft    int       // busy end minute picked in the modal (0/15/30/45)
 	muteDraft         bool      // mute-speech checkbox in the modal; committed on SAVE
 	thinkDraft        bool      // thinking-bubble checkbox in the modal; committed on SAVE
-	demo              bool      // committed demo mode: true = pet roams & chatters (default off)
+	demo              bool      // committed demo mode: true = buddy roams & chatters (default off)
 	autoSubmit        bool      // committed: a finished transcript is sent on its own (INI "auto-submit"; default off)
 	autoStop          bool      // committed: a take ends on silence, with no second click (INI "auto-stop"; default off)
 	demoDraft         bool      // demo-mode checkbox in the modal; committed on SAVE
 	autoSubmitDraft   bool      // auto-submit checkbox in the modal; committed on SAVE
 	autoStopDraft     bool      // auto-stop checkbox in the modal; committed on SAVE
-	wantPetRestart    bool      // SAVE changed demo mode while the pet runs: restart it
-	gender            string    // committed pet gender: "girl" (Onidia) or "boy" (Kama)
+	wantPetRestart    bool      // SAVE changed demo mode while the buddy runs: restart it
+	gender            string    // committed buddy gender: "girl" (Onidia) or "boy" (Kama)
 	genderDraft       string    // gender picked in the modal; committed on SAVE
 	prevH             int       // window height before the modal forced minSettingsH
 	name              string    // committed character name ("" = not set yet)
@@ -537,7 +537,7 @@ func (u *UI) toggleRect() image.Rectangle {
 	return image.Rect(x1-hdrBtn, y, x1, y+hdrBtn)
 }
 
-// haiyaLabel is the text on the header button that launches the onidia pet.
+// haiyaLabel is the text on the header button that launches the onidia buddy.
 const haiyaLabel = "Haiya!"
 
 // aboutLabel is the text on the header button that opens the About modal.
@@ -545,8 +545,8 @@ const aboutLabel = "About"
 
 // haiyaRect is the "Haiya!" button: a rounded pill right after the CHAT
 // label in the header, deliberately larger than the close/gear squares so the
-// pet toggle is easy to hit. Clicking it runs the pet application, or - when
-// the pet is already running (PetRunning) - quits it with a poof-out.
+// buddy toggle is easy to hit. Clicking it runs the buddy application, or - when
+// the buddy is already running (PetRunning) - quits it with a poof-out.
 func (u *UI) haiyaRect() image.Rectangle {
 	x1 := padX + textWidth("ONIDIA", uiFontScale) + btnGap
 	h := hdrBtn + 8 // taller than the close/gear squares
@@ -1187,7 +1187,7 @@ func (u *UI) Release(w Widget) bool {
 			// Alt+F4; main() polls WantClose and exits.
 			u.wantClose = true
 		case WHaiya:
-			// Header "Haiya!" button: launches the onidia pet application,
+			// Header "Haiya!" button: launches the onidia buddy application,
 			// or quits it with a poof-out when it is already running.
 			// main() consumes the request via WantPet (one-shot), which
 			// decides from PetRunning; later header clicks must not re-fire.
@@ -1383,9 +1383,9 @@ func (u *UI) WantClose() bool { return u.wantClose }
 // WantPet reports whether the header's "Haiya!" button was clicked, and
 // consumes the flag (one-shot): a single click fires exactly one launch/quit
 // action. Without the consume, the stale flag would re-fire on every later
-// title-bar click - quitting the pet with a poof whenever the header was
+// title-bar click - quitting the buddy with a poof whenever the header was
 // clicked to collapse/expand. The main loop decides what the click means
-// from PetRunning: launch the onidia pet (button teal) or quit it with a
+// from PetRunning: launch the onidia buddy (button teal) or quit it with a
 // poof-out (button pink).
 func (u *UI) WantPet() bool {
 	if !u.wantPet {
@@ -1395,15 +1395,15 @@ func (u *UI) WantPet() bool {
 	return true
 }
 
-// PetDemo reports whether the pet should run in demo mode (autonomous
+// PetDemo reports whether the buddy should run in demo mode (autonomous
 // roaming + unsolicited chatter) per the settings dialog's DEMO MODE
 // checkbox. False plants it at the screen edge, still reactive to app
 // speech and still idly blinking.
 func (u *UI) PetDemo() bool { return u.demo }
 
-// WantPetRestart reports whether SAVE changed the demo mode of a pet that is
+// WantPetRestart reports whether SAVE changed the demo mode of a buddy that is
 // currently running, and consumes the flag (one-shot): the main loop then
-// quits and relaunches the pet so the new mode takes effect immediately.
+// quits and relaunches the buddy so the new mode takes effect immediately.
 func (u *UI) WantPetRestart() bool {
 	if !u.wantPetRestart {
 		return false
@@ -1412,16 +1412,16 @@ func (u *UI) WantPetRestart() bool {
 	return true
 }
 
-// SetPetRunning records whether the onidia pet application is running; the
+// SetPetRunning records whether the onidia buddy application is running; the
 // header button turns pink while it is, signalling that a click now quits it.
 func (u *UI) SetPetRunning(running bool) { u.petRunning = running }
 
-// PetRunning reports whether the onidia pet application is running.
+// PetRunning reports whether the onidia buddy application is running.
 func (u *UI) PetRunning() bool { return u.petRunning }
 
 // PetCharacter reports which character the Haiya! button should launch for
 // the gender chosen in the settings dialog: Kama for a boy, Onidia (the
-// pet binary's own default) for a girl.
+// buddy binary's own default) for a girl.
 func (u *UI) PetCharacter() string {
 	if normalizeGender(u.gender) == "boy" {
 		return "kama"
@@ -1696,18 +1696,18 @@ func (u *UI) saveSettings() {
 	u.busyFrom, u.busyTo = u.busyFromDraft, u.busyToDraft
 	u.busyFromMin, u.busyToMin = sleepMinutes[u.busyFromMinDraft], sleepMinutes[u.busyToMinDraft]
 	u.mute = u.muteDraft
-	// No pet restart is needed here, unlike demo mode: the transcript is laid
+	// No buddy restart is needed here, unlike demo mode: the transcript is laid
 	// out from scratch every frame, so the clouds appear or vanish the moment
 	// the checkbox is committed.
 	u.think = u.thinkDraft
-	// A demo-mode flip must reach a running pet immediately, so flag a
+	// A demo-mode flip must reach a running buddy immediately, so flag a
 	// restart (the main loop quits + relaunches it) — the checkbox would
 	// otherwise only take effect on the next manual Haiya! click.
 	if u.demo != u.demoDraft && u.petRunning {
 		u.wantPetRestart = true
 	}
 	u.demo = u.demoDraft
-	// Unlike demo mode this needs no pet restart, and it must also drop any
+	// Unlike demo mode this needs no buddy restart, and it must also drop any
 	// send already counting down: the user has just said they do not want the
 	// app sending on its own, so the one it is about to do is the last one.
 	if !u.autoSubmitDraft {
@@ -1727,7 +1727,7 @@ func (u *UI) saveSettings() {
 			u.Bot.Name = name // bubble sender label
 		}
 		u.Bot.CharacterName = name
-		// The pet draws her own cloud from the say-line's <THINKING> block, so
+		// The buddy draws her own cloud from the say-line's <THINKING> block, so
 		// the same checkbox has to gate the line the Bot builds - otherwise
 		// unchecking this row silences the window but not the character.
 		u.Bot.PetThinkingOff = !u.thinkDraft
@@ -2194,8 +2194,8 @@ func (u *UI) drawHeader(frame *image.NRGBA) {
 	// "ONIDIA" label is followed by the "Haiya!" launch button.
 	drawText(frame, padX, (headerH-glyphH*uiFontScale)/2, "ONIDIA", uiFontScale, colWhite)
 
-	// "Haiya!" button: runs the onidia pet application, or quits it (pink)
-	// while the pet is running. Painted like the other header buttons.
+	// "Haiya!" button: runs the onidia buddy application, or quits it (pink)
+	// while the buddy is running. Painted like the other header buttons.
 	if hr := u.haiyaRect(); hr.Max.X < u.W { // keep it on-screen on tiny windows
 		fill, glyphCol := colTealShade, colWhite
 		border := colTealShade
@@ -2293,7 +2293,7 @@ func (u *UI) drawHeader(frame *image.NRGBA) {
 // drawAbout renders the About modal: a dim backdrop and a centred card with a
 // teal hero strip carrying the word-art title (gradient drop shadow, plum
 // outline, sparkles) beside the round character badge, then the tagline, a live
-// status line naming whichever pet is up, and the engineering credit, plus an
+// status line naming whichever buddy is up, and the engineering credit, plus an
 // OK button (a backdrop click dismisses it too).
 func (u *UI) drawAbout(frame *image.NRGBA) {
 	fillRect(frame, 0, 0, u.W, u.H, color.RGBA{40, 30, 55, 120}) // dim backdrop
@@ -2397,7 +2397,7 @@ func (u *UI) drawAbout(frame *image.NRGBA) {
 	// The exact INI this process is reading, so "which config is it using?" is
 	// answerable on screen instead of from a log line. Two chat-app.ini files
 	// can exist on one machine and disagree about the busy window, and the
-	// desktop pet resolves its own list independently - so what the chat window
+	// desktop buddy resolves its own list independently - so what the chat window
 	// loaded is not necessarily what the character is acting on, and this line
 	// is how you tell.
 	//
@@ -2449,11 +2449,11 @@ func (u *UI) drawAbout(frame *image.NRGBA) {
 // resolves its config through internal/confpath in onidia/sleep.go and whose
 // candidate list is deliberately a copy of this one. On this machine the chat
 // window's first existing candidate (a checkout-relative chat-app.ini) and the
-// pet's first existing candidate (a checkout-relative chat-app.ini next to the
-// pet binary) are two different files, and both disagree with the high-quality
+// buddy's first existing candidate (a checkout-relative chat-app.ini next to the
+// buddy binary) are two different files, and both disagree with the high-quality
 // copy in $XDG_CONFIG_HOME/chat-app or ~/.config/chat-app. The character reads
 // the latter, so that is the path the About line shows, so the displayed busy
-// window is the one the pet is actually acting on.
+// window is the one the buddy is actually acting on.
 func (u *UI) configPathForDisplay() string {
 	if u.savePath == "" {
 		return ""
@@ -2462,11 +2462,11 @@ func (u *UI) configPathForDisplay() string {
 	// resolves its config through internal/confpath in onidia/sleep.go and whose
 	// candidate list is deliberately a copy of this one. On this machine the chat
 	// window's first existing candidate (a checkout-relative chat-app.ini) and
-	// the pet's first existing candidate (a checkout-relative chat-app.ini next
-	// to the pet binary) are two different files, and both disagree with the
+	// the buddy's first existing candidate (a checkout-relative chat-app.ini next
+	// to the buddy binary) are two different files, and both disagree with the
 	// high-quality copy in the XDG config home or ~/.config/chat-app. The
 	// character reads the latter, so that is the path the About line shows, so
-	// the displayed busy window is the one the pet is actually acting on.
+	// the displayed busy window is the one the buddy is actually acting on.
 	if d := confpath.Dir(); d != "" {
 		if _, err := os.Stat(filepath.Join(d, confpath.Name)); err == nil {
 			if a, err := filepath.Abs(filepath.Join(d, confpath.Name)); err == nil {
@@ -2745,7 +2745,7 @@ func (u *UI) drawThinkRow(frame *image.NRGBA) {
 	u.drawCheckRow(frame, u.thinkRect(), WThink, u.thinkDraft, "THINKING BUBBLE")
 }
 
-// drawDemoRow paints the DEMO MODE checkbox: checked means the pet roams and
+// drawDemoRow paints the DEMO MODE checkbox: checked means the buddy roams and
 // chatters on its own; unchecked plants it at the screen edge (still reactive
 // and still idly blinking).
 func (u *UI) drawDemoRow(frame *image.NRGBA) {
@@ -3314,7 +3314,7 @@ func (u *UI) drawMsgBlock(layer *image.NRGBA, b msgBlock, y int, copyPill, copyF
 
 	outline, fill := colTealShade, colHairLight // user (right)
 	if isBot {
-		outline, fill = colPlum, colBubbleFill // bot (left): pet speech bubble
+		outline, fill = colPlum, colBubbleFill // bot (left): buddy speech bubble
 	}
 	drawRoundRect(layer, bx, by, b.bubW, bubH, bubRadius+bubOutline, outline)
 	drawRoundRect(layer, bx+bubOutline, by+bubOutline,

@@ -1,21 +1,21 @@
 package main
 
 // about_art.go - the hand-drawn artwork the About modal shows: the round
-// character badge (the pet's face) and the small four-point sparkles that dress
+// character badge (the buddy's face) and the small four-point sparkles that dress
 // up the word-art title.
 //
 // The badge is the same mark as the web header's logo: Onidia's head, happy
 // expression, taken from the square viewBox "10 10 91 91" cropped out of the
-// pet's 112x160 sprite. Every number inside drawFaceBadge is that drawing's own
+// buddy's 112x160 sprite. Every number inside drawFaceBadge is that drawing's own
 // coordinate, unconverted - the point of the rewrite was to stop hand-rolling a
-// likeness of her and to use the geometry the pet actually draws.
+// likeness of her and to use the geometry the buddy actually draws.
 //
-// The chat UI is a separate binary and cannot import the pet's character
+// The chat UI is a separate binary and cannot import the buddy's character
 // package, so - as before - the portrait is composed from primitives instead of
 // shipping as an asset: no image files, nothing to load, and it scales with the
 // badge radius. logoMap is the bridge: it carries the mapping from the mark's
 // units to device pixels and clips every shape to the badge's white disc, so
-// the shapes below can be written exactly as the pet draws them.
+// the shapes below can be written exactly as the buddy draws them.
 
 import (
 	"image"
@@ -24,7 +24,7 @@ import (
 	"sort"
 )
 
-// Portrait colours. The pet's palette (ui.go) already carries the hair, the
+// Portrait colours. The buddy's palette (ui.go) already carries the hair, the
 // tail fill, the outline plum and the face, and the logo uses exactly those
 // values - hair #5fcfd6, tails #41aeb6, outline #2f223e, face #ffe4ce are
 // colHeader, colTealShade, colPlum and colSkin - so the badge reuses them and
@@ -180,7 +180,7 @@ func arcPts(dst []float64, u, v, rad, a0, a1 float64) []float64 {
 }
 
 // taper fills a TaperOutlined capsule: the convex hull of a wide base circle and
-// a narrow tip circle, which is the pet's own stroke primitive. The tangent
+// a narrow tip circle, which is the buddy's own stroke primitive. The tangent
 // between the two sits at acos((r1-r2)/L) off the axis, and both end arcs are
 // appended in one increasing sweep so the hull closes.
 func (m logoMap) taper(dst *image.NRGBA, bu, bv, tu, tv, r1, r2 float64, col color.RGBA) {
@@ -199,7 +199,7 @@ func (m logoMap) taper(dst *image.NRGBA, bu, bv, tu, tv, r1, r2 float64, col col
 // hairCap draws the hair cap - the top of a circle, closed off by the chord on
 // the hairline - in both its passes at once. The plum outline and the teal fill
 // are the same circle at two radii about one centre and one pair of angles, so
-// the rim is even the whole way round; the strip is the half of the pet's
+// the rim is even the whole way round; the strip is the half of the buddy's
 // centred stroke that lands below the chord, without which the hair would meet
 // the forehead on a bare line.
 //
@@ -231,7 +231,7 @@ func (m logoMap) smile(dst *image.NRGBA, v, rad float64, col color.RGBA) {
 // fringe fills one of the five hair strands: a triangle hanging off the
 // hairline with its top edge from x to x+w and a point at (tipX, tipY). The
 // plum pass is the same triangle pulled 16% in about its own centre, which
-// leaves the rim the pet's 1.6-unit stroke does.
+// leaves the rim the buddy's 1.6-unit stroke does.
 func (m logoMap) fringe(dst *image.NRGBA, x, w, tipX, tipY float64) {
 	pts := []float64{x, 49, x + w, 49, tipX, tipY}
 	m.poly(dst, pts, colPlum)
@@ -247,7 +247,7 @@ func (m logoMap) fringe(dst *image.NRGBA, x, w, tipX, tipY float64) {
 // a diamond body plus the two long thin spikes that make it read as a star
 // drawFaceBadge paints the round character badge: the header logo, Onidia's
 // head with her happy expression, in a plum ring over bubble-white. It is the
-// pet's own geometry (drawHead, drawFace, drawTwinTails, and eyeArcUp /
+// buddy's own geometry (drawHead, drawFace, drawTwinTails, and eyeArcUp /
 // mouthOpenSmile) rather than a likeness of it, so the About card and the web
 // header show the same drawing. Everything is scaled through logoMap, so the
 // art works at any badge size; below ~10px it would be mud, so it draws nothing.
@@ -262,10 +262,10 @@ func drawFaceBadge(dst *image.NRGBA, cx, cy, r int) {
 
 	// Twin tails, behind the head. Each is one tapered capsule running from a
 	// wide base at the crown down past the jaw; the plum outline and the teal
-	// fill are the same capsule with the radii inset, which is how the pet
+	// fill are the same capsule with the radii inset, which is how the buddy
 	// strokes it. side is +1 for the tail on the mark's left.
 	//
-	// The pale sheen down each tail is the pet's own stroke, but the pet draws
+	// The pale sheen down each tail is the buddy's own stroke, but the buddy draws
 	// it before the head, and the head is a disc of radius 38.7 about (56,60)
 	// that swallows all but a sliver of it: the far cap clears the edge by
 	// 0.021 units, which is nothing at any badge size. Kept for fidelity - if
@@ -286,7 +286,7 @@ func drawFaceBadge(dst *image.NRGBA, cx, cy, r int) {
 	m.disc(dst, logoCX, 63, 32.5, colFaceLo)
 	m.disc(dst, logoCX, 63, 31.5, colSkin)
 
-	// The hair cap, then the fringe over it. The cap is the circle the pet cuts
+	// The hair cap, then the fringe over it. The cap is the circle the buddy cuts
 	// off at the hairline; the five strands are separate triangles sitting on
 	// that line with alternating tip lengths, not a scalloped edge - a scallop
 	// reads as one solid band across the forehead.
@@ -314,7 +314,7 @@ func drawFaceBadge(dst *image.NRGBA, cx, cy, r int) {
 		m.disc(dst, x, 52, 5.4, colHaiyaPink)
 	}
 
-	// Happy closed eyes: the shallow ^ the pet's happy face is drawn with, plus
+	// Happy closed eyes: the shallow ^ the buddy's happy face is drawn with, plus
 	// the small outward lash at each outer corner. The right eye is the left
 	// one mirrored about the centre line.
 	for _, side := range []float64{1, -1} {

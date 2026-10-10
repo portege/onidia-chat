@@ -2,7 +2,7 @@
 // chat-app.ini should I read?
 //
 // The answer used to be written down in three places - main.defaultConfigPath,
-// preflight.DefaultINIPath and the pet's own loader in the sibling onidia
+// preflight.DefaultINIPath and the buddy's own loader in the sibling onidia
 // module - and the copies drifted. preflight's copy checked only
 // ./chat-app.ini while its
 // comment claimed it also checked next to the binary and the user's config
@@ -53,11 +53,11 @@ func Dir() string {
 // purpose - in bin/, (2) would auto-load a root-owned file and shadow the
 // user's own config.
 //
-// The pet walks the same list; see configCandidates in the sibling onidia
+// The buddy walks the same list; see configCandidates in the sibling onidia
 // module's sleep.go. The two are separate Go modules and cannot share this
 // function, so the order is what has to be kept in step - if it is not, the
-// window and the pet will disagree about when she goes to sleep. The order is
-// pinned here by TestDefaultFallsBackToUserConfig, from the pet's side by
+// window and the buddy will disagree about when she goes to sleep. The order is
+// pinned here by TestDefaultFallsBackToUserConfig, from the buddy's side by
 // onidia's TestConfigCandidatesMatchChatWindow, and written down for humans in
 // web/docs/setup-gemini.html under "Where she looks for it" - three places, one
 // order, and none of them can import the others.

@@ -1,7 +1,7 @@
 // Package preflight runs onidia-chat's startup requirements checks: is the
 // selected LLM provider actually usable (ollama server up, Gemini/Bedrock/
 // OpenRouter credentials valid), and is the environment sane (display, audio
-// player, pet pipe, agents dir, image source)? - "and other stuff later"
+// player, buddy pipe, agents dir, image source)? - "and other stuff later"
 // lands here as one more Check.
 //
 // The package is deliberately importable so both surfaces share one behavior:

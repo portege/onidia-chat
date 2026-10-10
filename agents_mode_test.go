@@ -120,7 +120,7 @@ func TestAgentRemoveOwnAgent(t *testing.T) {
 }
 
 // Installing never targets the packaged directory - /opt is root-owned, and
-// needing sudo to add a pet behaviour would be a bad surprise.
+// needing sudo to add a buddy behaviour would be a bad surprise.
 func TestAgentInstallTargetsUserDir(t *testing.T) {
 	agent.Reset()
 	defer agent.Reset()

@@ -3,13 +3,13 @@ package main
 // pet_control_test.go - the agent and the brain's pet-command tables must
 // agree. The agent resolves a request in Python; onidia-chat re-validates the
 // result here in Go. If a name exists on one side only, the line is silently
-// dropped at runtime ("ignoring unknown pet command") and the character just
+// dropped at runtime ("ignoring unknown buddy command") and the character just
 // does nothing - which is exactly the bug these tests exist to prevent.
 //
 // The first test drives the real script for EVERY name onidia-chat knows, so a
-// new action or face added to the pet cannot land without the agent catching
+// new action or face added to the buddy cannot land without the agent catching
 // up. That direction matters more than the other: an unknown-to-onidia-chat line
-// is invisible, whereas a name the pet rejects is at least logged.
+// is invisible, whereas a name the buddy rejects is at least logged.
 
 import (
 	"os/exec"
@@ -47,7 +47,7 @@ func runPetControl(t *testing.T, args string) string {
 }
 
 // petLineOf pulls the agent's PET line out of its output, or "" when it
-// declined (an ERR run must not reach the pet at all).
+// declined (an ERR run must not reach the buddy at all).
 func petLineOf(t *testing.T, args string) string {
 	t.Helper()
 	out := runPetControl(t, args)
@@ -67,8 +67,8 @@ func petLineOf(t *testing.T, args string) string {
 // Every name onidia-chat accepts must be reachable through the agent, and the
 // agent's answer must survive onidia-chat's own validation.
 // An agent's PET line has to be routed to the right pipe. Expressions are the
-// exception: the pet has no cmd-FIFO verb for them, so "expr <mood>" has to
-// leave as a bare say-line. Getting this backwards is invisible - the pet just
+// exception: the buddy has no cmd-FIFO verb for them, so "expr <mood>" has to
+// leave as a bare say-line. Getting this backwards is invisible - the buddy just
 // logs an unknown command and keeps its old face.
 func TestPetCommandRoutingPicksTheRightPipe(t *testing.T) {
 	agent.Reset()
@@ -266,7 +266,7 @@ func TestPetControlDescriptionIsAboutAnimationNotAPerson(t *testing.T) {
 		text += " " + strings.ToLower(p.Description)
 	}
 	// Phrasings that made a model refuse. Kept specific: the point is not to
-	// ban the word "body" (a sprite has one) but to ban describing the pet as
+	// ban the word "body" (a sprite has one) but to ban describing the buddy as
 	// something that can be told to act.
 	banned := []string{
 		"her body", "his body", "their body", "the body",
@@ -383,8 +383,8 @@ func TestPetControlCoversEveryKnownName(t *testing.T) {
 			t.Errorf("onidia-chat rejects its own event line %q", got)
 		}
 	}
-	// Movement verbs reach the pet bare ("jump"), not as "move jump": the
-	// pet's behaviour layer takes no prefix for them. A walk-style verb is
+	// Movement verbs reach the buddy bare ("jump"), not as "move jump": the
+	// buddy's behaviour layer takes no prefix for them. A walk-style verb is
 	// exercised with a direction, since the bare form is the no-direction one.
 	for verb, m := range petMoves {
 		name := verb
@@ -402,7 +402,7 @@ func TestPetControlCoversEveryKnownName(t *testing.T) {
 }
 
 // The everyday phrasings a model actually produces, including the words the
-// pet itself calls aliases (hearts, rope, sleepy).
+// buddy itself calls aliases (hearts, rope, sleepy).
 func TestPetControlResolvesAliases(t *testing.T) {
 	cases := []struct{ args, want string }{
 		{`{"kind":"expression","name":"love"}`, "expr adore"},
@@ -435,7 +435,7 @@ func TestPetControlResolvesAliases(t *testing.T) {
 	}
 }
 
-// A name the pet does not have must be refused, and - crucially - must produce
+// A name the buddy does not have must be refused, and - crucially - must produce
 // no PET line at all rather than a plausible-looking wrong one.
 func TestPetControlRefusesUnknownNames(t *testing.T) {
 	for _, args := range []string{
@@ -451,7 +451,7 @@ func TestPetControlRefusesUnknownNames(t *testing.T) {
 	}
 }
 
-// The agent is third-party code writing into a FIFO the pet executes. No input
+// The agent is third-party code writing into a FIFO the buddy executes. No input
 // may produce a line that carries a second command behind the first.
 func TestPetControlCannotInjectASecondCommand(t *testing.T) {
 	for _, args := range []string{

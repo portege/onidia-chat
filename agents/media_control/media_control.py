@@ -234,7 +234,7 @@ def main():
         out("ERR " + res[1])
         return 1
     if cmd == "stop":
-        # Mirror of play_song's dance: the music is gone, so the pet stops
+        # Mirror of play_song's dance: the music is gone, so the buddy stops
         # celebrating and goes back to hopping. It goes BEFORE the OK line,
         # because the OK ends the protocol stream (see external.go).
         out("PET action skip")

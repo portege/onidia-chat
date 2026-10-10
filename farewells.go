@@ -2,18 +2,18 @@ package main
 
 // farewells.go - the goodbye that closes the show.
 //
-// Whenever the character signs off - the chat window is closed, or the pet is
+// Whenever the character signs off - the chat window is closed, or the buddy is
 // sent away with the Haiya! button - she picks one farewell at random, waves,
 // puts it in her speech bubble and says it out loud before the process (or
 // her) actually goes away.
 //
-// Everything the goodbye touches is optional: with no pet running, no audio
+// Everything the goodbye touches is optional: with no buddy running, no audio
 // engine, or a dead TTS API the line still lands in the chat log and the
 // shutdown continues after a bounded wait, so a farewell can never wedge an
 // exit.
 //
 // WHY THE ASCII FILTERING: both renderers are hand-built 5x7 bitmap fonts -
-// onidia-chat's font5x7 (font.go) and the pet's fx.font5x7
+// onidia-chat's font5x7 (font.go) and the buddy's fx.font5x7
 // (onidia/internal/fx/font.go). A rune with no glyph in those tables is
 // painted as blank space, so a goodbye written in its own script ("さようなら",
 // "До свидания", "إلى اللقاء") would come out of the bubble as a row of
@@ -45,8 +45,8 @@ const (
 	// farewellMood is the say-line mood tag: she leaves in a good mood.
 	farewellMood = "happy"
 
-	// farewellWaveCmd makes the pet raise a hand as she says it. "bye" and
-	// "goodbye" are aliases of the pet's wave action, which is exactly the
+	// farewellWaveCmd makes the buddy raise a hand as she says it. "bye" and
+	// "goodbye" are aliases of the buddy's wave action, which is exactly the
 	// gesture the persona instructions call out for farewells.
 	farewellWaveCmd = "action wave"
 
@@ -220,7 +220,7 @@ var asciiFolds = map[rune]string{
 }
 
 // asciiFarewell folds one farewell to what the bitmap fonts can draw. Both
-// renderers (onidia-chat's font5x7 and the pet bubble's fx.font5x7) fall back to
+// renderers (onidia-chat's font5x7 and the buddy bubble's fx.font5x7) fall back to
 // blank space for a rune they have no glyph for, and the say-FIFO is
 // line-oriented, so: line breaks and tabs become spaces, control characters
 // go, ASCII passes through, folded runes are replaced, and anything else
@@ -236,7 +236,7 @@ func asciiFarewell(s string) string {
 		case r == '\n' || r == '\r' || r == '\t':
 			b.WriteRune(' ') // one line, always: the FIFO splits on \n
 		case r < 0x20 || r == 0x7f:
-			// control characters: the pet's sanitizer eats them anyway
+			// control characters: the buddy's sanitizer eats them anyway
 		case r <= 0x7f:
 			b.WriteRune(r)
 		default:
@@ -270,8 +270,8 @@ func randomFarewell() string {
 }
 
 // farewellSigner delivers the goodbye over the three channels a normal reply
-// already uses - the chat log, the pet's say-FIFO and text-to-speech - plus
-// the pet's command FIFO for the wave. Every field is optional: the zero
+// already uses - the chat log, the buddy's say-FIFO and text-to-speech - plus
+// the buddy's command FIFO for the wave. Every field is optional: the zero
 // value picks a phrase, logs it, and returns without touching a pipe.
 type farewellSigner struct {
 	TTS     *TTS   // speech engine; nil or disabled = silent goodbye
@@ -279,15 +279,15 @@ type farewellSigner struct {
 	UI      *UI    // append the line to this chat log (nil = leave UI alone)
 	Paint   func() // repaint right after appending (used with UI only)
 	Name    string // sender label for the chat-log line
-	SayPipe string // pet say-FIFO ("" = no pet to speak to)
-	CmdPipe string // pet command FIFO, for the wave ("" = none)
+	SayPipe string // buddy say-FIFO ("" = no buddy to speak to)
+	CmdPipe string // buddy command FIFO, for the wave ("" = none)
 }
 
 // signOff picks one farewell and delivers it, then holds the caller for as
 // long as it takes to get the words out loud - capped by farewellSpokenGrace,
 // so a hung TTS API slows an exit by seconds, never indefinitely, and a dead
-// pet (no FIFO reader) costs nothing at all. why names the shutdown in the
-// log ("window close", "pet quit"). Returns the line said ("" if none).
+// buddy (no FIFO reader) costs nothing at all. why names the shutdown in the
+// log ("window close", "buddy quit"). Returns the line said ("" if none).
 //
 // Call it on the main loop when UI is set - UI state is main-loop-only in
 // this program; the pet-quit path runs it on a goroutine with UI left nil so a
@@ -308,7 +308,7 @@ func (f *farewellSigner) signOff(why string) string {
 		}
 	}
 
-	// She raises a hand on the way out, when a pet is listening.
+	// She raises a hand on the way out, when a buddy is listening.
 	if f.CmdPipe != "" && petPipeReady(f.CmdPipe) {
 		petCmd(f.CmdPipe, farewellWaveCmd)
 	}
@@ -337,7 +337,7 @@ func (f *farewellSigner) signOff(why string) string {
 	}
 
 	// Silent path (muted, no engine, or no audio player): the bubble is up
-	// now and the pet closes it by reading time, so the only thing to
+	// now and the buddy closes it by reading time, so the only thing to
 	// preserve is a beat to read it before the window dies.
 	petSayLine(f.SayPipe, bubble)
 	time.Sleep(farewellQuietPause)

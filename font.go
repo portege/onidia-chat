@@ -7,7 +7,7 @@ package main
 // art (baseline = bottom of row 6); rows 7-8 are the descender zone that
 // letters like g, j, p, q, y hang into, so their tails are visibly deeper
 // than the baseline instead of stopping at it. This is the desktop-pet's
-// font extended with true lowercase glyphs (the pet itself renders
+// font extended with true lowercase glyphs (the buddy itself renders
 // small-caps). Runes without a glyph fall back to their uppercase form and
 // then advance silently, so arbitrary text can never crash the renderer.
 

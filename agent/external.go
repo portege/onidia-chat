@@ -26,7 +26,7 @@ import (
 //
 //	brain -> agent (stdin):  RUN {"title":"Havana","shuffle":"true"}\n
 //	agent -> brain (stdout): [INFO <text> ...]  (optional progress, logged)
-//	                          PET action <name>  (optional, before OK: the pet
+//	                          PET action <name>  (optional, before OK: the buddy
 //	                                              should act this out)
 //	                          OK <message>       (done, message shown to user)
 //	                          - or -
@@ -342,13 +342,13 @@ func decodeAgentImage(s string) (image.Image, error) {
 	return img, nil
 }
 
-// petNameRe matches a pet pose/FX/face name as the brain spells it on the
+// petNameRe matches a buddy pose/FX/face name as the brain spells it on the
 // cmd-FIFO: lowercase word, digits and underscores ("dance", "celebration",
 // "sixseven", "sleepy").
 var petNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 
-// petMoveNoArg and petMoveWithDir are the pet's own locomotion commands, split
-// by whether they take a direction. The pet's behaviour layer takes these bare
+// petMoveNoArg and petMoveWithDir are the buddy's own locomotion commands, split
+// by whether they take a direction. The buddy's behaviour layer takes these bare
 // - "jump", "stand", "walk left" - with no "move" prefix, which is why they
 // cannot be validated by the "verb + name" shape below. The brain re-checks
 // these against its own tables; this list only decides the SHAPE.
@@ -363,7 +363,7 @@ var petMoveNoArg = map[string]bool{
 
 var petMoveWithDir = map[string]bool{"walk": true, "go": true, "move": true}
 
-// petDirRe matches the only directions the pet walks in.
+// petDirRe matches the only directions the buddy walks in.
 var petDirRe = regexp.MustCompile(`^(left|right)$`)
 
 // normalizePetCmd validates the payload of a "PET ..." line and returns the
@@ -373,8 +373,8 @@ var petDirRe = regexp.MustCompile(`^(left|right)$`)
 //
 // The command line goes straight to the desktop-pet, which is the one place
 // where third-party agent output could smuggle in a second command, so the
-// shape is strict: a known verb, ONE pet name, nothing else - no spaces, no
-// separators, no newlines. Whether the pet actually knows the name is the
+// shape is strict: a known verb, ONE buddy name, nothing else - no spaces, no
+// separators, no newlines. Whether the buddy actually knows the name is the
 // brain's business (it owns the action/event/expression tables and drops
 // unknown names with a log line), so a well-formed but unknown name passes
 // through here and fails soft instead of failing the whole run.

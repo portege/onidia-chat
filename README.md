@@ -37,7 +37,7 @@ reply is shown inside her speech bubble as well.
 - ✅ **Phase 2 — the brain**: `chat.go` calls Gemini asynchronously (the UI
   shows a "..." bubble while waiting, so it never freezes), keeps the last 20
   turns as context, and parses an optional `[mood]` tag out of each answer.
-- ✅ **The buddy bridge**: `pet.go` writes `[mood] [image pic.png] text` to the pet's
+- ✅ **The buddy bridge**: `pet.go` writes `[mood] [image pic.png] text` to the buddy's
   say-FIFO — best-effort and non-blocking; no buddy running? It just skips.
 - ✅ **Speech-to-text**: a mic button in the input bar records a take and drops
   the transcript into the textarea — Amazon Transcribe streaming by default, or
@@ -326,7 +326,7 @@ live in `internal/preflight` and run in two places:
 | `gemini.key` / `gemini.api` | warn / fatal | key present (missing = the documented stub mode, which still launches); the free `GET /v1beta/models` listing accepts it |
 | `bedrock.credentials` (plus `bedrock.invoke` with `-deep`) | fatal | the AWS SDK chain resolves credentials for profile/region (`-deep` adds a real 1-token Converse call) |
 | `openrouter.key` / `openrouter.api` | fatal / fatal | token present (there is no built-in key for this backend); `GET /models` accepts it |
-| `env.display`, `env.audio-player`, `env.pet-pipe`, `env.agents-dir`, `env.images` | warn | `$DISPLAY`, an audio player on `PATH`, the pet's say-FIFO, `agents-dir`, the image-source key |
+| `env.display`, `env.audio-player`, `env.pet-pipe`, `env.agents-dir`, `env.images` | warn | `$DISPLAY`, an audio player on `PATH`, the buddy's say-FIFO, `agents-dir`, the image-source key |
 
 ```sh
 ./preflight                     # exactly what ./onidia-chat would launch with
@@ -340,7 +340,7 @@ make preflight ARGS="-all"      # go run ./cmd/preflight -all
 
 Exit codes (both surfaces): `0` = all good, `1` = warnings only,
 `2` = blocked (a fatal check failed). Warn-level failures - stub mode, a
-missing ollama model tag, no audio player, no pet pipe - are reported but
+missing ollama model tag, no audio player, no buddy pipe - are reported but
 never block.
 
 **Gate modes** - `chat-app.ini`, overridable per run with `-preflight`:
@@ -360,7 +360,7 @@ places in order: the working directory, the binary's own directory, then
 shipped template in `/opt/onidia/share/`, which is none of those three, so
 copying it into `~/.config/chat-app/` is what makes it load. Pass
 `-config <path>` to name a different file, or edit the loaded one in place and
-just relaunch. `onidia` (the pet) resolves the same three paths, so both
+just relaunch. `onidia` (the buddy) resolves the same three paths, so both
 programs read the same file.
 
 ```sh
@@ -648,7 +648,7 @@ onidia-chat: another onidia-chat is already running (pid 12345); close it first
 
 This is a `flock` on `$XDG_RUNTIME_DIR/chat-app.lock` (falling back to
 `/tmp/chat-app-<uid>.lock`), taken before the window opens. A second window
-would fight the first over the pet's say-FIFO, and would sit invisibly behind
+would fight the first over the buddy's say-FIFO, and would sit invisibly behind
 it accepting keystrokes nobody can see.
 
 The lock filename still says `chat-app`, and that is deliberate. It is the
@@ -682,14 +682,14 @@ When the provider returns its reasoning inline, wrapped in
 `<THINKING>...</THINKING>`, it gets its own bubble — a small, muted thought
 cloud drawn **above** the answer, with the answer in the normal speech bubble
 below it. The cloud is deliberately understated: half the font size, a pale
-lilac instead of the pet's plum-outlined white, and capped at 6 lines with an
+lilac instead of the buddy's plum-outlined white, and capped at 6 lines with an
 ellipsis, so a long ramble can never crowd out what the character actually
 said. See `chat_ui_cloud.png`.
 
-The reasoning is **never** spoken by the pet and never enters the reply — only
+The reasoning is **never** spoken by the buddy and never enters the reply — only
 the answer is. It is also peeled off **before** any tag parsing, so a `[mood]`,
 `[ACTION:]` or `[AGENT: ...]` tag written while the model is thinking cannot
-reach the pet, the pager or an ability. A model that muses "I could use
+reach the buddy, the pager or an ability. A model that muses "I could use
 `play_song` here" has not asked for a song. The cloud shows the model's words,
 not its markup: tag text is hidden there too, so a `[AGENT: ...]` the model was
 only considering is not what you read.
@@ -698,7 +698,7 @@ The cloud fills live while the reply streams: an unclosed `<THINKING>` counts
 as open, so mid-stream text lands in the cloud rather than flashing into the
 answer.
 
-**The pet has one too.** onidia parses the same block out of the say-pipe
+**The buddy has one too.** onidia parses the same block out of the say-pipe
 line and draws a smaller cloud above her speech bubble, which is how her
 "thinking" is visible at all - the chat window may be collapsed or behind
 another window while she answers. The **THINKING BUBBLE** setting (the row
@@ -797,7 +797,7 @@ system prompt catalog, so the reply can lead with
 `[AGENT: play_song title="Havana"]` - onidia-chat strips the tag, validates
 the parameters against the agent's declared `params` (the model can only
 send what the manifest declares), runs the agent, and folds its `OK`
-message into the reply (spoken by the pet too). The tag never reaches the
+message into the reply (spoken by the buddy too). The tag never reaches the
 bubble: if the model writes one the grammar cannot match whole (a bracket
 inside a value, a tag cut off by its token limit, a tag in another case) the
 leftover markup is hidden as well, so you read the reply, not the plumbing.
@@ -824,7 +824,7 @@ wire protocol: [`docs/AGENT-PROTOCOL.md`](docs/AGENT-PROTOCOL.md).
 Disable with `-agents-off` / `agents-off = true`.
 
 An agent can also **act the work out on the character**: one optional
-`PET <command>` line before its `OK` reaches the pet when the model didn't
+`PET <command>` line before its `OK` reaches the buddy when the model didn't
 choose an `[ACTION: ...]`/`[EVENT: ...]` itself. Four kinds, and they do not
 all travel the same pipe:
 
@@ -835,16 +835,16 @@ all travel the same pipe:
 | movement (**no prefix**) | cmd-FIFO | `PET walk left`, `PET jump`, `PET stand` |
 | `expr <mood>` | **say-FIFO**, as a bare `[mood]` tag | `PET expr happy` |
 
-`expr` is the odd one out: the pet has no cmd-FIFO verb for expressions at
+`expr` is the odd one out: the buddy has no cmd-FIFO verb for expressions at
 all - its face is set by a bare `[mood]` tag with no text, which holds the
 expression without opening a speech bubble. The agent still writes `PET
 expr <mood>`; onidia-chat is what routes it to the other pipe. Names are
-validated twice (shape in the agent package, name against the pet's tables
-in the brain), so an agent can only pick a pose, face or step the pet
+validated twice (shape in the agent package, name against the buddy's tables
+in the brain), so an agent can only pick a pose, face or step the buddy
 really has ([details](docs/AGENT-PROTOCOL.md#control-the-character-pet)).
 
 The bundled **`pet_control`** agent wraps all four behind one call - `kind`
-(`expression` / `event` / `action` / `move`) plus a `name`, with the pet's
+(`expression` / `event` / `action` / `move`) plus a `name`, with the buddy's
 own informal words folded in ("cheer" -> a happy face, "hearts" -> the
 love effect, "rope" -> skipping):
 
@@ -852,7 +852,7 @@ love effect, "rope" -> skipping):
 ./agentctl -dir agents run pet_control kind=action name=rope
 #   INFO action -> skip
 #   She is skipping rope.
-#   (pet command: action skip)
+#   (buddy command: action skip)
 ```
 
 - **Why it might ignore you**: the system prompt is the *only* place the
@@ -865,7 +865,7 @@ love effect, "rope" -> skipping):
   is marked in the model-facing history (`(I used an ability from the list
   above to do this - it worked.)`, never shown on screen), and the catalog
   itself says an ability's effect is real and must not be apologised for.
-- Bundled: `pet_control` (animates the pet), `play_song`, `play_movie`,
+- Bundled: `pet_control` (animates the buddy), `play_song`, `play_movie`,
   `media_control`, `hello_world`, plus the native `read_story`.
 
 ### Transport strip (play / pause / stop)

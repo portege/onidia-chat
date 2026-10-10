@@ -70,7 +70,7 @@ func agentList(searchDirs []string) int {
 //
 // It always targets the per-user directory, never the packaged one: /opt is
 // root-owned, and silently failing there - or worse, needing sudo - would be a
-// bad surprise for someone who just wanted to add a pet behaviour.
+// bad surprise for someone who just wanted to add a buddy behaviour.
 func agentInstall(src string, cfg *Config) int {
 	dest := agent.DefaultDir()
 	if dest == "" {

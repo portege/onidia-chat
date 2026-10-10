@@ -27,7 +27,7 @@ import re
 import sys
 
 # --- expression ---------------------------------------------------------
-# Canonical faces, in the order characters.Expressions lists them. The pet
+# Canonical faces, in the order characters.Expressions lists them. The buddy
 # resolves aliases itself, but the agent normalises to a canonical name
 # first so a typo is caught here instead of silently ignored.
 EXPRESSIONS = [
@@ -53,7 +53,7 @@ EXPR_ALIASES = {
 }
 
 # --- event --------------------------------------------------------------
-# Effect names, with the pet's informal spellings folded in.
+# Effect names, with the buddy's informal spellings folded in.
 EVENTS = {
     "love": ["hearts", "heart", "smile", "loveit"],
     "idea": ["lightbulb", "bulb", "light", "idea"],
@@ -89,7 +89,7 @@ ACTION_ALIASES = {a: k for k, v in ACTIONS.items() for a in v}
 
 
 # --- move ---------------------------------------------------------------
-# The pet's own behaviour verbs. walk/go/move take an optional direction.
+# The buddy's own behaviour verbs. walk/go/move take an optional direction.
 MOVES_NOARG = {
     "stand": ["stop", "freeze", "hold", "stay"],
     "idle": ["auto", "wander", "roam"],
@@ -110,7 +110,7 @@ KINDS = {
     "move": sorted(set(MOVE_WALK) | set(MOVES_NOARG)),
 }
 
-# The pet's wire verbs. These are NOT the same as our kind names: onidia-chat
+# The buddy's wire verbs. These are NOT the same as our kind names: onidia-chat
 # validates the verb against its own table, and it knows "expr", not
 # "expression". Getting this wrong is silent - the line is just dropped.
 # Movement is the exception: those verbs are bare on the wire already
@@ -169,7 +169,7 @@ def resolve(kind, raw):
             return "walk", "walk", ""
         if verb in MOVES_NOARG:
             # Extra words are ignored rather than rejected: "stand still" and
-            # "stand there please" both mean stand, and the pet only ever
+            # "stand there please" both mean stand, and the buddy only ever
             # receives the bare verb.
             return verb, verb, ""
 

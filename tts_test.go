@@ -218,7 +218,7 @@ func TestTTSProcessShowBeforeHide(t *testing.T) {
 
 // TestTTSProcessFetchFailureShowsOnly checks the fallback: when the audio can
 // never be produced the bubble is still shown (immediately), but no hide hook
-// fires - the pet closes it by its normal reading-time duration.
+// fires - the buddy closes it by its normal reading-time duration.
 func TestTTSProcessFetchFailureShowsOnly(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no credits", http.StatusBadRequest)

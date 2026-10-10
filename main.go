@@ -86,7 +86,7 @@ func pickModel(flagVal string, flagSet bool, cfgModel, provider string) (string,
 
 // resolvePetPipe combines the -pet-pipe flag and the config-file pet-pipe
 // value (flag wins) into the FIFO path replies are forwarded to. "auto" or
-// empty means derive the path from $DISPLAY exactly the way the pet names
+// empty means derive the path from $DISPLAY exactly the way the buddy names
 // it; "off" (case-insensitive) disables forwarding; any other value is used
 // as the literal path. Before config auto-loading, "auto" from chat-app.ini
 // used to fall through as a literal (relative) path and every say write
@@ -190,7 +190,7 @@ func main() {
 	})
 
 	// One instance per user session, taken before anything with a side effect
-	// (the pet FIFO, the config, the window) so a second launch cannot
+	// (the buddy FIFO, the config, the window) so a second launch cannot
 	// interfere with the first. The read-only modes are exempt: -stt-test has
 	// to keep working WHILE the app is running - that is the whole point of
 	// it - and -preview only writes PNGs.
@@ -332,7 +332,7 @@ func main() {
 	if pipe != "" && !filepath.IsAbs(pipe) {
 		log.Printf("warning: pet-pipe %q is not an absolute path - say writes will fail silently; use auto, off, or an absolute FIFO path", pipe)
 	}
-	// The pet's command FIFO (actions/events, and "quit" for the Haiya!
+	// The buddy's command FIFO (actions/events, and "quit" for the Haiya!
 	// button) sits next to the say-FIFO with a .cmd suffix.
 	petCmdPath := petCmdPathFor(pipe)
 
@@ -749,7 +749,7 @@ func main() {
 	ui.Bot.APIURL = urlVal
 	ui.Bot.PetPipe = pipe
 	ui.Bot.SystemInstruction = resolveSystemPrompt(sysPrompt, sysFile)
-	// Haiya! button lifecycle: pink whenever a pet is listening on the cmd
+	// Haiya! button lifecycle: pink whenever a buddy is listening on the cmd
 	// FIFO (launched by us or adopted), teal when none is. The click launches
 	// (teal) or gracefully quits with the poof-out animation (pink).
 	petRunning := func(path string) bool { return path != "" && petPipeReady(path) }
@@ -762,7 +762,7 @@ func main() {
 	var petRestartPending atomic.Bool
 	petTick := time.NewTicker(2 * time.Second)
 	defer petTick.Stop()
-	// quitPet sends the pet away with her goodbye; the body is filled in
+	// quitPet sends the buddy away with her goodbye; the body is filled in
 	// below, once the speech engine exists (the farewell speaks through it).
 	// Both happen long before the event loop starts, so the Haiya! button can
 	// never see the nil.
@@ -824,7 +824,7 @@ func main() {
 	}
 	// Thinking bubble: on unless the INI says otherwise, so a config file written
 	// before this setting existed keeps drawing the reasoning cloud rather than
-	// losing it to a zero-value bool. The pet draws a cloud of her own from the
+	// losing it to a zero-value bool. The buddy draws a cloud of her own from the
 	// same block, so the Bot is told too - one setting, both clouds.
 	if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.Thinking), "off") {
 		ui.think = false
@@ -832,7 +832,7 @@ func main() {
 			ui.Bot.PetThinkingOff = true
 		}
 	}
-	// Demo mode defaults to OFF (planted pet): only an explicit
+	// Demo mode defaults to OFF (planted buddy): only an explicit
 	// demo-mode = true in the INI turns autonomous roaming/chatter on.
 	if cfg != nil {
 		ui.demo = cfg.DemoMode
@@ -879,7 +879,7 @@ func main() {
 
 	// The shutdown goodbye (farewells.go): when anything about to end is
 	// within earshot, she picks one farewell at random, waves, shows it in
-	// her bubble and says it out loud before the process or the pet goes
+	// her bubble and says it out loud before the process or the buddy goes
 	// away. newFarewell reads the sender name and the mute checkbox on the
 	// main loop at the moment of parting - the settings dialog can change
 	// either at any time - and wires them to the pipes this run resolved.
@@ -908,7 +908,7 @@ func main() {
 	// The Haiya! goodbye runs off the UI loop, because signOff waits for the
 	// audio and a slow TTS round trip must not freeze the window. Its signer
 	// carries no UI for the same reason - only the main loop touches UI
-	// state - so the chat log stays untouched while the pet hears her line.
+	// state - so the chat log stays untouched while the buddy hears her line.
 	quitPet = func() {
 		bye := newFarewell()
 		go func() {
@@ -947,14 +947,14 @@ func main() {
 
 	log.Printf("ui ready - type in the textarea, press enter or SEND")
 
-	// Startup greeting: once the pet's entrance animation (skate / parachute /
+	// Startup greeting: once the buddy's entrance animation (skate / parachute /
 	// poof-in, a few seconds) has finished, have the LLM open the day with a
 	// warm hello plus one short did-you-know fact. The result arrives on the
 	// regular Replies channel, so it gets the same bubble/TTS/pet pipeline as
 	// a user-prompted answer. Skipped when the character should be asleep or
 	// busy right now (checked again inside Bot.Greeting).
 	//
-	// It also waits for the pet's say-FIFO to actually be listening before
+	// It also waits for the buddy's say-FIFO to actually be listening before
 	// firing: a fixed timer can fire before the desktop-pet has even created
 	// its pipe (or before its reader is ready), which would silently drop the
 	// greeting's bubble. The grace period then covers the entrance animation.
@@ -1036,7 +1036,7 @@ func main() {
 					if ui.WantPet() { // header "Haiya!" button clicked
 						onHaiya() // launch when teal, poof-out quit when pink
 					}
-					// Settings SAVE flipped DEMO MODE while a pet is
+					// Settings SAVE flipped DEMO MODE while a buddy is
 					// running: quit it now and relaunch the new mode as
 					// soon as the old process is confirmed gone (see the
 					// petGoneCh case), so the toggle takes effect at once
@@ -1108,8 +1108,8 @@ func main() {
 			}
 			// Pet bubble + TTS, kept in sync: the bubble appears only once the
 			// audio is ready to play and closes as soon as playback ends. With
-			// no audio (muted, no engine, or no pet running) the bubble shows
-			// immediately and the pet dismisses it by its normal reading-time
+			// no audio (muted, no engine, or no buddy running) the bubble shows
+			// immediately and the buddy dismisses it by its normal reading-time
 			// duration.
 			audioOn := !ui.Muted() && tts.Enabled()
 			if reply.petPipe != "" && reply.petLine != "" {
@@ -1121,7 +1121,7 @@ func main() {
 					petSayLine(reply.petPipe, reply.petLine)
 				}
 			} else if audioOn {
-				tts.SpeakLine(reply.Text, nil, nil) // speak aloud even without a pet
+				tts.SpeakLine(reply.Text, nil, nil) // speak aloud even without a buddy
 			}
 			// Pet action/event command from [ACTION: ...] / [EVENT: ...]: acted
 			// out on the sibling cmd-FIFO, independent of TTS/bubble timing.
@@ -1129,7 +1129,7 @@ func main() {
 				petCmd(reply.petCmdPipe, reply.petCmdLine)
 			}
 			// An agent's "expr <mood>" travels by the say-FIFO instead: the
-			// pet has no cmd-FIFO verb for expressions, and a bare [mood] tag
+			// buddy has no cmd-FIFO verb for expressions, and a bare [mood] tag
 			// sets the face without opening a speech bubble. Deliberately not
 			// gated on audioOn - the point is the face, not the voice.
 			if reply.petPipe != "" && reply.petExpr != "" {
@@ -1155,8 +1155,8 @@ func main() {
 				dirty = true
 			}
 		case <-petTick.C:
-			// Keep the Haiya! button honest: pink only while a pet is really
-			// listening, so a pet that died on its own flips the button back
+			// Keep the Haiya! button honest: pink only while a buddy is really
+			// listening, so a buddy that died on its own flips the button back
 			// to teal (click relaunches) instead of sending quit into the void.
 			if r := petRunning(petCmdPath); r != ui.PetRunning() {
 				ui.SetPetRunning(r)
@@ -1173,7 +1173,7 @@ func main() {
 			ui.SetPetRunning(false)
 			dirty = true
 			// A quit we made only to pick up a demo-mode flip: bring the
-			// pet straight back with the new -demo setting.
+			// buddy straight back with the new -demo setting.
 			if petRestartPending.CompareAndSwap(true, false) {
 				if err := LaunchPet(ui.PetCharacter(), ui.PetDemo()); err != nil {
 					log.Printf("pet: restart: %v", err)

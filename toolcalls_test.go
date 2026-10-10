@@ -194,7 +194,7 @@ func TestNativeToolLoopRunsStructuredAbility(t *testing.T) {
 	if strings.Contains(res.Text, "AGENT:") {
 		t.Errorf("leftover tag survived into the reply: %q", res.Text)
 	}
-	// The model's own tags still reach finishReply: [happy] drives the pet and
+	// The model's own tags still reach finishReply: [happy] drives the buddy and
 	// is not swallowed by the tool loop.
 	if !strings.HasPrefix(res.petLine, "[happy]") {
 		t.Errorf("petLine = %q, want the model's [happy] tag kept", res.petLine)

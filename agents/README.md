@@ -79,7 +79,7 @@ one `OK`/`ERR` line. Chaining is the *brain's* job.
 | id / folder | kind | what it does |
 |---|---|---|
 | `read_story` | **native** (in the binary) | tells an AI story through the chat/pet/TTS pipeline; params `theme`, `length` (short/medium/long). Native because it reuses the provider keys onidia-chat already holds - downloaded agents never see API keys |
-| `agents/play_song` | downloaded folder | fuzzy-searches your music folder and launches a detached player (`mpv` > `cvlc` > `vlc` > `ffplay`), then asks the pet to dance; param `query` (empty = random) |
+| `agents/play_song` | downloaded folder | fuzzy-searches your music folder and launches a detached player (`mpv` > `cvlc` > `vlc` > `ffplay`), then asks the buddy to dance; param `query` (empty = random) |
 | `agents/play_movie` | downloaded folder | same for videos, with a `fullscreen` toggle |
 | `agents/media_control` | downloaded folder | **the transport buttons**: `pause` / `resume` / `stop` / `status` of whatever a `play_*` agent started, plus `target` (`any`/`song`/`movie`). Pauses mpv through its control socket, other players with `SIGSTOP`/`SIGCONT`; stops with `SIGINT` → `SIGTERM` → `SIGKILL` |
 | `agents/hello_world` | downloaded folder | the reference agent: greets you by name |
@@ -150,7 +150,7 @@ Install them:
 ```sh
 #!/bin/sh
 read -r line                            # RUN {"title":"Havana"}
-echo "PET action dance"                 # optional: make the pet act it out
+echo "PET action dance"                 # optional: make the buddy act it out
 echo "OK Playing Havana by Camila Cabello"
 ```
 
@@ -176,7 +176,7 @@ echo "OK Playing Havana by Camila Cabello"
   (double-fork, `setsid`, systemd-run) and return immediately - onidia-chat
   kills a still-running agent 2s after the terminal line.
 - `OK` message becomes part of the reply (keep it short, plain text, no
-  markdown/emoji - the pet reads it aloud with a bitmap font).
+  markdown/emoji - the buddy reads it aloud with a bitmap font).
 - v1 trust model: agents run with your privileges from a user-writable
   folder, no sandbox. Install only agents you trust.
 

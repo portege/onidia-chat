@@ -16,7 +16,7 @@ import (
 // Env is the resolved environment context, filled by the caller from the same
 // values onidia-chat already computed (flag > config > default precedence).
 type Env struct {
-	Pipe        string   // resolved pet say-FIFO ("" = forwarding disabled)
+	Pipe        string   // resolved buddy say-FIFO ("" = forwarding disabled)
 	AgentsDirs  []string // agent discovery directories, in precedence order
 	AgentsOff   bool     // agent discovery disabled
 	ImageSource string   // "pixabay" | "wiki" | "gemini" | "off"

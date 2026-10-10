@@ -40,14 +40,14 @@ const (
 
 // agentRun is the outcome of one executed ability call: a [AGENT: ...] tag
 // (Phase 2) or a native tool call (Phase 3) - both end in the same runner, so
-// the feedback block, the reply folding and the pet command work identically
+// the feedback block, the reply folding and the buddy command work identically
 // whichever way the model asked.
 type agentRun struct {
 	Payload string      // raw tag payload / canonical native call key (the per-reply repeat key)
 	CallID  string      // the provider's native call id this run answers ("" for a tag call)
 	ID      string      // parsed agent id ("" when the tag itself was malformed)
 	Msg     string      // OK message, folded into the reply
-	PetCmd  string      // optional pet cmd-FIFO line
+	PetCmd  string      // optional buddy cmd-FIFO line
 	Image   image.Image // optional decoded chart PNG (IMG png), first non-nil wins
 	Err     error       // parse/validation/run failure: shown to user AND model
 }
@@ -76,7 +76,7 @@ func stripAgentTags(s string) string {
 }
 
 // runAgentCall parses and executes ONE [AGENT: ...] payload under ctx and
-// returns its outcome: the parsed id, the agent's message plus optional pet
+// returns its outcome: the parsed id, the agent's message plus optional buddy
 // command on success, or the parse/validation/run error (logged here, then
 // shown to the user AND reported back to the model by the loop).
 func runAgentCall(ctx context.Context, payload string) agentRun {
@@ -227,8 +227,8 @@ func agentResultsBlock(runs []agentRun) string {
 	return "<<<AGENT>>>\n" + agentResultLines(runs) + "<<<END AGENT>>>" + agentResultsInstruction
 }
 
-// agentPetCmd returns the first pet command any run produced (the Phase 1
-// rule: ONE action/event line per reply reaches the pet).
+// agentPetCmd returns the first buddy command any run produced (the Phase 1
+// rule: ONE action/event line per reply reaches the buddy).
 func agentPetCmd(runs []agentRun) string {
 	for _, r := range runs {
 		if r.PetCmd != "" {
@@ -387,7 +387,7 @@ func (b *Bot) runTagLoop(sys string, history []Msg, userText string) (string, []
 	conv := append([]Msg(nil), history...)
 	// final stays the RAW answer of the newest model turn: [mood], [ACTION:],
 	// [EVENT:] and [IMG:] tags still have to reach finishReply - stripping them
-	// here would silently drop the pet's mood/action and the picture. Only the
+	// here would silently drop the buddy's mood/action and the picture. Only the
 	// copy fed back to the model has the dispatched tags removed.
 	final := raw
 	for step := 0; step < agentStepLimit; step++ {

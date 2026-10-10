@@ -123,7 +123,7 @@ func runScriptAgent(t *testing.T, body string) (Result, error) {
 
 // TestExternalAgentPetCmd covers the optional character-control line: the
 // canonical form is forwarded, a well-formed unknown name passes through (the
-// brain, which owns the pet's tables, drops it), and a malformed or repeated
+// brain, which owns the buddy's tables, drops it), and a malformed or repeated
 // directive fails the run loudly instead of reaching the cmd-FIFO.
 func TestExternalAgentPetCmd(t *testing.T) {
 	res, err := runScriptAgent(t, "echo 'PET action dance'\necho 'OK playing'\n")

@@ -3,7 +3,7 @@
 // Answers "will onidia-chat actually work right now?" without opening the UI:
 // the selected LLM backend reachable/credentialed (ollama server + model,
 // Gemini key + API, Bedrock credentials, OpenRouter key + API) plus the host
-// environment (display, audio player, pet pipe, agents dir, image source).
+// environment (display, audio player, buddy pipe, agents dir, image source).
 // It runs the same internal/preflight checks onidia-chat's startup gate runs,
 // so what it reports is exactly what the app would launch with.
 //

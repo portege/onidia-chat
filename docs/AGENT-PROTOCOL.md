@@ -70,7 +70,7 @@ after that). Working directory = the agent's folder.
 ```
 brain -> agent   RUN <json-object>\n
 agent -> brain   INFO <text>\n           # optional, repeatable: logged only
-agent -> brain   PET <command>\n        # optional, before OK: drive the pet
+agent -> brain   PET <command>\n        # optional, before OK: drive the buddy
 agent -> brain   IMG png <base64>\n      # optional, before OK: one chart image
 agent -> brain   OK <message>\n          # terminal: message joins the reply
                | ERR <text>\n            # terminal: shown as the failure
@@ -91,7 +91,7 @@ agent -> brain   OK <message>\n          # terminal: message joins the reply
 
 ### Control the character (`PET`)
 
-An ability can make the pet **act it out** - the song agent starts a dance, a
+An ability can make the buddy **act it out** - the song agent starts a dance, a
 "look outside" agent could ask for a peek. Emit one optional line **before**
 your `OK`:
 
@@ -110,25 +110,25 @@ Rules:
   `parachute`, `skateboard` and synonyms used bare, or `walk|go|move` plus
   `left|right`. `action|event|expr` then take **one** name matching
   `[a-z][a-z0-9_]*` - `PET action dance; rm -rf /` is rejected and the run
-  fails. The line ends up in the pet's command FIFO, so nothing else may ride
+  fails. The line ends up in the buddy's command FIFO, so nothing else may ride
   in it;
 - **an unknown verb fails the whole run** (`agent <id>: PET: unknown command
   "..."`) - the reply is discarded, not softened. **An unknown *name* does not**:
-  the shape is right, the pet just does not know it, so onidia-chat logs
-  `ignoring unknown pet command`, drops it, and the reply still succeeds;
+  the shape is right, the buddy just does not know it, so onidia-chat logs
+  `ignoring unknown buddy command`, drops it, and the reply still succeeds;
 - it is a **fallback**: when the model already used `[ACTION: ...]` /
   `[EVENT: ...]` for that reply, the model's choice wins;
-- with `-pet-pipe off` (pet forwarding disabled) nothing is written;
+- with `-pet-pipe off` (buddy forwarding disabled) nothing is written;
 - a native (in-process) agent does the same by returning
   `agent.Result{PetCmd: "action dance"}`.
 
-Names come from the pet's own tables - the same ones the model may use:
+Names come from the buddy's own tables - the same ones the model may use:
 
 | actions | events |
 |---|---|
 | `skip` `juggle` `dance` `eat` `work` `guitar` `sneeze` `sixseven` `basketball` `drive` `ride` `kitten` `wave` | `love` `idea` `celebration` `sleep` `peace` `halloween` `matrix` `magic` `robot` |
 
-(`disappear`/`appear` are internal pet states - never use them.)
+(`disappear`/`appear` are internal buddy states - never use them.)
 
 ### Attach one chart image (IMG)
 
@@ -139,7 +139,7 @@ encoding, single line, no whitespace) of PNG bytes. At most ONE per run,
 only before `OK`/`ERR` - a second `IMG` fails the whole run (`agent <id>:
 duplicate IMG line`), the same rule as `PET`. Caps: the encoded line must
 fit the 1 MB scanner; the decoded PNG must be at most 800x600px (examples
-target 260x200, the pet bubble box). The decoder checks PNG magic bytes
+target 260x200, the buddy bubble box). The decoder checks PNG magic bytes
 and decodes with `image/png`; bad base64, non-PNG bytes, or oversized dims
 fail the run with `agent <id>: IMG: ...` and the reply is discarded, like a
 bad `PET`. On an `ERR` run the image is dropped (same as `PET`). The text
@@ -202,7 +202,7 @@ carry several `[AGENT: ...]` tags:
    ends the loop instead of triggering the side effect twice. Tags left over
    after the last round are stripped from the display, not executed.
 
-Every `OK` message still joins the reply text (and the pet's speech); every
+Every `OK` message still joins the reply text (and the buddy's speech); every
 `ERR` is still shown to the user in parentheses - the model just gets to
 explain or retry in its own words first.
 
@@ -246,7 +246,7 @@ Both paths share every rule of the loop above: at most 4 abilities at a time,
 one 60 s budget, at most 3 rounds, results sanitized into the same
 `<<<AGENT>>>` data block (native tool results are one-line `OK …` / `ERR …`
 texts), dedupe by ability + arguments, and `OK`/`ERR` still reach the reply and
-the pet.
+the buddy.
 
 ## CLI - agentctl
 

@@ -83,7 +83,7 @@ func TestRandomFarewell(t *testing.T) {
 
 // TestSignOffThroughFIFOs is the graceful-shutdown contract over real pipes:
 // the wave goes to the cmd FIFO, the mood-prefixed farewell to the say FIFO,
-// and the silent path leaves the bubble standing (the pet closes it by reading
+// and the silent path leaves the bubble standing (the buddy closes it by reading
 // time) without ever holding the shutdown as long as the spoken grace allows.
 func TestSignOffThroughFIFOs(t *testing.T) {
 	dir := t.TempDir()
@@ -131,7 +131,7 @@ func TestSignOffThroughFIFOs(t *testing.T) {
 		t.Fatal("signOff said nothing")
 	}
 	// The silent path holds for one reading pause, never for the spoken
-	// grace period: a dead or silent pet must not stall a shutdown.
+	// grace period: a dead or silent buddy must not stall a shutdown.
 	if elapsed := time.Since(start); elapsed > farewellSpokenGrace {
 		t.Errorf("signOff held the shutdown for %v", elapsed)
 	}

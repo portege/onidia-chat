@@ -144,7 +144,7 @@ func TestFaceBadgeSymmetric(t *testing.T) {
 // drawing is now wrong. This measures where the hair ties actually land.
 //
 // The ties are the mark's only pure-pink feature, so their pixels are easy to
-// isolate, and the pet puts them 27 units either side of the head's centre.
+// isolate, and the buddy puts them 27 units either side of the head's centre.
 func TestFaceBadgeTiePlacement(t *testing.T) {
 	const r = 42
 	img := badgeAt(r)
@@ -166,7 +166,7 @@ func TestFaceBadgeTiePlacement(t *testing.T) {
 	if n[0] == 0 || n[1] == 0 {
 		t.Fatalf("ties: %d and %d px, want both present", n[0], n[1])
 	}
-	// The pet puts the ties 27 units either side of the head's centre, and the
+	// The buddy puts the ties 27 units either side of the head's centre, and the
 	// badge scales the mark by (r-2)/logoFar.
 	want := 27.0 * float64(r-2) / logoFar
 	for i, side := range []string{"left", "right"} {

@@ -159,9 +159,9 @@ func TestReplyRunsAgentEndToEnd(t *testing.T) {
 	}
 }
 
-// TestReplyPetCmdPrecedenceAndTrust pins the rules for the pet command an
+// TestReplyPetCmdPrecedenceAndTrust pins the rules for the buddy command an
 // ability can ask for: the model's own [ACTION:]/[EVENT:] tag wins, the agent's
-// line is only a fallback, and an agent naming a pose the pet does not have is
+// line is only a fallback, and an agent naming a pose the buddy does not have is
 // dropped instead of being written to the cmd-FIFO.
 func TestReplyPetCmdPrecedenceAndTrust(t *testing.T) {
 	agent.Reset()
@@ -180,7 +180,7 @@ func TestReplyPetCmdPrecedenceAndTrust(t *testing.T) {
 		t.Errorf("petCmdLine = %q, want the model's action wave", res.petCmdLine)
 	}
 
-	// With no model tag, the agent's command drives the pet.
+	// With no model tag, the agent's command drives the buddy.
 	res = newBot("[AGENT: echoer text=go]\nhi").Reply([]Msg{{From: "you", Text: "go"}}, "go")
 	if res.petCmdLine != "action dance" {
 		t.Errorf("petCmdLine = %q, want the agent's action dance", res.petCmdLine)

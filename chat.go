@@ -7,7 +7,7 @@ package main
 // (see pet.go) so Onidia speaks them, using a leading [mood] tag the model is
 // asked to emit. When images are enabled, the model can also emit an [IMG: ...]
 // tag; the app fetches or generates the picture, shows it above the bot's
-// bubble, and hands it to the pet bridge so the same picture shows up in
+// bubble, and hands it to the buddy bridge so the same picture shows up in
 // Onidia's speech bubble. Without a provider configured the bot falls back to
 // a stub so the UI keeps working offline.
 
@@ -41,9 +41,9 @@ const (
 	maxHistTurns  = 20 // conversation turns sent as context
 )
 
-// botPersona shapes every answer: short (the pet bubble is small), playful,
+// botPersona shapes every answer: short (the buddy bubble is small), playful,
 // no markdown/emoji (the bitmap font cannot draw them), and an optional
-// leading [mood] tag that drives the pet's facial expression.
+// leading [mood] tag that drives the buddy's facial expression.
 const botPersona = `You are Buddy, a tiny cheerful chat companion living in a chat window on a ` +
 	`Linux desktop, friends with Onidia, a desktop-pet chibi girl. ` +
 	`Keep every reply SHORT and playful: 1-3 plain sentences, no markdown, no emoji, no lists ` +
@@ -70,10 +70,10 @@ const imageTagInstruction = ` When your answer would benefit from an image (plac
 // match a real page. Descriptive phrases ("sunny beach with palm trees") 404.
 const wikiImageTagInstruction = ` When your answer would benefit from an image (place, landmark, animal, famous person, object, food, etc.), start your reply with "[IMG: <concise Wikipedia article title>]" on its own line. Pick a single, well-known article name (e.g. "Bali", "Eiffel Tower", "Capybara"), not a descriptive sentence. If you also want to express an emotion, put the image tag first, then the mood tag. All tags are stripped before display.`
 
-// visualLanguageInstruction teaches the model the pet's action/event tags so a
-// reply can also make the pet pose (action) or overlay FX (event), not just
+// visualLanguageInstruction teaches the model the buddy's action/event tags so a
+// reply can also make the buddy pose (action) or overlay FX (event), not just
 // change her expression. The app parses these out of the reply header and
-// forwards them to the pet's command FIFO; the tags are stripped before the
+// forwards them to the buddy's command FIFO; the tags are stripped before the
 // text is shown. The INI's system-prompt-multi typically carries a fuller
 // version (see docs/llm-visual-language.md); this default keeps the built-in
 // persona consistent when no config overrides it.
@@ -99,7 +99,7 @@ type Bot struct {
 	Model             string // provider-specific model ID
 	APIURL            string // Gemini endpoint base
 	PetPipe           string // desktop-pet say FIFO; empty disables forwarding
-	PetThinkingOff    bool   // pet bridge honours "thinking = off" too; negative so &Bot{} keeps today's behaviour (see petThinking)
+	PetThinkingOff    bool   // buddy bridge honours "thinking = off" too; negative so &Bot{} keeps today's behaviour (see petThinking)
 	SystemInstruction string // system prompt sent to every model
 	ImageSource       string // "pixabay" | "wiki" | "gemini" | "off"
 	ForceImageKeyword string // if set, always fetch/generate an image for this keyword
@@ -138,19 +138,19 @@ func NewBot() *Bot {
 	}
 }
 
-// ReplyResult is what Bot.Reply returns: text plus an optional image. The pet
+// ReplyResult is what Bot.Reply returns: text plus an optional image. The buddy
 // say-pipe line (with mood/image tags) travels with it so the bubble can be
 // shown in sync with text-to-speech playback instead of the moment the text is
-// generated (see main.go). An optional pet command (action/event from the
+// generated (see main.go). An optional buddy command (action/event from the
 // LLM's [ACTION: ...] / [EVENT: ...] reply tags) travels alongside it so the
-// pet can act out the reply.
+// buddy can act out the reply.
 type ReplyResult struct {
 	Text  string
 	Image image.Image
 
 	// Thinking is the model's <THINKING>...</THINKING> reasoning, shown in the
 	// UI as its own thought-cloud bubble ABOVE the speech bubble. It is
-	// deliberately absent from Text: the answer is what the pet speaks and what
+	// deliberately absent from Text: the answer is what the buddy speaks and what
 	// goes into the reply, and reasoning must not be read aloud. Empty when the
 	// provider sends no reasoning.
 	Thinking string
@@ -316,7 +316,7 @@ const agentPayloadPat = `(?:"[^"]*"|[^\]"])*`
 // the raw agent payload (id + key=value args, parsed by agent.ParseCall).
 var replyTag = regexp.MustCompile(`(\[IMG:\s*([^\]]*)\]|\[ACTION:\s*([a-zA-Z]+)\]|\[EVENT:\s*([a-zA-Z]+)\]|\[([a-zA-Z]+)\]|\[AGENT:\s*(` + agentPayloadPat + `)\])[ \t]*`)
 
-// petMoods are the tags the pet understands (see desktop-pet docs).
+// petMoods are the tags the buddy understands (see desktop-pet docs).
 var petMoods = map[string]bool{
 	"happy": true, "wink": true, "sad": true, "thinking": true,
 	"anxious": true, "angry": true, "surprised": true, "sleepy": true,
@@ -324,21 +324,21 @@ var petMoods = map[string]bool{
 	"skeptical": true, "embarrassed": true, "neutral": true, "adore": true,
 }
 
-// petActions are the pose animations the pet knows (desktop-pet actions.go).
+// petActions are the pose animations the buddy knows (desktop-pet actions.go).
 var petActions = map[string]bool{
 	"skip": true, "juggle": true, "dance": true, "eat": true, "work": true,
 	"guitar": true, "sneeze": true, "sixseven": true, "basketball": true,
 	"drive": true, "ride": true, "kitten": true, "wave": true,
 }
 
-// petEvents are the overlay FX the pet knows (desktop-pet events.go).
+// petEvents are the overlay FX the buddy knows (desktop-pet events.go).
 var petEvents = map[string]bool{
 	"love": true, "idea": true, "celebration": true, "sleep": true,
 	"peace": true, "disappear": true, "appear": true, "halloween": true,
 	"matrix": true, "magic": true, "robot": true,
 }
 
-// petMove describes one locomotion verb the pet's behaviour layer knows. args
+// petMove describes one locomotion verb the buddy's behaviour layer knows. args
 // is the set of arguments the verb accepts, or nil when it takes none - which
 // matters for more than tidiness: it is what keeps a second command from being
 // smuggled onto the cmd-FIFO behind a valid verb (see knownPetCmd).
@@ -355,7 +355,7 @@ func petMoveArgs(a ...string) petMove { // gofmt-friendly helper
 	return petMove{args: m}
 }
 
-// petMoves are the pet's own movement commands (desktop-pet behaviour.go).
+// petMoves are the buddy's own movement commands (desktop-pet behaviour.go).
 // walk/go/move take an optional direction; the rest take nothing.
 var petMoves = map[string]petMove{
 	"stand": petMoveNoArg(), "stop": petMoveNoArg(), "freeze": petMoveNoArg(),
@@ -373,7 +373,7 @@ var petMoves = map[string]petMove{
 }
 
 // knownPetCmd reports whether an agent-supplied cmd-FIFO line names a
-// pose/FX/movement the pet actually has. An ability is third-party code, so its
+// pose/FX/movement the buddy actually has. An ability is third-party code, so its
 // PET line is checked against the same tables the model's [ACTION:]/[EVENT:]
 // tags are: an unknown name is logged and dropped, never written to the FIFO.
 //
@@ -403,10 +403,10 @@ func knownPetCmd(line string) bool {
 }
 
 // petExprOf returns the mood name when line is an "expr <mood>" command.
-// Expressions are the odd one out: the pet has NO cmd-FIFO verb for them.
+// Expressions are the odd one out: the buddy has NO cmd-FIFO verb for them.
 // Its face is set from the say-FIFO by a bare [mood] tag with no text, which
 // holds the expression for a few seconds without opening a speech bubble -
-// exactly what the pet controller app sends. So this is the one PET verb that
+// exactly what the buddy controller app sends. So this is the one PET verb that
 // has to travel on the other pipe.
 func petExprOf(line string) (string, bool) {
 	verb, name, _ := strings.Cut(strings.TrimSpace(line), " ")
@@ -417,7 +417,7 @@ func petExprOf(line string) (string, bool) {
 	return name, petMoods[name]
 }
 
-// moodHint pairs one pet mood with the lowercase phrases that suggest it.
+// moodHint pairs one buddy mood with the lowercase phrases that suggest it.
 type moodHint struct {
 	mood  string
 	words []string
@@ -446,7 +446,7 @@ var moodHints = []moodHint{
 	{"happy", []string{"yay", "awesome", "amazing", "congrats", "congratulations", "woohoo", "party", "celebrate", "celebration", "happy", "glad", "excited", "good news", "great job", "you're the best", "love you", "love it", "birthday"}},
 }
 
-// inferMood guesses a pet mood from the reply text when the model skips the
+// inferMood guesses a buddy mood from the reply text when the model skips the
 // [mood] tag. Returns "neutral" when nothing matches. Used only as a fallback,
 // so a real tag the model emits always wins.
 func inferMood(text string) string {
@@ -583,22 +583,22 @@ func (b *Bot) quietNow() bool {
 }
 
 // finishReply post-processes a raw model answer: splits off the mood, image,
-// action and event tags, fetches the picture, builds the pet say/cmd lines,
+// action and event tags, fetches the picture, builds the buddy say/cmd lines,
 // and packages everything into a ReplyResult. Shared by Reply and Greeting.
 // runs holds the abilities the agent loop already executed (nil for
-// greetings): their messages join the reply text and the first pet command
+// greetings): their messages join the reply text and the first buddy command
 // they produced is forwarded when the model sent no [ACTION:]/[EVENT:] tag.
 func (b *Bot) finishReply(rawReply string, runs []agentRun, agentImg image.Image) ReplyResult {
 	// Split off the mood, image, action and event tags: chat shows bare text,
-	// the pet gets the mood plus an optional action/event command, and the
+	// the buddy gets the mood plus an optional action/event command, and the
 	// image tag drives the picture (if enabled). Leftover [AGENT: ...] tags
 	// (the loop's step limit was hit) are stripped from the display here.
 	// Peels the <THINKING> block off FIRST, so a tag inside the reasoning can
-	// never drive the pet, the pager or an ability - a model that writes
+	// never drive the buddy, the pager or an ability - a model that writes
 	// "[AGENT: play_song ...]" while thinking has not asked for anything.
 	thinking, answer := splitThinking(rawReply)
 	// Split off the mood, image, action and event tags: chat shows bare text,
-	// the pet gets the mood plus an optional action/event command, and the
+	// the buddy gets the mood plus an optional action/event command, and the
 	// image tag drives the picture (if enabled). Leftover [AGENT: ...] tags
 	// (the loop's step limit was hit) are stripped from the display here.
 	mood, imgDesc, action, event, _, text := stripTags(answer)
@@ -615,8 +615,8 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun, agentImg image.Image
 	text = scrubTags(text)
 	thinking = scrubTags(thinking)
 	// The model sometimes skips the [mood] tag entirely (the replies come back
-	// as plain text), leaving the pet with a blank neutral face. Fall back to
-	// a keyword guess so the pet's expression still matches the reply.
+	// as plain text), leaving the buddy with a blank neutral face. Fall back to
+	// a keyword guess so the buddy's expression still matches the reply.
 	if mood == "" {
 		mood = inferMood(text)
 	}
@@ -665,9 +665,9 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun, agentImg image.Image
 	}
 
 	// The say-line is only BUILT here (image -> temp PNG, mood tag); it is
-	// written to the pet's FIFO by main.go, synchronised with TTS playback.
+	// written to the buddy's FIFO by main.go, synchronised with TTS playback.
 	// The action/event command (if any) rides along on the sibling cmd-FIFO,
-	// and only exists when pet forwarding is enabled (mirroring buildPetSayLine).
+	// and only exists when buddy forwarding is enabled (mirroring buildPetSayLine).
 	cmdLine, exprLine := "", ""
 	if b.PetPipe != "" {
 		switch {
@@ -702,7 +702,7 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun, agentImg image.Image
 }
 
 // petThinking applies the THINKING BUBBLE setting to the block headed for the
-// pet's say-pipe. The chat window hides the cloud itself (UI.think), but the
+// buddy's say-pipe. The chat window hides the cloud itself (UI.think), but the
 // line still travels to onidia, which would draw its own cloud from it - so the
 // block is dropped here instead of shipped and ignored.
 func (b *Bot) petThinking(thinking string) string {
@@ -713,7 +713,7 @@ func (b *Bot) petThinking(thinking string) string {
 }
 
 // effectiveSystem returns the system prompt to send for a chat reply. The
-// visual-language instruction (pet action/event tags) is always included; when
+// visual-language instruction (buddy action/event tags) is always included; when
 // images are enabled it also appends the image-tag instruction, unless the
 // prompt already contains one (custom prompts may define their own convention).
 func effectiveSystem(base, imageSource string) string {
@@ -805,9 +805,9 @@ func userDataBlock(text string) string {
 // -> page-break conversion downstream still sees them. agentCalls holds the
 // raw payload of every header-position [AGENT: ...] tag, in order (empty when
 // none) - Phase 2 executes all of them.
-// thinkTagOpen / thinkTagClose are the literal markers the pet recognises.
-// They are spelled out rather than derived from the regex, so the tag the pet
-// is told to look for and the tag the pet actually parses are the same two
+// thinkTagOpen / thinkTagClose are the literal markers the buddy recognises.
+// They are spelled out rather than derived from the regex, so the tag the buddy
+// is told to look for and the tag the buddy actually parses are the same two
 // strings.
 const (
 	thinkTagOpen  = "<THINKING>"
@@ -825,7 +825,7 @@ var thinkingRe = regexp.MustCompile(`(?is)<thinking>(.*?)</thinking>`)
 // shows it in its own thought-cloud bubble.
 //
 // It runs BEFORE stripTags so a tag inside the reasoning ([mood], [AGENT: ...])
-// can never reach the pet, the pager or an ability. That matters: a [AGENT:
+// can never reach the buddy, the pager or an ability. That matters: a [AGENT:
 // ...] tag mentioned while "thinking" is not a request, and acting on it would
 // run something the user never asked for.
 //
@@ -932,7 +932,7 @@ func stripTags(raw string) (mood, imgDesc, action, event string, agentCalls []st
 		case loc[12] >= 0: // [AGENT: id key=value ...]
 			// Captured as raw payload whatever the id - agentbridge.go
 			// reports unknown agents / bad args to the user instead of
-			// dropping them silently like unknown pet actions.
+			// dropping them silently like unknown buddy actions.
 			if counted {
 				agentCalls = append(agentCalls, strings.TrimSpace(text[loc[12]:loc[13]]))
 			}
@@ -1045,7 +1045,7 @@ func unclosedTagEnd(s string, i int) int {
 }
 
 // scrubTags hides bracket markup in a reply, so the bubble (and the cloud, and
-// the pet's say-line) show the model's words and never the plumbing it wrote
+// the buddy's say-line) show the model's words and never the plumbing it wrote
 // for the app. stripTags removes every well-formed tag; four shapes reached the
 // bubble anyway, all of them seen in the chat:
 //
@@ -1153,7 +1153,7 @@ func isNameByte(c byte) bool {
 // markdownLink reports whether the "[label]" that ends at end is the label of a
 // markdown link, i.e. is followed by a "(target)" holding no blanks, and returns
 // the index just past that target. Models write links rarely, but dropping the
-// label and leaving a bare "(https://...)" behind - in a bubble the pet also
+// label and leaving a bare "(https://...)" behind - in a bubble the buddy also
 // speaks - would read worse than either half alone.
 func markdownLink(s string, end int) (targetEnd int, ok bool) {
 	if end >= len(s) || s[end] != '(' {
@@ -1180,7 +1180,7 @@ func firstColon(s string) int {
 
 // newlineToPageBreak turns every newline form a model reply might use - an
 // actual LF/CRLF, or the literal two-character escape "\n" LLMs often emit -
-// into a form-feed page break (\f). The chat bubble (and the pet bubble, which
+// into a form-feed page break (\f). The chat bubble (and the buddy bubble, which
 // keeps \f verbatim in sanitizeSay) splits pages on \f, so each paragraph the
 // model separated with a newline becomes one page in the pager strip.
 func newlineToPageBreak(s string) string {

@@ -92,7 +92,7 @@ func TestEnvPetPipe(t *testing.T) {
 		if err := syscall.Mkfifo(p, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		// The reader side (the pet) stays open for the probe.
+		// The reader side (the buddy) stays open for the probe.
 		reader, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 		if err != nil {
 			t.Fatal(err)

@@ -177,7 +177,7 @@ def main():
         return 1
     save_session("play_song", proc.pid, title, path, os.path.basename(player[0]), ipc)
     out("INFO player: %s" % " ".join(player + flags))
-    out("PET action dance")  # the pet should act the music out (disco!)
+    out("PET action dance")  # the buddy should act the music out (disco!)
     out("OK Playing %s" % title)
     return 0
 
