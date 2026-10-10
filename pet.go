@@ -116,51 +116,67 @@ func petCmdPathFor(sayPath string) string {
 var petMu sync.Mutex
 var petProc *os.Process // the onidia instance onidia-chat launched, if any
 
-// onidiaPath resolves the onidia/desktop-pet binary, in the same spirit as
-// the buddy's own chat-app.ini lookup: a sibling onidia/ directory, a sibling
-// desktop-pet/ directory (older layout), or the conventional absolute repo
-// path. Returns "" when no candidate is executable.
+// onidiaPath resolves the buddy binary. The candidates, in order:
 //
-// TODO: the config-path bug again, pointed at the buddy binary instead of the
-// config file, and left open because the fix belongs with its own commit.
-// Nothing here knows about a package install. The exe-relative candidate is
-// <exedir>/../onidia/onidia, which from /opt/onidia/bin resolves to
-// /opt/onidia/onidia/onidia - it does not exist, while the .deb really puts
-// the buddy at /opt/onidia/bin/onidia. The two /home/boi/... entries below are
-// therefore the only candidates a .deb install can satisfy, and they satisfy
-// it only on the machine whose username was typed in; there LaunchPet then
-// starts the development checkout instead of the installed binary. Everywhere
-// else LaunchPet returns "onidia binary not found" and no buddy starts at all.
+//	onidia/onidia                 run from the repo root (development checkout)
+//	desktop-pet/desktop-pet       the same, older name for the buddy
+//	<exedir>/onidia               the .deb ships both binaries in /opt/onidia/bin,
+//	                              so the buddy is a sibling of onidia-chat
+//	<exedir>/desktop-pet          the same, older name
+//	<exedir>/../onidia/onidia     the checkout again, binary run in place
+//	<exedir>/../desktop-pet/desktop-pet
+//	../onidia/onidia              run from a directory beside onidia-chat/
+//	../desktop-pet/desktop-pet    the same, older name
+//	onidia on $PATH               the .deb also symlinks /usr/bin/onidia
 //
-// The fix is the one confpath.Candidates already has for chat-app.ini: try
-// the binary's own directory too (<exedir>/onidia) and drop the literal home
-// paths, leaving working directory then next-to-binary first. Deliberately
-// not folded into the config-path commit, which touched the file lookup only.
+// "Next to the binary" is what makes a package install work: the .deb puts
+// onidia-chat at /opt/onidia/bin/onidia-chat with the buddy right beside it,
+// and a desktop launcher runs the chat with any old working directory, so
+// the working-directory candidates cannot be relied on there. The kernel
+// resolves os.Executable() through the /usr/bin symlink (/proc/self/exe is
+// always the real path), so the exe-relative candidates fire whether
+// onidia-chat was started as /usr/bin/onidia-chat or as
+// /opt/onidia/bin/onidia-chat.
+//
+// No developer home directory is probed: a missing buddy is an error, not a
+// reason to launch someone's checkout. Returns "" when no candidate is
+// executable.
 func onidiaPath() string {
-	if p, err := os.Stat("onidia/onidia"); err == nil && !p.IsDir() && p.Mode()&0o111 != 0 {
-		return "onidia/onidia"
-	}
-	if p, err := os.Stat("desktop-pet/desktop-pet"); err == nil && !p.IsDir() && p.Mode()&0o111 != 0 {
-		return "desktop-pet/desktop-pet"
-	}
-	cands := []string{
-		"../onidia/onidia", // relative to onidia-chat/ working dir
-		"../desktop-pet/desktop-pet",
-		"/home/boi/repo/ai-helper/onidia/onidia",
-		"/home/boi/repo/ai-helper/desktop-pet/desktop-pet",
-	}
-	if exe, err := os.Executable(); err == nil {
-		cands = append([]string{
-			filepath.Join(filepath.Dir(exe), "..", "onidia", "onidia"),
-			filepath.Join(filepath.Dir(exe), "..", "desktop-pet", "desktop-pet"),
-		}, cands...)
-	}
-	for _, c := range cands {
+	exe, _ := os.Executable()
+	for _, c := range onidiaCandidates(exe) {
 		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
 			return c
 		}
 	}
 	return ""
+}
+
+// onidiaCandidates lists the paths onidiaPath probes, in order (see there);
+// exe is the resolved path of this process, "" when it is unavailable.
+// Split out from onidiaPath so the order and the package layout can be
+// asserted in a test without moving the binary under test.
+func onidiaCandidates(exe string) []string {
+	cands := []string{
+		"onidia/onidia",
+		"desktop-pet/desktop-pet",
+	}
+	if exe != "" {
+		d := filepath.Dir(exe)
+		cands = append(cands,
+			filepath.Join(d, "onidia"),
+			filepath.Join(d, "desktop-pet"),
+			filepath.Join(d, "..", "onidia", "onidia"),
+			filepath.Join(d, "..", "desktop-pet", "desktop-pet"),
+		)
+	}
+	cands = append(cands,
+		"../onidia/onidia",
+		"../desktop-pet/desktop-pet",
+	)
+	if p, err := exec.LookPath("onidia"); err == nil {
+		cands = append(cands, p)
+	}
+	return cands
 }
 
 // ensureOnidiaFresh rebuilds the onidia binary when any of its .go sources is
@@ -252,7 +268,7 @@ func normalizeGender(v string) string {
 func LaunchPet(character string, demo bool) error {
 	bin := onidiaPath()
 	if bin == "" {
-		return errors.New("onidia binary not found - looked for onidia/onidia, desktop-pet/desktop-pet")
+		return errors.New("onidia binary not found - looked in the working dir, next to onidia-chat, and on PATH (install the onidia .deb, or run from the repo root)")
 	}
 	if err := ensureOnidiaFresh(bin); err != nil {
 		log.Printf("pet: refresh build skipped (%v) - launching the existing binary", err)

@@ -449,3 +449,91 @@ func TestPetSayLineKeepsSayImage(t *testing.T) {
 		t.Fatal("timed out waiting for the say-line")
 	}
 }
+
+// writeExe drops an executable file at path, creating its parent directory -
+// the stand-in for a buddy binary on disk.
+func writeExe(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOnidiaCandidates pins the resolution order, above all the package
+// layout: the .deb installs both binaries into /opt/onidia/bin, so from
+// /opt/onidia/bin/onidia-chat the buddy is the sibling ./onidia - and no
+// candidate may probe a developer home directory.
+func TestOnidiaCandidates(t *testing.T) {
+	t.Setenv("PATH", "") // keep exec.LookPath out of the assertions
+	cands := onidiaCandidates("/opt/onidia/bin/onidia-chat")
+	want := []string{
+		"onidia/onidia",
+		"desktop-pet/desktop-pet",
+		"/opt/onidia/bin/onidia", // the .deb layout
+		"/opt/onidia/bin/desktop-pet",
+		"/opt/onidia/onidia/onidia", // filepath.Join cleans the ".."
+		"/opt/onidia/desktop-pet/desktop-pet",
+		"../onidia/onidia",
+		"../desktop-pet/desktop-pet",
+	}
+	if len(cands) != len(want) {
+		t.Fatalf("onidiaCandidates() = %q, want %q", cands, want)
+	}
+	for i := range want {
+		if cands[i] != want[i] {
+			t.Errorf("candidate %d = %q, want %q", i, cands[i], want[i])
+		}
+	}
+	for _, c := range cands {
+		if strings.HasPrefix(c, "/home/") {
+			t.Errorf("candidate %q probes a developer home directory", c)
+		}
+	}
+}
+
+// TestOnidiaPathPrefersWorkingDirectory walks the development-checkout
+// resolution: working dir first, older name second, directories never
+// mistaken for the binary, and nothing at all reported as "".
+func TestOnidiaPathPrefersWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("PATH", "")
+	writeExe(t, filepath.Join(dir, "onidia", "onidia"))
+	writeExe(t, filepath.Join(dir, "desktop-pet", "desktop-pet"))
+	if got := onidiaPath(); got != "onidia/onidia" {
+		t.Fatalf("onidiaPath() = %q, want %q", got, "onidia/onidia")
+	}
+	if err := os.Remove(filepath.Join(dir, "onidia", "onidia")); err != nil {
+		t.Fatal(err)
+	}
+	if got := onidiaPath(); got != "desktop-pet/desktop-pet" {
+		t.Fatalf("onidiaPath() = %q, want %q", got, "desktop-pet/desktop-pet")
+	}
+	if err := os.Remove(filepath.Join(dir, "desktop-pet", "desktop-pet")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "onidia", "onidia"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := onidiaPath(); got != "" {
+		t.Fatalf("onidiaPath() = %q, want \"\" (a directory is not the buddy)", got)
+	}
+}
+
+// TestOnidiaPathFallsBackToPATH covers the last candidate: the .deb symlinks
+// /usr/bin/onidia -> /opt/onidia/bin/onidia, so a chat binary started from
+// somewhere unrelated still finds the installed buddy.
+func TestOnidiaPathFallsBackToPATH(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	bin := filepath.Join(dir, "bin")
+	writeExe(t, filepath.Join(bin, "onidia"))
+	t.Setenv("PATH", bin)
+	if got := onidiaPath(); got != filepath.Join(bin, "onidia") {
+		t.Fatalf("onidiaPath() = %q, want the PATH hit %q", got, filepath.Join(bin, "onidia"))
+	}
+}
+
