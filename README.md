@@ -379,12 +379,14 @@ api-key = <GEMINI_API_KEY>
 gemini-model = gemini-3.6-flash
 gemini-api-url = https://generativelanguage.googleapis.com
 
-# Gemini uses the namespaced gemini-model / gemini-api-url keys on purpose.
-# The INI is parsed flat - section headers are ignored and the last occurrence
-# of a key wins - so the shared `model` / `api-url` keys are also read by
-# ollama / openrouter / bedrock. A [ollama] api-url later in the file would
-# otherwise leak into a gemini run. Gemini reads ONLY gemini-model /
-# gemini-api-url; the other providers keep using the shared `model` / `api-url`.
+# Gemini uses the namespaced gemini-model / gemini-api-url keys, and Bedrock
+# uses bedrock-model, on purpose. The INI is parsed flat - section headers are
+# ignored and the last occurrence of a key wins - so the shared `model` /
+# `api-url` keys are read by whichever provider uses them (ollama, openrouter).
+# A [ollama] model or api-url later in the file would otherwise leak into a
+# gemini or bedrock run. Gemini and Bedrock read ONLY their own namespaced keys
+# (bedrock has no api-url - it goes through the AWS SDK); ollama and openrouter
+# keep using the shared `model` / `api-url`.
 
 [aws]
 # For Bedrock. Empty aws-profile uses the default profile.
