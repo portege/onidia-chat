@@ -10,8 +10,8 @@ import (
 func TestLoadConfig(t *testing.T) {
 	cfg := `[gemini]
 api-key = test-key
-model = gemini-test
-api-url = https://example.com
+gemini-model = gemini-test
+gemini-api-url = https://example.com
 system-prompt = hello world
 image-source = gemini
 pixabay-key = test-px-key
@@ -37,11 +37,11 @@ images = false
 	if c.APIKey != "test-key" {
 		t.Errorf("api-key: got %q want %q", c.APIKey, "test-key")
 	}
-	if c.Model != "gemini-test" {
-		t.Errorf("model: got %q want %q", c.Model, "gemini-test")
+	if c.GeminiModel != "gemini-test" {
+		t.Errorf("gemini-model: got %q want %q", c.GeminiModel, "gemini-test")
 	}
-	if c.APIURL != "https://example.com" {
-		t.Errorf("api-url: got %q want %q", c.APIURL, "https://example.com")
+	if c.GeminiAPIURL != "https://example.com" {
+		t.Errorf("gemini-api-url: got %q want %q", c.GeminiAPIURL, "https://example.com")
 	}
 	if c.SystemPrompt != "hello world" {
 		t.Errorf("system-prompt: got %q want %q", c.SystemPrompt, "hello world")

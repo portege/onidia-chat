@@ -15,8 +15,8 @@ provider = bedrock
 
 [gemini]
 api-key = KEYFROMGEMINI
-model = gemini-3.6-flash
-api-url = https://generativelanguage.googleapis.com
+gemini-model = gemini-3.6-flash
+gemini-api-url = https://generativelanguage.googleapis.com
 
 [ollama]
 api-url = http://localhost:8000
@@ -36,7 +36,8 @@ tts = on
 		t.Fatal(err)
 	}
 	// Sections are ignored and keys are flat / last-wins - exactly like
-	// onidia-chat's LoadConfig. (qwen2 beats gemini-3.6-flash: it is later.)
+	// onidia-chat's LoadConfig. The shared `model` / `api-url` now belong to
+	// ollama (gemini uses the namespaced keys), so qwen2 / localhost:8000 win.
 	if Get(kv, "provider") != "bedrock" {
 		t.Errorf("provider = %q, want bedrock", Get(kv, "provider"))
 	}
@@ -48,6 +49,15 @@ tts = on
 	}
 	if Get(kv, "api-url") != "http://localhost:8000" {
 		t.Errorf("api-url = %q, want the last occurrence (ollama's)", Get(kv, "api-url"))
+	}
+	// The namespaced gemini keys are captured on their own, so a gemini run
+	// reads these instead of the ollama values above - the collision this
+	// split exists to prevent.
+	if Get(kv, "gemini-model") != "gemini-3.6-flash" {
+		t.Errorf("gemini-model = %q, want gemini-3.6-flash", Get(kv, "gemini-model"))
+	}
+	if Get(kv, "gemini-api-url") != "https://generativelanguage.googleapis.com" {
+		t.Errorf("gemini-api-url = %q, want the gemini endpoint", Get(kv, "gemini-api-url"))
 	}
 	if Get(kv, "tts") != "on" {
 		t.Errorf("tts = %q, want on", Get(kv, "tts"))

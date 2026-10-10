@@ -23,6 +23,14 @@ type Config struct {
 	APIKey           string `ini:"api-key"`
 	Model            string `ini:"model"`
 	APIURL           string `ini:"api-url"`
+	// Gemini-only model / endpoint. The INI is parsed flat (sections ignored,
+	// last occurrence wins), so the generic `model` and `api-url` keys are
+	// shared by ollama/openrouter/bedrock and a later [ollama] model would
+	// leak into a gemini run. Gemini therefore reads THESE namespaced keys
+	// instead, and never falls back to the generic ones - a fallback is
+	// exactly the collision these exist to prevent. See main.go / preflight.
+	GeminiModel  string `ini:"gemini-model"`
+	GeminiAPIURL string `ini:"gemini-api-url"`
 	PetPipe          string `ini:"pet-pipe"`
 	SystemPrompt     string `ini:"system-prompt"`
 	SystemFile       string `ini:"system-file"`
@@ -158,6 +166,10 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.Model = val
 	case "api-url":
 		cfg.APIURL = val
+	case "gemini-model":
+		cfg.GeminiModel = val
+	case "gemini-api-url":
+		cfg.GeminiAPIURL = val
 	case "pet-pipe":
 		cfg.PetPipe = val
 	case "system-prompt":

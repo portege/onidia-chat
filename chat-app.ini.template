@@ -8,8 +8,12 @@
 #   4. built-in default constant
 
 # LLM providers:
-#   - gemini    -> [gemini] section: api-key / api-url / model.
+#   - gemini    -> [gemini] section: api-key / gemini-api-url / gemini-model.
 #                  Credentials: api-key (config, or $GEMINI_API_KEY).
+#                  NOTE: gemini uses the namespaced gemini-api-url / gemini-model
+#                  keys, NOT the shared api-url / model - the INI is parsed flat
+#                  (sections ignored, last key wins), so shared keys would
+#                  collide with the [ollama] ones below.
 #   - bedrock   -> [bedrock] section: aws-profile / aws-region / model.
 #                  Credentials: AWS SDK chain (~/.aws/credentials, ~/.aws/config,
 #                  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars) by profile.
@@ -38,8 +42,11 @@ preflight = strict
 
 [gemini]
 api-key = <GEMINI_API_KEY>
-model = gemini-3.6-flash
-api-url = https://generativelanguage.googleapis.com
+# gemini-model / gemini-api-url are namespaced on purpose: the INI is parsed
+# flat (sections ignored, last key wins), so a plain `model`/`api-url` here
+# would collide with the [ollama] ones below. gemini reads ONLY these keys.
+gemini-model = gemini-3.6-flash
+gemini-api-url = https://generativelanguage.googleapis.com
 
 [bedrock]
 # AWS profile and region for Bedrock. The default profile is used when empty.

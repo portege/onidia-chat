@@ -273,19 +273,33 @@ func main() {
 	// Model: explicit -model flag > config-file model > provider default. A
 	// leftover model from the other provider family (e.g. a Gemini ID in
 	// chat-app.ini while provider=bedrock) is auto-swapped and warned about.
+	//
+	// Which config key supplies the fallback depends on the provider: gemini
+	// reads the namespaced gemini-model, everything else reads the shared
+	// `model`. They are separate keys precisely so a [ollama] model later in
+	// the flat INI cannot leak into a gemini run (see config.go).
 	var cfgModel string
 	if cfg != nil {
-		cfgModel = cfg.Model
+		if providerVal == "gemini" {
+			cfgModel = cfg.GeminiModel
+		} else {
+			cfgModel = cfg.Model
+		}
 	}
 	modelVal, modelWarn := pickModel(*model, explicitFlags["model"], cfgModel, providerVal)
 	if modelWarn != "" {
 		log.Printf("warning: %s", modelWarn)
 	}
 
-	// API URL: explicit flag > config file > default
+	// API URL: explicit flag > config file > default. Gemini reads the
+	// namespaced gemini-api-url; the other providers read the shared api-url.
 	urlVal := strings.TrimSpace(*apiURL)
 	if urlVal == "" && cfg != nil {
-		urlVal = strings.TrimSpace(cfg.APIURL)
+		if providerVal == "gemini" {
+			urlVal = strings.TrimSpace(cfg.GeminiAPIURL)
+		} else {
+			urlVal = strings.TrimSpace(cfg.APIURL)
+		}
 	}
 	if urlVal == "" {
 		switch providerVal {
