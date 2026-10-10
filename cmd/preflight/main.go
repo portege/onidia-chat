@@ -157,12 +157,15 @@ func resolveSpec(kv map[string]string, explicit map[string]bool,
 	}
 
 	// Model: shared resolution - the same call onidia-chat's pickModel makes.
-	// gemini reads the namespaced gemini-model; the other providers read the
-	// shared `model`. Separate keys so a [ollama] model later in the flat INI
-	// cannot leak into a gemini run (mirrors main.go / config.go).
+	// gemini reads gemini-model, bedrock reads bedrock-model, the others read
+	// the shared `model`. Separate keys so a [ollama] model later in the flat
+	// INI cannot leak into a gemini/bedrock run (mirrors main.go / config.go).
 	cfgModel := preflight.Get(kv, "model")
-	if provider == "gemini" {
+	switch provider {
+	case "gemini":
 		cfgModel = preflight.Get(kv, "gemini-model")
+	case "bedrock":
+		cfgModel = preflight.Get(kv, "bedrock-model")
 	}
 	model, warn := preflight.ResolveModel(provider, modelFlag, explicit["model"], cfgModel)
 	if warn != "" {

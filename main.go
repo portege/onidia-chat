@@ -275,14 +275,17 @@ func main() {
 	// chat-app.ini while provider=bedrock) is auto-swapped and warned about.
 	//
 	// Which config key supplies the fallback depends on the provider: gemini
-	// reads the namespaced gemini-model, everything else reads the shared
-	// `model`. They are separate keys precisely so a [ollama] model later in
-	// the flat INI cannot leak into a gemini run (see config.go).
+	// reads gemini-model, bedrock reads bedrock-model, everything else reads
+	// the shared `model`. They are separate keys precisely so a [ollama] model
+	// later in the flat INI cannot leak into a gemini/bedrock run (config.go).
 	var cfgModel string
 	if cfg != nil {
-		if providerVal == "gemini" {
+		switch providerVal {
+		case "gemini":
 			cfgModel = cfg.GeminiModel
-		} else {
+		case "bedrock":
+			cfgModel = cfg.BedrockModel
+		default:
 			cfgModel = cfg.Model
 		}
 	}

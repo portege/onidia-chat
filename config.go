@@ -31,6 +31,11 @@ type Config struct {
 	// exactly the collision these exist to prevent. See main.go / preflight.
 	GeminiModel  string `ini:"gemini-model"`
 	GeminiAPIURL string `ini:"gemini-api-url"`
+	// BedrockModel is the Bedrock-only model ID, namespaced for the same
+	// reason as the gemini keys above: a plain `model` shared across sections
+	// would let a [ollama]/[gemini] model leak into a bedrock run. Bedrock has
+	// no api-url (it goes through the AWS SDK), so only the model is split out.
+	BedrockModel string `ini:"bedrock-model"`
 	PetPipe          string `ini:"pet-pipe"`
 	SystemPrompt     string `ini:"system-prompt"`
 	SystemFile       string `ini:"system-file"`
@@ -170,6 +175,8 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.GeminiModel = val
 	case "gemini-api-url":
 		cfg.GeminiAPIURL = val
+	case "bedrock-model":
+		cfg.BedrockModel = val
 	case "pet-pipe":
 		cfg.PetPipe = val
 	case "system-prompt":

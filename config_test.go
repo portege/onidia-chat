@@ -16,6 +16,9 @@ system-prompt = hello world
 image-source = gemini
 pixabay-key = test-px-key
 
+[bedrock]
+bedrock-model = amazon.nova-lite-v1:0
+
 [ui]
 pet-pipe = off
 images = false
@@ -42,6 +45,9 @@ images = false
 	}
 	if c.GeminiAPIURL != "https://example.com" {
 		t.Errorf("gemini-api-url: got %q want %q", c.GeminiAPIURL, "https://example.com")
+	}
+	if c.BedrockModel != "amazon.nova-lite-v1:0" {
+		t.Errorf("bedrock-model: got %q want %q", c.BedrockModel, "amazon.nova-lite-v1:0")
 	}
 	if c.SystemPrompt != "hello world" {
 		t.Errorf("system-prompt: got %q want %q", c.SystemPrompt, "hello world")

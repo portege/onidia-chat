@@ -390,6 +390,7 @@ gemini-api-url = https://generativelanguage.googleapis.com
 # For Bedrock. Empty aws-profile uses the default profile.
 aws-profile = default
 aws-region = us-east-1
+bedrock-model = amazon.nova-lite-v1:0
 
 [ui]
 # Where bot replies are forwarded so the buddy speaks them:
@@ -518,7 +519,7 @@ override it with `-model`.
 provider = bedrock
 aws-profile = default
 aws-region = us-east-1
-model = amazon.nova-lite-v1:0
+bedrock-model = amazon.nova-lite-v1:0
 ```
 
 > **Model IDs must match the provider.** Bedrock rejects Gemini IDs (and vice

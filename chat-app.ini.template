@@ -14,7 +14,10 @@
 #                  keys, NOT the shared api-url / model - the INI is parsed flat
 #                  (sections ignored, last key wins), so shared keys would
 #                  collide with the [ollama] ones below.
-#   - bedrock   -> [bedrock] section: aws-profile / aws-region / model.
+#   - bedrock   -> [bedrock] section: aws-profile / aws-region / bedrock-model.
+#                  NOTE: like gemini, bedrock uses the namespaced bedrock-model
+#                  key, NOT the shared model (flat INI, last key wins). Bedrock
+#                  has no api-url - it goes through the AWS SDK.
 #                  Credentials: AWS SDK chain (~/.aws/credentials, ~/.aws/config,
 #                  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars) by profile.
 #                  The actual key is NEVER stored in this file.
@@ -52,6 +55,9 @@ gemini-api-url = https://generativelanguage.googleapis.com
 # AWS profile and region for Bedrock. The default profile is used when empty.
 aws-profile = default
 aws-region = us-east-1
+# bedrock-model is namespaced for the same reason as the gemini keys: a plain
+# `model` here would collide with the [ollama] one below (flat INI, last wins).
+bedrock-model = amazon.nova-lite-v1:0
 
 [ollama]
 # ollama-compatible /api/chat server (Ollama or the hailo llama.cpp server).
