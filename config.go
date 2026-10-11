@@ -1,4 +1,4 @@
-// config.go - a tiny INI parser for chat-app configuration.
+// config.go - a tiny INI parser for onidia-chat configuration.
 //
 // Keeps zero external dependencies: the app uses only the Go standard
 // library. Supports:
@@ -23,6 +23,27 @@ type Config struct {
 	APIKey           string `ini:"api-key"`
 	Model            string `ini:"model"`
 	APIURL           string `ini:"api-url"`
+	// Gemini-only model / endpoint. The INI is parsed flat (sections ignored,
+	// last occurrence wins), so the generic `model` and `api-url` keys are
+	// shared by ollama/openrouter/bedrock and a later [ollama] model would
+	// leak into a gemini run. Gemini therefore reads THESE namespaced keys
+	// instead, and never falls back to the generic ones - a fallback is
+	// exactly the collision these exist to prevent. See main.go / preflight.
+	GeminiModel  string `ini:"gemini-model"`
+	GeminiAPIURL string `ini:"gemini-api-url"`
+	// BedrockModel is the Bedrock-only model ID, namespaced for the same
+	// reason as the gemini keys above: a plain `model` shared across sections
+	// would let a [ollama]/[gemini] model leak into a bedrock run. Bedrock has
+	// no api-url (it goes through the AWS SDK), so only the model is split out.
+	BedrockModel string `ini:"bedrock-model"`
+	// OllamaModel / OllamaAPIURL and OpenRouterModel / OpenRouterAPIURL finish
+	// the per-provider namespacing: with these in place no provider reads the
+	// shared `model` / `api-url` any more, so nothing can leak between sections
+	// in the flat INI. Same no-fallback rule as the gemini/bedrock keys above.
+	OllamaModel      string `ini:"ollama-model"`
+	OllamaAPIURL     string `ini:"ollama-api-url"`
+	OpenRouterModel  string `ini:"openrouter-model"`
+	OpenRouterAPIURL string `ini:"openrouter-api-url"`
 	PetPipe          string `ini:"pet-pipe"`
 	SystemPrompt     string `ini:"system-prompt"`
 	SystemFile       string `ini:"system-file"`
@@ -35,15 +56,19 @@ type Config struct {
 	TTSKey           string `ini:"tts-key"`             // Typecast API key
 	TTSVoice         string `ini:"tts-voice"`           // Typecast voice id
 	Mute             bool   `ini:"mute"`                // true = never speak replies (settings dialog checkbox)
-	DemoMode         bool   `ini:"demo-mode"`           // true = pet roams & chatters on its own (settings dialog checkbox; default off = planted)
+	Thinking         string `ini:"thinking"`            // "on" (default) | "off": draw the reasoning cloud (settings dialog checkbox)
+	DemoMode         bool   `ini:"demo-mode"`           // true = buddy roams & chatters on its own (settings dialog checkbox; default off = planted)
+	AutoSubmit       bool   `ini:"auto-submit"`         // true = send a spoken transcript automatically (settings dialog checkbox; default off = the user sends it)
+	AutoStop         bool   `ini:"auto-stop"`           // true = end a take on silence, with no second click (settings dialog checkbox; default off)
 	Provider         string `ini:"provider"`            // "gemini" (default) | "bedrock" | "ollama" | "openrouter"
+	Preflight        string `ini:"preflight"`           // startup check: "strict" (default; block before the window opens) | "warn" | "off"
 	Stream           bool   `ini:"stream"`              // openrouter: SSE streaming reply (default on)
 	StreamSet        bool   // stream key was present in the config (absent = default on)
 	AWSProfile       string `ini:"aws-profile"`      // AWS shared profile name
 	AWSRegion        string `ini:"aws-region"`       // AWS region for Bedrock
 	CharacterAge     int    `ini:"character-age"`    // chat character's age (settings dialog, 7-13)
 	CharacterName    string `ini:"character-name"`   // chat character's name (settings dialog)
-	Gender           string `ini:"character-gender"` // pet gender: "girl" launches Onidia, "boy" launches Kama (settings dialog)
+	Gender           string `ini:"character-gender"` // buddy gender: "girl" launches Onidia, "boy" launches Kama (settings dialog)
 	SleepSet         bool   // sleep-time was present in the config
 	SleepFromH       int    // sleep-window start hour (0-23), from sleep-time
 	SleepFromM       int    // sleep-window start minute (0/15/30/45), from sleep-time
@@ -60,12 +85,20 @@ type Config struct {
 	SleepTo          int    // legacy whole-hour aliases kept for existing callers (set from H fields)
 	AgentsDir        string `ini:"agents-dir"`         // directory of downloadable agents ("" = default)
 	AgentsOff        bool   `ini:"agents-off"`         // true = never discover agents / advertise them
+	AgentsDisabled   string `ini:"agents-disabled"`    // comma-separated ids to switch off ("")
 	MusicDir         string `ini:"music-dir"`          // play_song agent's music folder ("" = agent default)
 	VideoDir         string `ini:"video-dir"`          // play_movie agent's video folder ("" = agent default)
 	AgentsKey        string `ini:"agents-key"`         // trusted Ed25519 public key hex for agent signatures ("" = unverified)
 	AgentsRequireSig bool   `ini:"agents-require-sig"` // reject unsigned agents if true
 	AgentsRegistry   string `ini:"agents-registry"`    // registry index URL or path ("" = default/none)
 
+	// Speech-to-text (the microphone button in the input bar).
+	STT             string `ini:"stt"`               // backend: "transcribe" (default) | "whisper" | "off"
+	STTLanguage     string `ini:"stt-language"`      // language hint, e.g. en-US
+	STTDevice       string `ini:"stt-device"`        // capture device for arecord/ffmpeg ("" = system default)
+	STTWhisperModel string `ini:"stt-whisper-model"` // faster-whisper size: tiny | base | small | ...
+	STTWhisperCmd   string `ini:"stt-whisper-cmd"`   // python interpreter running faster-whisper ("" = auto)
+	STTWhisperVAD   bool   `ini:"stt-whisper-vad"`   // faster-whisper voice-activity filter (default OFF: it discards quiet takes). NOT the same as auto-stop, which ends a take live - see stt_vad.go
 }
 
 // LoadConfig reads a simple INI file and returns populated Config.
@@ -146,6 +179,20 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.Model = val
 	case "api-url":
 		cfg.APIURL = val
+	case "gemini-model":
+		cfg.GeminiModel = val
+	case "gemini-api-url":
+		cfg.GeminiAPIURL = val
+	case "bedrock-model":
+		cfg.BedrockModel = val
+	case "ollama-model":
+		cfg.OllamaModel = val
+	case "ollama-api-url":
+		cfg.OllamaAPIURL = val
+	case "openrouter-model":
+		cfg.OpenRouterModel = val
+	case "openrouter-api-url":
+		cfg.OpenRouterAPIURL = val
 	case "pet-pipe":
 		cfg.PetPipe = val
 	case "system-prompt":
@@ -168,14 +215,33 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.TTSKey = val
 	case "tts-voice":
 		cfg.TTSVoice = val
+	case "stt":
+		cfg.STT = val
+	case "stt-language":
+		cfg.STTLanguage = val
+	case "stt-device":
+		cfg.STTDevice = val
+	case "stt-whisper-model":
+		cfg.STTWhisperModel = val
+	case "stt-whisper-cmd":
+		cfg.STTWhisperCmd = val
+		cfg.STTWhisperVAD = parseBool(val)
 	case "mute":
 		cfg.Mute = parseBool(val)
+	case "thinking":
+		cfg.Thinking = val
 	case "demo-mode":
 		cfg.DemoMode = parseBool(val)
+	case "auto-submit":
+		cfg.AutoSubmit = parseBool(val)
+	case "auto-stop":
+		cfg.AutoStop = parseBool(val)
 	case "character-gender":
 		cfg.Gender = normalizeGender(val)
 	case "provider":
 		cfg.Provider = val
+	case "preflight":
+		cfg.Preflight = val
 	case "stream":
 		cfg.Stream = parseBool(val)
 		cfg.StreamSet = true
@@ -205,6 +271,8 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.AgentsDir = val
 	case "agents-off":
 		cfg.AgentsOff = parseBool(val)
+	case "agents-disabled":
+		cfg.AgentsDisabled = val
 	case "agents-key":
 		cfg.AgentsKey = strings.TrimSpace(val)
 	case "agents-require-sig":
@@ -302,7 +370,7 @@ func SetConfigValue(path, section, key, val string) error {
 		lines = strings.Split(string(raw), "\n")
 	case os.IsNotExist(err):
 		lines = []string{
-			"# chat-app configuration (INI format)",
+			"# onidia-chat configuration (INI format)",
 			"# Partially maintained by the in-app settings dialog.",
 			"",
 		}

@@ -1,6 +1,6 @@
 package main
 
-// chat-app - a tiny desktop chat window with a textarea and a submit (SEND)
+// onidia-chat - a tiny desktop chat window with a textarea and a submit (SEND)
 // button, written in pure Go on raw X11 - the same no-toolkit approach as its
 // sibling ../desktop-pet.
 //
@@ -20,27 +20,24 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
+	"github.com/portege/onidia-chat/internal/confpath"
+	"github.com/portege/onidia-chat/internal/mic"
+	"github.com/portege/onidia-chat/internal/preflight"
 )
 
-// defaultConfigPath returns the conventional chat-app.ini to auto-load when
-// -config is not given: first in the working directory, then next to the
-// running binary. Returns "" when neither exists (config stays disabled).
-func defaultConfigPath() string {
-	if _, err := os.Stat("chat-app.ini"); err == nil {
-		return "chat-app.ini"
-	}
-	if exe, err := os.Executable(); err == nil {
-		p := filepath.Join(filepath.Dir(exe), "chat-app.ini")
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return ""
-}
+// defaultConfigPath returns the chat-app.ini to auto-load when -config is not
+// given: ./chat-app.ini, then one next to the binary, then the user's config
+// dir. Returns "" when none exists (config stays disabled).
+//
+// The list itself lives in internal/confpath, because preflight needs exactly
+// the same answer and its hand-written copy had already drifted into checking
+// only the first path - which is never there on a package install.
+func defaultConfigPath() string { return confpath.Default() }
 
 // firstNonEmpty returns the first non-blank argument (flag > config).
 func firstNonEmpty(vals ...string) string {
@@ -79,56 +76,17 @@ func expandHome(p string) string {
 
 // pickModel resolves the effective model ID for a provider and returns an
 // optional warning. Precedence: explicit -model flag > config-file model >
-// provider default. A config-file/default model that clearly belongs to the
-// other provider family (a leftover Gemini ID while provider=bedrock, or a
-// Bedrock ID with provider=gemini) is replaced by the provider's default and
-// flagged: sending it would fail with a confusing API error (e.g. Bedrock
-// "ValidationException: the provided model identifier is invalid").
+// provider default. The rules live in internal/preflight.ResolveModel so the
+// startup gate and the standalone cmd/preflight CLI resolve the exact same
+// model from the same inputs (wrong-family IDs get auto-swapped + warned,
+// which is what keeps a leftover Gemini ID from reaching Bedrock).
 func pickModel(flagVal string, flagSet bool, cfgModel, provider string) (string, string) {
-	model := strings.TrimSpace(flagVal)
-	if !flagSet && cfgModel != "" {
-		model = strings.TrimSpace(cfgModel)
-	}
-	if model == "" {
-		switch provider {
-		case "bedrock":
-			return defaultBedrockModelID, ""
-		case "openrouter":
-			return defaultOpenRouterModel, ""
-		}
-		return defaultModel, ""
-	}
-	if !flagSet {
-		switch {
-		case provider == "bedrock" && isGeminiModel(model):
-			return defaultBedrockModelID, fmt.Sprintf(
-				"provider=bedrock but model %q is a Gemini ID (from config) - using %q; set model in chat-app.ini or -model to a Bedrock ID",
-				model, defaultBedrockModelID)
-		case provider == "gemini" && isBedrockModel(model):
-			return defaultModel, fmt.Sprintf(
-				"provider=gemini but model %q is a Bedrock ID (from config) - using %q; set -model to a Gemini model",
-				model, defaultModel)
-		case provider == "openrouter" && isGeminiModel(model):
-			return defaultOpenRouterModel, fmt.Sprintf(
-				"provider=openrouter but model %q is a Gemini ID (from config) - using %q; set model in chat-app.ini or -model to an OpenRouter ID (e.g. deepseek/deepseek-chat)",
-				model, defaultOpenRouterModel)
-		case provider == "openrouter" && isBedrockModel(model):
-			return defaultOpenRouterModel, fmt.Sprintf(
-				"provider=openrouter but model %q is a Bedrock ID (from config) - using %q; set model in chat-app.ini or -model to an OpenRouter ID (e.g. deepseek/deepseek-chat)",
-				model, defaultOpenRouterModel)
-		}
-	}
-	if provider == "bedrock" && !isBedrockModel(model) {
-		return model, fmt.Sprintf(
-			"model %q does not look like a Bedrock model ID (e.g. %s) - requests will likely be rejected",
-			model, defaultBedrockModelID)
-	}
-	return model, ""
+	return preflight.ResolveModel(provider, flagVal, flagSet, cfgModel)
 }
 
 // resolvePetPipe combines the -pet-pipe flag and the config-file pet-pipe
 // value (flag wins) into the FIFO path replies are forwarded to. "auto" or
-// empty means derive the path from $DISPLAY exactly the way the pet names
+// empty means derive the path from $DISPLAY exactly the way the buddy names
 // it; "off" (case-insensitive) disables forwarding; any other value is used
 // as the literal path. Before config auto-loading, "auto" from chat-app.ini
 // used to fall through as a literal (relative) path and every say write
@@ -193,10 +151,34 @@ func main() {
 			"directory of downloadable agents (default: $XDG_CONFIG_HOME/chat-app/agents or ~/.config/chat-app/agents)")
 		agentsOffFlag = flag.Bool("agents-off", false,
 			"disable agent discovery and [AGENT: ...] reply tags")
+		agentsDisabledFlag = flag.String("agents-disabled", "",
+			"comma-separated agent ids to switch off (default: config agents-disabled)")
+		agentsListFlag = flag.Bool("agents-list", false,
+			"list installed agents (id, version, where it came from, enabled/disabled) and exit")
+		agentsInstallFlag = flag.String("agents-install", "",
+			"install an agent (folder, .zip, URL, or a registry id) into ~/.config/chat-app/agents and exit")
+		agentsRemoveFlag = flag.String("agents-remove", "",
+			"remove an installed agent by id and exit")
 		musicDirFlag = flag.String("music-dir", "",
 			"music folder for the play_song agent (default: config music-dir, or ~/Music inside the agent)")
 		videoDirFlag = flag.String("video-dir", "",
 			"video folder for the play_movie agent (default: config video-dir, or ~/Videos inside the agent)")
+		preflightFlag = flag.String("preflight", "",
+			`startup requirements check: "strict" (default; block before the window opens) | "warn" (log only) | "off"`)
+		sttFlag = flag.String("stt", "",
+			`speech input backend: "transcribe" (default, AWS) | "whisper" (local faster-whisper) | "off"`)
+		sttLangFlag = flag.String("stt-language", "",
+			"spoken language hint for transcription (default: config stt-language, or en-US)")
+		sttDeviceFlag = flag.String("stt-device", "",
+			"microphone device for arecord/ffmpeg (default: config stt-device, or the system default)")
+		sttWhisperModelFlag = flag.String("stt-whisper-model", "",
+			"faster-whisper model size: tiny | base (default) | small | medium | large")
+		sttWhisperCmdFlag = flag.String("stt-whisper-cmd", "",
+			"python interpreter that has faster-whisper installed (default: ./venv, ~/.venv, then python3)")
+		sttDebugFlag = flag.Bool("stt-debug", false,
+			"log the full speech-input trace: wav file, level, backend command, diagnostics and result")
+		sttTestFlag = flag.Bool("stt-test", false,
+			"headless speech-input self test: record a take, transcribe it, print every step and exit")
 	)
 	flag.Parse()
 
@@ -206,6 +188,25 @@ func main() {
 	flag.Visit(func(f *flag.Flag) {
 		explicitFlags[f.Name] = true
 	})
+
+	// One instance per user session, taken before anything with a side effect
+	// (the buddy FIFO, the config, the window) so a second launch cannot
+	// interfere with the first. The read-only modes are exempt: -stt-test has
+	// to keep working WHILE the app is running - that is the whole point of
+	// it - and -preview only writes PNGs.
+	//
+	// The -agents-* modes are exempt for the same reason: "why did that agent
+	// just not show up" is exactly the question someone asks while the app is
+	// open, and having the answer be "start it again first" would be absurd.
+	// -agents-install and -agents-remove touch only the user's own agents
+	// directory, never the running instance's FIFOs or window.
+	if !*preview && !*sttTestFlag && !*agentsListFlag &&
+		*agentsInstallFlag == "" && *agentsRemoveFlag == "" {
+		if _, err := acquireInstanceLock(); err != nil {
+			log.Fatalf("onidia-chat: %v", err)
+		}
+		defer releaseInstanceLock()
+	}
 
 	// Load INI config file. `-config` wins; otherwise a conventional
 	// chat-app.ini is auto-loaded from the working directory or the binary's
@@ -272,19 +273,44 @@ func main() {
 	// Model: explicit -model flag > config-file model > provider default. A
 	// leftover model from the other provider family (e.g. a Gemini ID in
 	// chat-app.ini while provider=bedrock) is auto-swapped and warned about.
+	//
+	// Which config key supplies the fallback depends on the provider: each
+	// provider reads its OWN namespaced model key (gemini-model, bedrock-model,
+	// ollama-model, openrouter-model) so a value in one section cannot leak into
+	// another in the flat INI. The shared `model` key is no longer read.
 	var cfgModel string
 	if cfg != nil {
-		cfgModel = cfg.Model
+		switch providerVal {
+		case "gemini":
+			cfgModel = cfg.GeminiModel
+		case "bedrock":
+			cfgModel = cfg.BedrockModel
+		case "ollama":
+			cfgModel = cfg.OllamaModel
+		case "openrouter":
+			cfgModel = cfg.OpenRouterModel
+		}
 	}
 	modelVal, modelWarn := pickModel(*model, explicitFlags["model"], cfgModel, providerVal)
 	if modelWarn != "" {
 		log.Printf("warning: %s", modelWarn)
 	}
 
-	// API URL: explicit flag > config file > default
+	// API URL: explicit flag > config file > default. Each provider reads its
+	// OWN namespaced api-url key (gemini-api-url, ollama-api-url,
+	// openrouter-api-url) so a value cannot leak between sections in the flat
+	// INI. Bedrock has no api-url (AWS SDK), so it falls through to the
+	// default switch below (which is a no-op for it).
 	urlVal := strings.TrimSpace(*apiURL)
 	if urlVal == "" && cfg != nil {
-		urlVal = strings.TrimSpace(cfg.APIURL)
+		switch providerVal {
+		case "gemini":
+			urlVal = strings.TrimSpace(cfg.GeminiAPIURL)
+		case "ollama":
+			urlVal = strings.TrimSpace(cfg.OllamaAPIURL)
+		case "openrouter":
+			urlVal = strings.TrimSpace(cfg.OpenRouterAPIURL)
+		}
 	}
 	if urlVal == "" {
 		switch providerVal {
@@ -306,7 +332,7 @@ func main() {
 	if pipe != "" && !filepath.IsAbs(pipe) {
 		log.Printf("warning: pet-pipe %q is not an absolute path - say writes will fail silently; use auto, off, or an absolute FIFO path", pipe)
 	}
-	// The pet's command FIFO (actions/events, and "quit" for the Haiya!
+	// The buddy's command FIFO (actions/events, and "quit" for the Haiya!
 	// button) sits next to the say-FIFO with a .cmd suffix.
 	petCmdPath := petCmdPathFor(pipe)
 
@@ -382,22 +408,130 @@ func main() {
 		ttsVoiceVal = strings.TrimSpace(cfg.TTSVoice)
 	}
 
+	// Speech input settings, same precedence as everything else:
+	// flag > config file > built-in default. The backend is constructed a
+	// little further down, so a misconfiguration is reported at startup next
+	// to the other config problems rather than on the first mic click.
+	sttBackend := strings.TrimSpace(*sttFlag)
+	if sttBackend == "" && cfg != nil {
+		sttBackend = strings.TrimSpace(cfg.STT)
+	}
+	sttLang := strings.TrimSpace(*sttLangFlag)
+	if sttLang == "" && cfg != nil {
+		sttLang = strings.TrimSpace(cfg.STTLanguage)
+	}
+	sttDevice := strings.TrimSpace(*sttDeviceFlag)
+	if sttDevice == "" && cfg != nil {
+		sttDevice = strings.TrimSpace(cfg.STTDevice)
+	}
+	sttWhisperModel := strings.TrimSpace(*sttWhisperModelFlag)
+	if sttWhisperModel == "" && cfg != nil {
+		sttWhisperModel = strings.TrimSpace(cfg.STTWhisperModel)
+	}
+	sttWhisperCmd := strings.TrimSpace(*sttWhisperCmdFlag)
+	if sttWhisperCmd == "" && cfg != nil {
+		sttWhisperCmd = strings.TrimSpace(cfg.STTWhisperCmd)
+	}
+	// VAD is off by default: it discards quiet takes wholesale, which looks
+	// exactly like a broken microphone. Opt in only for a genuinely noisy room.
+	sttWhisperVAD := cfg != nil && cfg.STTWhisperVAD
+	// -stt-debug (or CHAT_APP_STT_DEBUG=1) traces the whole take: the wav
+	// file, its level, the backend command, the backend's own diagnostics
+	// and the text it returned.
+	sttDebug := *sttDebugFlag || os.Getenv("CHAT_APP_STT_DEBUG") != ""
+
+	awsProfileVal := strings.TrimSpace(*awsProfile)
+	if awsProfileVal == "" && cfg != nil {
+		awsProfileVal = strings.TrimSpace(cfg.AWSProfile)
+	}
+	if awsProfileVal == "" {
+		awsProfileVal = "default"
+	}
+	awsRegionVal := strings.TrimSpace(*awsRegion)
+	if awsRegionVal == "" && cfg != nil {
+		awsRegionVal = strings.TrimSpace(cfg.AWSRegion)
+	}
+	if awsRegionVal == "" {
+		awsRegionVal = "us-east-1"
+	}
+
+	// Speech input is built last, so it can reuse the resolved AWS profile and
+	// region: the transcribe backend talks to the same account as Bedrock.
+	sttEngine, sttErr := NewSTT(STTOptions{
+		Backend:      sttBackend,
+		Language:     sttLang,
+		Device:       sttDevice,
+		AWSProfile:   awsProfileVal,
+		AWSRegion:    awsRegionVal,
+		WhisperModel: sttWhisperModel,
+		WhisperCmd:   sttWhisperCmd,
+		WhisperVAD:   sttWhisperVAD,
+		Debug:        sttDebug,
+	})
+	switch {
+	case sttErr != nil:
+		log.Printf("stt: %v - the microphone button stays hidden", sttErr)
+		sttEngine = nil
+	case sttEngine != nil && findSTTRecorder() == "":
+		log.Printf("stt: %s backend ready but no audio recorder found (tried pw-record, parecord, "+
+			"arecord, ffmpeg) - install pipewire-utils or alsa-utils, or set stt = off", sttEngine.Name())
+		sttEngine = nil
+	case sttEngine != nil:
+		log.Printf("stt: speech input on (%s, %s)", sttEngine.Name(), micLabel(sttDevice))
+	}
+
+	// -stt-test runs the whole chain once, prints every step and exits, so a
+	// speech-input failure is visible without clicking the mic and reading a
+	// one-line message in the input bar.
+	if *sttTestFlag {
+		// Let the self test RETURN before anything exits. os.Exit runs no
+		// deferred functions, and the self test's deferred cleanup is what
+		// stops its recorder and unlinks the WAV - so exiting around it
+		// orphaned a pw-record that kept writing to /tmp until it filled.
+		// The exit code still reaches the shell: it is os.Exit's argument.
+		code := runSTTSelfTest(sttEngine, findSTTRecorder(), sttDevice, sttDebug)
+		if code != 0 {
+			os.Exit(code)
+		}
+		return
+	}
+
 	// Agents: downloadable pluggable abilities. Discovery is startup-only
-	// (drop a new folder into the dir and restart, or use agentctl run to
-	// test it standalone). Built-ins could Register() here before Discover
-	// so a download can never shadow them. Placed before the headless probe
-	// exits so `-preview` and friends exercise the same wiring.
+	// (drop a new folder into the dir and restart, or run one once with
+	// onidia-chat -agents-install / -agents-remove nearby). Built-ins could
+	// Register() here before Discover so a download can never shadow them.
+	// Placed before the headless probe exits so `-preview` and friends
+	// exercise the same wiring.
 	agentsDir := strings.TrimSpace(*agentsDirFlag)
 	if agentsDir == "" && cfg != nil {
 		agentsDir = strings.TrimSpace(cfg.AgentsDir)
 	}
-	if agentsDir == "" {
-		agentsDir = agent.DefaultDir()
+	// An explicitly named directory REPLACES the defaults; otherwise scan the
+	// per-user dir and then the packaged one, so a .deb install finds the
+	// bundled agents (pet_control, play_song, ...) with nobody having to copy
+	// them into their home directory first. User first, because first
+	// registration wins and a user's own agent must shadow a bundled one.
+	var searchDirs []string
+	if agentsDir != "" {
+		searchDirs = []string{agentsDir}
+	} else {
+		searchDirs = agent.DefaultDirs()
 	}
 	agentsOff := *agentsOffFlag
 	if !explicitFlags["agents-off"] && cfg != nil {
 		agentsOff = cfg.AgentsOff
 	}
+	// Per-agent on/off switch. Flag > config > none. Applied before discovery
+	// so a disabled agent is never registered, never offered to the model in
+	// the catalog, and therefore cannot be reached through an [AGENT: ...] tag.
+	disabledList := strings.Split(*agentsDisabledFlag, ",")
+	if !explicitFlags["agents-disabled"] && cfg != nil && cfg.AgentsDisabled != "" {
+		disabledList = strings.Split(cfg.AgentsDisabled, ",")
+	}
+	if len(disabledList) == 1 && strings.TrimSpace(disabledList[0]) == "" {
+		disabledList = nil // a bare "" must not read as one agent named ""
+	}
+	agent.SetDisabled(disabledList)
 	// Media folders flow to the play_* agents as CHAT_APP_* env vars
 	// (flag > config > unset -> the agent falls back to ~/Music / ~/Videos).
 	// CHAT_APP_STATE_DIR is where the media agents record the player they
@@ -418,7 +552,7 @@ func main() {
 		if err := agent.Register(story); err != nil {
 			log.Printf("agents: %v", err)
 		}
-		if agentsDir != "" {
+		if len(searchDirs) > 0 {
 			var pol agent.Policy
 			if cfg != nil {
 				pol.RequireSignature = cfg.AgentsRequireSig
@@ -430,16 +564,35 @@ func main() {
 					}
 				}
 			}
-			ids, problems := agent.DiscoverWithPolicy(agentsDir, pol)
-			for _, p := range problems {
-				log.Printf("%s", p)
+			total := 0
+			for i, dir := range searchDirs {
+				ids, problems := agent.DiscoverWithPolicy(dir, pol)
+				for _, p := range problems {
+					log.Printf("%s", p)
+				}
+				if len(ids) > 0 {
+					total += len(ids)
+					log.Printf("agents: %d discovered in %s: %s", len(ids), dir, strings.Join(ids, ", "))
+				} else if i == len(searchDirs)-1 {
+					// Only the last directory is worth reporting as empty: an empty
+					// per-user dir is the normal state for someone who has never
+					// installed an agent of their own.
+					log.Printf("agents: none in %s (onidia-chat -agents-install <dir|zip|url>, or -agents-list to see what is installed)", dir)
+				}
 			}
-			if len(ids) > 0 {
-				log.Printf("agents: %d discovered: %s", len(ids), strings.Join(ids, ", "))
-			} else {
-				log.Printf("agents: none in %s (agentctl install <dir|zip|url> to add)", agentsDir)
+			if total == 0 {
+				log.Printf("agents: only the built-in story agent is available")
 			}
 		}
+	}
+
+	// -agents-list / -agents-install / -agents-remove: manage agents without
+	// the agentctl binary, which is not shipped. Each prints its result and
+	// exits without opening a window, so the whole agent story is reachable
+	// from the one command that is actually installed.
+	if *agentsListFlag || *agentsInstallFlag != "" || *agentsRemoveFlag != "" {
+		runAgentMode(searchDirs, *agentsInstallFlag, *agentsRemoveFlag, cfg)
+		return
 	}
 
 	// -fetch-image tests the resolved source's fetch path (the gemini source
@@ -480,6 +633,101 @@ func main() {
 		return
 	}
 
+	// Build the brain BEFORE the window opens: the preflight gate must be
+	// able to report a backend that cannot work - and exit - before any X11
+	// surface appears. (These statements moved here unchanged from after the
+	// window setup; the provider logs moved with them.)
+	// OpenRouter (and other OpenAI-compatible gateways) auth: explicit
+	// -api-key flag > $OPENROUTER_API_KEY > config api-key. There is no
+	// built-in default key, so a missing key makes GenerateText fail loud.
+	var openrouterKey string
+	if providerVal == "openrouter" {
+		openrouterKey = strings.TrimSpace(*apiKey)
+		if !explicitFlags["api-key"] {
+			if e := os.Getenv("OPENROUTER_API_KEY"); e != "" {
+				openrouterKey = strings.TrimSpace(e)
+			} else if cfg != nil && cfg.APIKey != "" {
+				openrouterKey = cfg.APIKey
+			}
+		}
+	}
+
+	// SSE streaming for the openrouter provider: default on, the config key
+	// `stream = false` switches back to single-shot replies.
+	streamVal := true
+	if cfg != nil && cfg.StreamSet {
+		streamVal = cfg.Stream
+	}
+
+	// AWS profile/region for Bedrock are already resolved above (flag > config
+	// file > "default"/"us-east-1"); the provider switch and the preflight gate
+	// both read those two values, as does the transcribe speech backend.
+
+	// Build the selected provider.
+	var botProvider Provider
+	switch providerVal {
+	case "bedrock":
+		p, err := newBedrockProvider(awsProfileVal, awsRegionVal, modelVal)
+		if err != nil {
+			log.Fatalf("bedrock provider: %v", err)
+		}
+		botProvider = p
+	case "ollama":
+		botProvider = newOllamaProvider(urlVal, modelVal)
+	case "openrouter":
+		botProvider = newOpenRouterProvider(openrouterKey, urlVal, modelVal, streamVal)
+	default: // gemini
+		botProvider = &geminiProvider{apiKey: key, apiURL: urlVal, model: modelVal, http: &http.Client{Timeout: imageTimeout + geminiTimeout}}
+	}
+
+	if sysPrompt != "" || (sysFile != "" && sysFile != "off") {
+		log.Printf("system-instruction custom (from flag or config)")
+	} else {
+		log.Printf("system-instruction default persona")
+	}
+	if providerVal == "bedrock" {
+		log.Printf("bedrock: model=%s", modelVal)
+	} else if providerVal == "ollama" {
+		log.Printf("ollama: model=%s, api-url=%s", modelVal, urlVal)
+	} else if providerVal == "openrouter" {
+		if openrouterKey == "" {
+			log.Printf("openrouter: no API key (set $OPENROUTER_API_KEY or -api-key) - replies will fail")
+		} else {
+			log.Printf("openrouter: model=%s, api-url=%s, stream=%t", modelVal, urlVal, streamVal)
+		}
+	} else if key == "" {
+		log.Printf("gemini: no API key (set GEMINI_API_KEY or -api-key) - running in stub mode")
+	} else {
+		log.Printf("gemini: model=%s", modelVal)
+	}
+
+	// Requirements gate: verify the resolved brain and environment BEFORE the
+	// X window opens. preflight = strict (default) prints the failed checks
+	// and exits 2; warn logs them and continues; off skips the gate. The same
+	// checks run standalone via ./preflight (cmd/preflight).
+	brainKey := key
+	if providerVal == "openrouter" {
+		brainKey = openrouterKey // no built-in token for this backend
+	}
+	runStartupPreflight(preflight.Spec{
+		Provider:   providerVal,
+		APIURL:     urlVal,
+		Model:      modelVal,
+		APIKey:     brainKey,
+		AWSProfile: awsProfileVal,
+		AWSRegion:  awsRegionVal,
+	}, preflight.Env{
+		Pipe:        pipe,
+		AgentsDirs:  searchDirs,
+		AgentsOff:   agentsOff,
+		ImageSource: imgSource,
+		PixabayKey:  pxKey,
+		TTSOn:       ttsOn,
+		// The mic button only appears when a backend AND a recorder were both
+		// found, so the recorder check is only meaningful then.
+		STTOn: sttEngine != nil,
+	}, resolvePreflightMode(*preflightFlag, cfg))
+
 	expandedH := max(*h, 260)
 	collapsedH := headerH + inputH
 
@@ -491,13 +739,17 @@ func main() {
 
 	ui := NewUI(win.windowSize())
 	ui.expandedH = expandedH // restore this height when the conversation expands
+	// Speech input: nil backend means no mic button, and the input bar keeps
+	// its original width (see micSpace).
+	ui.STT = sttEngine
+	ui.sttDevice = sttDevice
 	ui.Bot = NewBot()
 	ui.Bot.APIKey = key
 	ui.Bot.Model = modelVal
 	ui.Bot.APIURL = urlVal
 	ui.Bot.PetPipe = pipe
 	ui.Bot.SystemInstruction = resolveSystemPrompt(sysPrompt, sysFile)
-	// Haiya! button lifecycle: pink whenever a pet is listening on the cmd
+	// Haiya! button lifecycle: pink whenever a buddy is listening on the cmd
 	// FIFO (launched by us or adopted), teal when none is. The click launches
 	// (teal) or gracefully quits with the poof-out animation (pink).
 	petRunning := func(path string) bool { return path != "" && petPipeReady(path) }
@@ -510,6 +762,11 @@ func main() {
 	var petRestartPending atomic.Bool
 	petTick := time.NewTicker(2 * time.Second)
 	defer petTick.Stop()
+	// quitPet sends the buddy away with her goodbye; the body is filled in
+	// below, once the speech engine exists (the farewell speaks through it).
+	// Both happen long before the event loop starts, so the Haiya! button can
+	// never see the nil.
+	var quitPet func()
 	// Haiya! click: launch when teal, gracefully quit (poof-out) when pink.
 	onHaiya := func() {
 		if ui.PetRunning() {
@@ -517,7 +774,7 @@ func main() {
 				return // a quit is already in flight
 			}
 			log.Printf("pet: quit requested via Haiya! button")
-			QuitPet(petCmdPath, petGoneCh)
+			quitPet() // she says goodbye, then poofs out
 			return
 		}
 		if err := LaunchPet(ui.PetCharacter(), ui.PetDemo()); err != nil {
@@ -565,87 +822,32 @@ func main() {
 	if cfg != nil && cfg.Mute {
 		ui.mute = true // the dialog's MUTE SPEECH checkbox starts checked
 	}
-	// Demo mode defaults to OFF (planted pet): only an explicit
+	// Thinking bubble: on unless the INI says otherwise, so a config file written
+	// before this setting existed keeps drawing the reasoning cloud rather than
+	// losing it to a zero-value bool. The buddy draws a cloud of her own from the
+	// same block, so the Bot is told too - one setting, both clouds.
+	if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.Thinking), "off") {
+		ui.think = false
+		if ui.Bot != nil {
+			ui.Bot.PetThinkingOff = true
+		}
+	}
+	// Demo mode defaults to OFF (planted buddy): only an explicit
 	// demo-mode = true in the INI turns autonomous roaming/chatter on.
 	if cfg != nil {
 		ui.demo = cfg.DemoMode
+		// Auto-submit defaults to OFF for the same reason: a misheard sentence
+		// that goes to the model without being read is worse than one extra
+		// click, so it is opt-in.
+		ui.autoSubmit = cfg.AutoSubmit
+		ui.autoStop = cfg.AutoStop
 	}
-	// OpenRouter (and other OpenAI-compatible gateways) auth: explicit
-	// -api-key flag > $OPENROUTER_API_KEY > config api-key. There is no
-	// built-in default key, so a missing key makes GenerateText fail loud.
-	var openrouterKey string
-	if providerVal == "openrouter" {
-		openrouterKey = strings.TrimSpace(*apiKey)
-		if !explicitFlags["api-key"] {
-			if e := os.Getenv("OPENROUTER_API_KEY"); e != "" {
-				openrouterKey = strings.TrimSpace(e)
-			} else if cfg != nil && cfg.APIKey != "" {
-				openrouterKey = cfg.APIKey
-			}
-		}
-	}
-
-	// SSE streaming for the openrouter provider: default on, the config key
-	// `stream = false` switches back to single-shot replies.
-	streamVal := true
-	if cfg != nil && cfg.StreamSet {
-		streamVal = cfg.Stream
-	}
-
-	// Build the selected provider.
-	var botProvider Provider
-	switch providerVal {
-	case "bedrock":
-		awsProfile := *awsProfile
-		if awsProfile == "" && cfg != nil {
-			awsProfile = cfg.AWSProfile
-		}
-		if awsProfile == "" {
-			awsProfile = "default"
-		}
-		awsRegion := *awsRegion
-		if awsRegion == "" && cfg != nil {
-			awsRegion = cfg.AWSRegion
-		}
-		p, err := newBedrockProvider(awsProfile, awsRegion, modelVal)
-		if err != nil {
-			log.Fatalf("bedrock provider: %v", err)
-		}
-		botProvider = p
-	case "ollama":
-		botProvider = newOllamaProvider(urlVal, modelVal)
-	case "openrouter":
-		botProvider = newOpenRouterProvider(openrouterKey, urlVal, modelVal, streamVal)
-	default: // gemini
-		botProvider = &geminiProvider{apiKey: key, apiURL: urlVal, model: modelVal, http: &http.Client{Timeout: imageTimeout + geminiTimeout}}
-	}
-
 	ui.Bot.Provider = botProvider
 	story.bot = ui.Bot // wire the native read_story agent to this provider
 	// SSE deltas fire on the reply goroutine; hand them to the main loop over
 	// a channel so only the main loop ever touches UI state (mirrors Replies).
 	ui.Bot.OnDelta = func(accumulated string) { ui.Stream <- accumulated }
 
-	if sysPrompt != "" || (sysFile != "" && sysFile != "off") {
-		log.Printf("system-instruction custom (from flag or config)")
-	} else {
-		log.Printf("system-instruction default persona")
-	}
-	if providerVal == "bedrock" {
-		log.Printf("bedrock: model=%s", modelVal)
-	} else if providerVal == "ollama" {
-		log.Printf("ollama: model=%s, api-url=%s", modelVal, urlVal)
-	} else if providerVal == "openrouter" {
-		if openrouterKey == "" {
-			log.Printf("openrouter: no API key (set $OPENROUTER_API_KEY or -api-key) - replies will fail")
-		} else {
-			log.Printf("openrouter: model=%s, api-url=%s, stream=%t", modelVal, urlVal, streamVal)
-		}
-	} else if key == "" {
-		log.Printf("gemini: no API key (set GEMINI_API_KEY or -api-key) - running in stub mode")
-	} else {
-		log.Printf("gemini: model=%s", modelVal)
-	}
 	demoState := "off (planted)"
 	if ui.PetDemo() {
 		demoState = "on (roams + chatters)"
@@ -674,6 +876,46 @@ func main() {
 	// Apply the busy window to the bubble label right away so the name is
 	// correct from the first frame.
 	ui.updateBusyState()
+
+	// The shutdown goodbye (farewells.go): when anything about to end is
+	// within earshot, she picks one farewell at random, waves, shows it in
+	// her bubble and says it out loud before the process or the buddy goes
+	// away. newFarewell reads the sender name and the mute checkbox on the
+	// main loop at the moment of parting - the settings dialog can change
+	// either at any time - and wires them to the pipes this run resolved.
+	newFarewell := func() farewellSigner {
+		return farewellSigner{
+			TTS:     tts,
+			Muted:   ui.Muted(),
+			Name:    ui.Bot.Name,
+			SayPipe: pipe,
+			CmdPipe: petCmdPath,
+		}
+	}
+	// signOffApp is the chat window's own exit ritual: the line goes into
+	// the scrollback and on screen first (the wait inside signOff parks the
+	// loop and the window dies right after), and it answers at most once no
+	// matter which of the three close paths fires.
+	var farewellOnce sync.Once
+	signOffApp := func(why string) {
+		farewellOnce.Do(func() {
+			bye := newFarewell()
+			bye.UI = ui
+			bye.Paint = func() { win.DrawFrame(ui.Render()) }
+			bye.signOff(why)
+		})
+	}
+	// The Haiya! goodbye runs off the UI loop, because signOff waits for the
+	// audio and a slow TTS round trip must not freeze the window. Its signer
+	// carries no UI for the same reason - only the main loop touches UI
+	// state - so the chat log stays untouched while the buddy hears her line.
+	quitPet = func() {
+		bye := newFarewell()
+		go func() {
+			bye.signOff("pet quit")
+			QuitPet(petCmdPath, petGoneCh) // poof out once she stops talking
+		}()
+	}
 
 	dirty := true
 	caret := time.NewTicker(530 * time.Millisecond)
@@ -705,14 +947,14 @@ func main() {
 
 	log.Printf("ui ready - type in the textarea, press enter or SEND")
 
-	// Startup greeting: once the pet's entrance animation (skate / parachute /
+	// Startup greeting: once the buddy's entrance animation (skate / parachute /
 	// poof-in, a few seconds) has finished, have the LLM open the day with a
 	// warm hello plus one short did-you-know fact. The result arrives on the
 	// regular Replies channel, so it gets the same bubble/TTS/pet pipeline as
 	// a user-prompted answer. Skipped when the character should be asleep or
 	// busy right now (checked again inside Bot.Greeting).
 	//
-	// It also waits for the pet's say-FIFO to actually be listening before
+	// It also waits for the buddy's say-FIFO to actually be listening before
 	// firing: a fixed timer can fire before the desktop-pet has even created
 	// its pipe (or before its reader is ready), which would silently drop the
 	// greeting's bubble. The grace period then covers the entrance animation.
@@ -736,14 +978,29 @@ func main() {
 		}()
 	}()
 
+	// Every exit path below returns from main, including the ones a user
+	// reaches by closing the window mid-take. A live recording has to be
+	// abandoned on the way out: the session's cap lives in this process, so
+	// once main returns the timer is gone and the recorder would be orphaned,
+	// still appending to its WAV with nothing left to stop it. Escape already
+	// does this for the keyboard case (ui.CancelMic); this covers the rest.
+	defer func() {
+		if ui.STTSess != nil {
+			ui.CancelMic()
+		}
+		killAllRecorders() // and any take no session is holding on to
+	}()
+
 	for {
 		select {
 		case ev, ok := <-win.Events():
 			if !ok {
+				signOffApp("window gone") // the X server hung up on us
 				return
 			}
 			switch ev.Type {
 			case EvQuit:
+				signOffApp("window close") // WM delete, or the close key
 				return
 			case EvKey:
 				if ui.Key(ev.Key, ev.Sym) {
@@ -773,12 +1030,13 @@ func main() {
 						win.Resize(ui.W, ui.H)
 					}
 					if ui.WantClose() { // header close button clicked
+						signOffApp("header close")
 						return
 					}
 					if ui.WantPet() { // header "Haiya!" button clicked
 						onHaiya() // launch when teal, poof-out quit when pink
 					}
-					// Settings SAVE flipped DEMO MODE while a pet is
+					// Settings SAVE flipped DEMO MODE while a buddy is
 					// running: quit it now and relaunch the new mode as
 					// soon as the old process is confirmed gone (see the
 					// petGoneCh case), so the toggle takes effect at once
@@ -843,18 +1101,15 @@ func main() {
 			dirty = true
 		case reply := <-ui.Replies:
 			ui.Thinking = false
-			ui.streamText = ""    // drop the preview; AddMsg shows the final text
-			if reply.Text != "" { // empty = skipped greeting (quiet hours)
-				if reply.Image != nil {
-					ui.AddMsgWithImage(ui.Bot.Name, reply.Text, reply.Image)
-				} else {
-					ui.AddMsg(ui.Bot.Name, reply.Text)
-				}
+			ui.streamText = ""                            // drop the preview; AddMsg shows the final text
+			if reply.Text != "" || reply.Thinking != "" { // empty = skipped greeting (quiet hours)
+				ui.AddThinking(ui.Bot.Name, reply.Text, reply.Thinking,
+					reply.Image, reply.UsedAbility)
 			}
 			// Pet bubble + TTS, kept in sync: the bubble appears only once the
 			// audio is ready to play and closes as soon as playback ends. With
-			// no audio (muted, no engine, or no pet running) the bubble shows
-			// immediately and the pet dismisses it by its normal reading-time
+			// no audio (muted, no engine, or no buddy running) the bubble shows
+			// immediately and the buddy dismisses it by its normal reading-time
 			// duration.
 			audioOn := !ui.Muted() && tts.Enabled()
 			if reply.petPipe != "" && reply.petLine != "" {
@@ -866,12 +1121,19 @@ func main() {
 					petSayLine(reply.petPipe, reply.petLine)
 				}
 			} else if audioOn {
-				tts.SpeakLine(reply.Text, nil, nil) // speak aloud even without a pet
+				tts.SpeakLine(reply.Text, nil, nil) // speak aloud even without a buddy
 			}
 			// Pet action/event command from [ACTION: ...] / [EVENT: ...]: acted
 			// out on the sibling cmd-FIFO, independent of TTS/bubble timing.
 			if reply.petCmdPipe != "" && reply.petCmdLine != "" {
 				petCmd(reply.petCmdPipe, reply.petCmdLine)
+			}
+			// An agent's "expr <mood>" travels by the say-FIFO instead: the
+			// buddy has no cmd-FIFO verb for expressions, and a bare [mood] tag
+			// sets the face without opening a speech bubble. Deliberately not
+			// gated on audioOn - the point is the face, not the voice.
+			if reply.petPipe != "" && reply.petExpr != "" {
+				petSayLine(reply.petPipe, reply.petExpr)
 			}
 			dirty = true
 		case <-caret.C:
@@ -893,8 +1155,8 @@ func main() {
 				dirty = true
 			}
 		case <-petTick.C:
-			// Keep the Haiya! button honest: pink only while a pet is really
-			// listening, so a pet that died on its own flips the button back
+			// Keep the Haiya! button honest: pink only while a buddy is really
+			// listening, so a buddy that died on its own flips the button back
 			// to teal (click relaunches) instead of sending quit into the void.
 			if r := petRunning(petCmdPath); r != ui.PetRunning() {
 				ui.SetPetRunning(r)
@@ -911,7 +1173,7 @@ func main() {
 			ui.SetPetRunning(false)
 			dirty = true
 			// A quit we made only to pick up a demo-mode flip: bring the
-			// pet straight back with the new -demo setting.
+			// buddy straight back with the new -demo setting.
 			if petRestartPending.CompareAndSwap(true, false) {
 				if err := LaunchPet(ui.PetCharacter(), ui.PetDemo()); err != nil {
 					log.Printf("pet: restart: %v", err)
@@ -922,9 +1184,39 @@ func main() {
 			}
 		}
 
+		// Pick up a finished recording: the transcript is dropped into the
+		// textarea, and a mic error is shown in the input bar. DrainSTT is
+		// non-blocking, so this is safe to call every iteration.
+		ui.DrainSTT()
+		if ui.Recording() || ui.Busy() {
+			dirty = true // the mic halo and the status line animate
+		}
+
 		if dirty {
 			win.DrawFrame(ui.Render())
 			dirty = false
 		}
 	}
+}
+
+// micLabel names the capture device speech input will use, resolving an empty
+// stt-device to whatever the system currently defaults to. Logging it at
+// startup means "the mic is not recognised" is answerable from the log alone.
+func micLabel(device string) string {
+	rec := findSTTRecorder()
+	if rec == "" {
+		return "no recorder"
+	}
+	mics, err := mic.List(rec)
+	if err != nil {
+		return err.Error()
+	}
+	d, ok := mic.Pick(mics, device)
+	if !ok {
+		return "no microphone found"
+	}
+	if device != "" && d.Device != device {
+		return fmt.Sprintf("stt-device %q not found, using %s", device, d.Desc)
+	}
+	return d.Desc
 }

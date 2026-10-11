@@ -1,6 +1,6 @@
 package main
 
-// agentctl - manage chat-app's pluggable agents without opening the chat
+// agentctl - manage onidia-chat's pluggable agents without opening the chat
 // window: list installed ones, install new ones (folder, .zip or URL),
 // test-run an agent exactly as the reply pipeline would, and validate a
 // folder before you package it.
@@ -12,24 +12,26 @@ package main
 //	./agentctl run hello_world name=Ada style=formal
 //	./agentctl validate ./my-agent-folder
 //
-// Discovery and Run go through the same agent/ package chat-app uses, so
+// Discovery and Run go through the same agent/ package onidia-chat uses, so
 // "it works in agentctl" means "it works in the chat". The default
-// directory matches chat-app's -agents-dir / config agents-dir.
+// directory matches onidia-chat's -agents-dir / config agents-dir.
 
 import (
 	"flag"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"crypto/ed25519"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 func main() {
-	dir := flag.String("dir", "", "agents directory (default: chat-app's agents-dir)")
+	dir := flag.String("dir", "", "agents directory (default: onidia-chat's agents-dir)")
 	registryURL := flag.String("registry", os.Getenv("CHAT_APP_AGENTS_REGISTRY"), "registry URL or file (default: $CHAT_APP_AGENTS_REGISTRY)")
 	trustedKeyHex := flag.String("key", "", "trusted Ed25519 public key hex for verification")
 	requireSig := flag.Bool("require-signature", false, "require a valid signature to install or run")
@@ -230,7 +232,7 @@ func cmdInstall(src, agentsDir, registrySrc, explicitSHA string, pol agent.Polic
 		fatalf("%v", err)
 	}
 	fmt.Printf("installed %s -> %s\n", id, filepath.Join(agentsDir, id))
-	fmt.Println("restart chat-app to pick it up (agentctl list shows it now)")
+	fmt.Println("restart onidia-chat to pick it up (agentctl list shows it now)")
 }
 
 // cmdUpdate queries registry and upgrades installed agents when newer versions exist.
@@ -303,9 +305,41 @@ func cmdRun(agentsDir, id string, kv []string, pol agent.Policy) {
 	if res.Message != "" {
 		fmt.Println(res.Message)
 	}
+	// The chat puts the run's chart (IMG png) inside the bubble; the terminal
+	// cannot draw it, so the decoded PNG is written to a temp file and the
+	// path is printed instead. A failed save is a note on stderr, not a
+	// failed run - the agent already answered.
+	if res.Image != nil {
+		path, err := saveChart(res.Image)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "chart not saved:", err)
+		} else {
+			fmt.Println("(chart image: " + path + ")")
+		}
+	}
 	if res.PetCmd != "" {
 		fmt.Printf("(pet command: %s)\n", res.PetCmd)
 	}
+}
+
+// saveChart writes an agent's decoded chart image to a temp file and returns
+// the path. The file is the caller's to keep or delete - like any other
+// debug artifact, agentctl only prints where it landed.
+func saveChart(img image.Image) (string, error) {
+	f, err := os.CreateTemp("", "agentctl-chart-*.png")
+	if err != nil {
+		return "", err
+	}
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }
 
 // cmdValidate checks a folder's manifest + exec without installing it.

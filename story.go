@@ -2,11 +2,11 @@ package main
 
 // story.go - the built-in read_story agent: an AI-native ability that
 // reuses this Bot's LLM provider to tell a story, delivered through the
-// normal reply pipeline (chat bubble + pet bubble + TTS + pager - the
+// normal reply pipeline (chat bubble + buddy bubble + TTS + pager - the
 // story's paragraph newlines become bubble pages for free).
 //
 // It is NATIVE (not a downloaded folder) because it needs the provider
-// credentials chat-app already holds - downloaded agents run as plain
+// credentials onidia-chat already holds - downloaded agents run as plain
 // child processes and should never require handing them API keys.
 
 import (
@@ -16,12 +16,12 @@ import (
 	"math/rand"
 	"strings"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 // storySystem is the storyteller persona: plain text only, paragraphs
 // split by single newlines (finishReply converts those to page breaks),
-// no preamble - the same constraints as botPersona (bitmap font, pet TTS).
+// no preamble - the same constraints as botPersona (bitmap font, buddy TTS).
 const storySystem = `You are a warm, imaginative storyteller. Reply with ONLY the story ` +
 	`in plain text: no markdown, no emoji, no lists, no preamble like "Sure!" or ` +
 	`"Once upon a time" disclaimers, and no closing remarks. Separate paragraphs ` +

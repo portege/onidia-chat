@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"log"
 	"os"
@@ -23,7 +26,7 @@ import (
 //
 //	brain -> agent (stdin):  RUN {"title":"Havana","shuffle":"true"}\n
 //	agent -> brain (stdout): [INFO <text> ...]  (optional progress, logged)
-//	                          PET action <name>  (optional, before OK: the pet
+//	                          PET action <name>  (optional, before OK: the buddy
 //	                                              should act this out)
 //	                          OK <message>       (done, message shown to user)
 //	                          - or -
@@ -41,6 +44,9 @@ const (
 	graceExit      = 2 * time.Second  // wait after OK/ERR before SIGKILL
 	maxStderrBytes = 8 << 10          // keep of the agent's stderr for errors
 	maxInfoLines   = 50               // cap INFO lines logged per run
+	maxImgBytes    = 400 << 10        // cap decoded PNG bytes per IMG line
+	maxImgWidth    = 800              // cap decoded chart width in px
+	maxImgHeight   = 600              // cap decoded chart height in px
 )
 
 // ExternalAgent is an Agent backed by a child process speaking
@@ -183,8 +189,10 @@ func (e *ExternalAgent) Run(ctx context.Context, args map[string]string) (Result
 		failed bool
 		done   bool
 		infos  int
-		petCmd string // optional character command from a PET line
-		petErr error  // malformed/unsupported PET directive
+		petCmd string      // optional character command from a PET line
+		petErr error       // malformed/unsupported PET directive
+		img    image.Image // optional chart from an IMG line
+		imgErr error       // malformed/duplicate IMG directive
 	)
 scan:
 	for {
@@ -208,6 +216,17 @@ scan:
 						petErr = errors.New("duplicate PET directive")
 					} else {
 						petCmd, petErr = normalizePetCmd(strings.TrimSpace(line[3:]))
+					}
+				}
+			case line == "IMG" || strings.HasPrefix(line, "IMG "):
+				// Optional chart image, emitted at most once and before OK.
+				// Same shape as PET: the first directive wins, a second is a
+				// protocol error, a malformed one fails the run.
+				if imgErr == nil {
+					if img != nil {
+						imgErr = errors.New("duplicate IMG line")
+					} else {
+						img, imgErr = decodeAgentImage(strings.TrimSpace(line[3:]))
 					}
 				}
 			default: // INFO lines and anything unknown (forward-compat) are logged
@@ -255,7 +274,10 @@ scan:
 		if petErr != nil {
 			return Result{}, fmt.Errorf("agent %s: %w", e.m.ID, petErr)
 		}
-		return Result{Message: term, PetCmd: petCmd}, nil
+		if imgErr != nil {
+			return Result{}, fmt.Errorf("agent %s: %w", e.m.ID, imgErr)
+		}
+		return Result{Message: term, PetCmd: petCmd, Image: img}, nil
 	}
 	// No terminal line: crashed, hung, or wrong protocol.
 	if ctx.Err() != nil {
@@ -281,34 +303,115 @@ func stderrSuffix(b *bytes.Buffer) string {
 	return ""
 }
 
-// petNameRe matches a pet pose/FX name as the brain spells it on the cmd-FIFO:
-// lowercase word, digits and underscores ("dance", "celebration", "sixseven").
+// pngMagic is the 8-byte signature every PNG starts with. Checked before
+// decoding so a text mix-up ("IMG hello") fails fast with a clear error
+// instead of a generic decode complaint.
+var pngMagic = []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+
+// decodeAgentImage validates the payload of an "IMG ..." line and returns
+// the decoded chart. Shape is strict: the literal kind "png", one payload,
+// nothing else - decoded bytes are rendered as pixels, never executed, but
+// a corrupt or hostile image must still fail the run, not the app.
+func decodeAgentImage(s string) (image.Image, error) {
+	kind, payload, _ := strings.Cut(strings.TrimSpace(s), " ")
+	kind = strings.ToLower(kind)
+	payload = strings.TrimSpace(payload)
+	if kind == "" || payload == "" {
+		return nil, fmt.Errorf("IMG: want \"IMG png <base64>\"")
+	}
+	if kind != "png" {
+		return nil, fmt.Errorf("IMG: unsupported kind %q (want png)", kind)
+	}
+	raw, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return nil, fmt.Errorf("IMG: bad base64: %w", err)
+	}
+	if len(raw) > maxImgBytes {
+		return nil, fmt.Errorf("IMG: decoded %d bytes, cap %d", len(raw), maxImgBytes)
+	}
+	if len(raw) < len(pngMagic) || !bytes.Equal(raw[:len(pngMagic)], pngMagic) {
+		return nil, fmt.Errorf("IMG: not PNG bytes")
+	}
+	img, err := png.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("IMG: corrupt PNG: %w", err)
+	}
+	if w, h := img.Bounds().Dx(), img.Bounds().Dy(); w > maxImgWidth || h > maxImgHeight {
+		return nil, fmt.Errorf("IMG: %dx%d, cap %dx%d", w, h, maxImgWidth, maxImgHeight)
+	}
+	return img, nil
+}
+
+// petNameRe matches a buddy pose/FX/face name as the brain spells it on the
+// cmd-FIFO: lowercase word, digits and underscores ("dance", "celebration",
+// "sixseven", "sleepy").
 var petNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 
-// normalizePetCmd validates the payload of a "PET <verb> <name>" line and
-// returns the canonical cmd-FIFO line ("action dance"), so an ability can make
-// the character act the ability out - play a song, start a dance; fail, look
-// worried.
+// petMoveNoArg and petMoveWithDir are the buddy's own locomotion commands, split
+// by whether they take a direction. The buddy's behaviour layer takes these bare
+// - "jump", "stand", "walk left" - with no "move" prefix, which is why they
+// cannot be validated by the "verb + name" shape below. The brain re-checks
+// these against its own tables; this list only decides the SHAPE.
+var petMoveNoArg = map[string]bool{
+	"stand": true, "stop": true, "freeze": true, "hold": true, "stay": true,
+	"idle": true, "auto": true, "wander": true,
+	"left": true, "l": true, "right": true, "r": true,
+	"jump": true, "hop": true, "bounce": true,
+	"parachute": true, "chute": true, "drop": true, "fall": true,
+	"skateboard": true, "skate": true, "ride": true, "board": true,
+}
+
+var petMoveWithDir = map[string]bool{"walk": true, "go": true, "move": true}
+
+// petDirRe matches the only directions the buddy walks in.
+var petDirRe = regexp.MustCompile(`^(left|right)$`)
+
+// normalizePetCmd validates the payload of a "PET ..." line and returns the
+// canonical command ("action dance", "expr happy", "walk left"), so an ability
+// can make the character act the ability out - play a song, start a dance;
+// fail, look worried; walk somewhere.
 //
-// That line goes straight to the desktop-pet's cmd-FIFO, which is the one
-// place where third-party agent output could smuggle in a second command, so
-// the shape is strict: a known verb, ONE pet name, nothing else - no spaces,
-// no separators, no newlines. Whether the pet actually knows the name is the
-// brain's business (it owns the action/event tables and drops unknown names
-// with a log line), so a well-formed but unknown name passes through here and
-// fails soft instead of failing the whole run.
+// The command line goes straight to the desktop-pet, which is the one place
+// where third-party agent output could smuggle in a second command, so the
+// shape is strict: a known verb, ONE buddy name, nothing else - no spaces, no
+// separators, no newlines. Whether the buddy actually knows the name is the
+// brain's business (it owns the action/event/expression tables and drops
+// unknown names with a log line), so a well-formed but unknown name passes
+// through here and fails soft instead of failing the whole run.
 func normalizePetCmd(s string) (string, error) {
-	verb, name, ok := strings.Cut(strings.TrimSpace(s), " ")
-	if !ok {
-		return "", fmt.Errorf("PET %q: want \"action <name>\" or \"event <name>\"", s)
-	}
+	verb, name, _ := strings.Cut(strings.TrimSpace(s), " ")
 	verb = strings.ToLower(verb)
 	name = strings.ToLower(strings.TrimSpace(name))
-	if verb != "action" && verb != "event" {
-		return "", fmt.Errorf("PET: unknown command %q (want action or event)", verb)
+
+	// Movement: a bare verb, or a walk verb plus a direction.
+	if petMoveNoArg[verb] {
+		if name != "" {
+			return "", fmt.Errorf("PET: %q takes no argument (want %q)", verb, verb)
+		}
+		return verb, nil
 	}
-	if !petNameRe.MatchString(name) {
-		return "", fmt.Errorf("PET: bad %s name %q", verb, name)
+	if petMoveWithDir[verb] {
+		if name == "" {
+			return verb, nil
+		}
+		if !petDirRe.MatchString(name) {
+			return "", fmt.Errorf("PET: bad %s direction %q (want left or right)", verb, name)
+		}
+		return verb + " " + name, nil
 	}
-	return verb + " " + name, nil
+
+	switch verb {
+	case "action", "event", "expr":
+		if name == "" {
+			// Say what to do rather than just "bad name": a missing name is a
+			// different mistake from a malformed one.
+			return "", fmt.Errorf("PET: %q needs a name - want %q", verb, verb+" <name>")
+		}
+		if !petNameRe.MatchString(name) {
+			return "", fmt.Errorf("PET: bad %s name %q", verb, name)
+		}
+		return verb + " " + name, nil
+	}
+	return "", fmt.Errorf("PET: unknown command %q (want action, event, expr, "+
+		"or a movement like jump / walk left)", verb)
 }

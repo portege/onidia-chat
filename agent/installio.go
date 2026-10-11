@@ -28,7 +28,7 @@ func unzipToTemp(zipPath string) (string, func(), error) {
 	if err != nil {
 		return "", func() {}, fmt.Errorf("open zip: %w", err)
 	}
-	tmp, err := os.MkdirTemp("", "chat-app-agent-*")
+	tmp, err := os.MkdirTemp("", "onidia-chat-agent-*")
 	if err != nil {
 		r.Close()
 		return "", func() {}, err

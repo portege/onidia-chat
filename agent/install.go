@@ -226,7 +226,7 @@ func download(url string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("install: download %s: HTTP %d", url, resp.StatusCode)
 	}
-	f, err := os.CreateTemp("", "chat-app-agent-*.zip")
+	f, err := os.CreateTemp("", "onidia-chat-agent-*.zip")
 	if err != nil {
 		return "", fmt.Errorf("install: %w", err)
 	}

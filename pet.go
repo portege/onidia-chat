@@ -2,8 +2,8 @@ package main
 
 // pet.go - bridge to the desktop-pet: bot replies are written to its say-FIFO
 // so Onidia speaks them. The FIFO lives at /tmp/desktop-pet-<display>.say
-// (the path is logged by the pet at startup). Writes are best-effort and
-// never hang the chat: with no pet listening, the open fails with ENXIO and
+// (the path is logged by the buddy at startup). Writes are best-effort and
+// never hang the chat: with no buddy listening, the open fails with ENXIO and
 // we quietly skip.
 
 import (
@@ -26,17 +26,23 @@ import (
 )
 
 // petSayClearToken is a reserved, lone control-character line written to the
-// say-FIFO to dismiss the pet's current speech bubble. Real reply lines (which
-// go through sanitise* and TrimSpace on the pet side) can never equal it, so
+// say-FIFO to dismiss the buddy's current speech bubble. Real reply lines (which
+// go through sanitise* and TrimSpace on the buddy side) can never equal it, so
 // it is a safe side-channel for closing the bubble exactly when text-to-speech
 // playback ends.
 const petSayClearToken = "\x04"
 
 // petPipePath derives the say-FIFO path from $DISPLAY exactly the way the
-// pet names it (see desktop-pet main.go instanceTag): every '/', ':' and '.'
-// becomes '-'. Returns "" when no display is set.
+// buddy names it: every '/', ':' and '.' becomes '-'. Returns "" when no
+// display is set.
+//
+// The display is canonicalised first (see canonicalDisplay) because the buddy
+// does the same, and the two have to agree: ":0", ":0.0" and "localhost:0.0"
+// are one desktop, so all three must land on one path. If they did not, the
+// buddy would listen on a pipe this app never writes to and every reply would
+// vanish with no error anywhere.
 func petPipePath() string {
-	disp := os.Getenv("DISPLAY")
+	disp := canonicalDisplay(os.Getenv("DISPLAY"))
 	if disp == "" {
 		return ""
 	}
@@ -49,8 +55,50 @@ func petPipePath() string {
 	return "/tmp/desktop-pet-" + tag + ".say"
 }
 
-// petCmdPathFor derives the pet's command-FIFO path from its say-FIFO path.
-// The pet names the two pipes identically apart from the extension (.say for
+// canonicalDisplay reduces a DISPLAY value to one spelling of the display it
+// names. It is a copy of Canonical in the buddy's own internal/single package -
+// the two repos are separate Go modules and this is their only shared
+// contract, so the rules are spelled out twice on purpose:
+//
+//	":0"  ":0.0"  "localhost:0.0"  "unix:0"  "unix/:0"  -> ":0"
+//	":0.1"                                         -> ":0.1" (a different screen)
+//	"MyHost:2.0"                                   -> "myhost:2"
+//
+// A missing display stays missing (""), which petPipePath reads as "forward
+// nothing". Keep this and single.Canonical in step; the buddy's own table of
+// examples is the reference.
+func canonicalDisplay(display string) string {
+	d := strings.TrimSpace(display)
+	if d == "" {
+		return ""
+	}
+	// Both socket spellings mean "this machine", and they are cut differently
+	// on purpose: "unix:0" has no leading colon left, "unix/:0" does.
+	if rest, ok := strings.CutPrefix(d, "unix:"); ok {
+		d = ":" + rest
+	} else if rest, ok := strings.CutPrefix(d, "unix/"); ok {
+		d = rest
+	}
+	host, num, ok := strings.Cut(d, ":")
+	if !ok {
+		return strings.ToLower(d) // no display number: nothing to normalise
+	}
+	host = strings.ToLower(host)
+	if host == "localhost" {
+		host = "" // an empty host already means "this machine"
+	}
+	num = strings.TrimSuffix(num, ".0") // screen 0 is the default screen
+	if host == "" {
+		if num == "" {
+			return ""
+		}
+		return ":" + num
+	}
+	return host + ":" + num
+}
+
+// petCmdPathFor derives the buddy's command-FIFO path from its say-FIFO path.
+// The buddy names the two pipes identically apart from the extension (.say for
 // speech, .cmd for action/event commands), so replacing the suffix yields the
 // exact sibling pipe even for user-customized paths. Returns "" when the say
 // pipe is disabled.
@@ -61,37 +109,41 @@ func petCmdPathFor(sayPath string) string {
 	return strings.TrimSuffix(sayPath, ".say") + ".cmd"
 }
 
-// The pet lifecycle: chat-app launches the onidia binary detached and
+// The buddy lifecycle: onidia-chat launches the onidia binary detached and
 // remembers the process, so quitting can be confirmed (and escalated to
-// SIGTERM when the pet ignores the quit command, e.g. a stale binary).
+// SIGTERM when the buddy ignores the quit command, e.g. a stale binary).
 
 var petMu sync.Mutex
-var petProc *os.Process // the onidia instance chat-app launched, if any
+var petProc *os.Process // the onidia instance onidia-chat launched, if any
 
-// onidiaPath resolves the onidia/desktop-pet binary, in the same spirit as
-// the pet's own chat-app.ini lookup: a sibling onidia/ directory, a sibling
-// desktop-pet/ directory (older layout), or the conventional absolute repo
-// path. Returns "" when no candidate is executable.
+// onidiaPath resolves the buddy binary. The candidates, in order:
+//
+//	onidia/onidia                 run from the repo root (development checkout)
+//	desktop-pet/desktop-pet       the same, older name for the buddy
+//	<exedir>/onidia               the .deb ships both binaries in /opt/onidia/bin,
+//	                              so the buddy is a sibling of onidia-chat
+//	<exedir>/desktop-pet          the same, older name
+//	<exedir>/../onidia/onidia     the checkout again, binary run in place
+//	<exedir>/../desktop-pet/desktop-pet
+//	../onidia/onidia              run from a directory beside onidia-chat/
+//	../desktop-pet/desktop-pet    the same, older name
+//	onidia on $PATH               the .deb also symlinks /usr/bin/onidia
+//
+// "Next to the binary" is what makes a package install work: the .deb puts
+// onidia-chat at /opt/onidia/bin/onidia-chat with the buddy right beside it,
+// and a desktop launcher runs the chat with any old working directory, so
+// the working-directory candidates cannot be relied on there. The kernel
+// resolves os.Executable() through the /usr/bin symlink (/proc/self/exe is
+// always the real path), so the exe-relative candidates fire whether
+// onidia-chat was started as /usr/bin/onidia-chat or as
+// /opt/onidia/bin/onidia-chat.
+//
+// No developer home directory is probed: a missing buddy is an error, not a
+// reason to launch someone's checkout. Returns "" when no candidate is
+// executable.
 func onidiaPath() string {
-	if p, err := os.Stat("onidia/onidia"); err == nil && !p.IsDir() && p.Mode()&0o111 != 0 {
-		return "onidia/onidia"
-	}
-	if p, err := os.Stat("desktop-pet/desktop-pet"); err == nil && !p.IsDir() && p.Mode()&0o111 != 0 {
-		return "desktop-pet/desktop-pet"
-	}
-	cands := []string{
-		"../onidia/onidia", // relative to chat-app/ working dir
-		"../desktop-pet/desktop-pet",
-		"/home/boi/repo/ai-helper/onidia/onidia",
-		"/home/boi/repo/ai-helper/desktop-pet/desktop-pet",
-	}
-	if exe, err := os.Executable(); err == nil {
-		cands = append([]string{
-			filepath.Join(filepath.Dir(exe), "..", "onidia", "onidia"),
-			filepath.Join(filepath.Dir(exe), "..", "desktop-pet", "desktop-pet"),
-		}, cands...)
-	}
-	for _, c := range cands {
+	exe, _ := os.Executable()
+	for _, c := range onidiaCandidates(exe) {
 		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
 			return c
 		}
@@ -99,8 +151,36 @@ func onidiaPath() string {
 	return ""
 }
 
+// onidiaCandidates lists the paths onidiaPath probes, in order (see there);
+// exe is the resolved path of this process, "" when it is unavailable.
+// Split out from onidiaPath so the order and the package layout can be
+// asserted in a test without moving the binary under test.
+func onidiaCandidates(exe string) []string {
+	cands := []string{
+		"onidia/onidia",
+		"desktop-pet/desktop-pet",
+	}
+	if exe != "" {
+		d := filepath.Dir(exe)
+		cands = append(cands,
+			filepath.Join(d, "onidia"),
+			filepath.Join(d, "desktop-pet"),
+			filepath.Join(d, "..", "onidia", "onidia"),
+			filepath.Join(d, "..", "desktop-pet", "desktop-pet"),
+		)
+	}
+	cands = append(cands,
+		"../onidia/onidia",
+		"../desktop-pet/desktop-pet",
+	)
+	if p, err := exec.LookPath("onidia"); err == nil {
+		cands = append(cands, p)
+	}
+	return cands
+}
+
 // ensureOnidiaFresh rebuilds the onidia binary when any of its .go sources is
-// newer, so freshly edited pet behaviour (new commands such as quit, new
+// newer, so freshly edited buddy behaviour (new commands such as quit, new
 // animations) is what actually launches. Best-effort: returns an error when
 // the build is skipped or fails, and the caller still launches the stale
 // binary.
@@ -150,7 +230,7 @@ func ensureOnidiaFresh(bin string) error {
 
 // petLaunchArgs builds the launch arguments for the onidia binary: the
 // -character flag selects the sprite (Kama for a boy, Onidia for a girl) and
-// -demo picks the autonomous-behavior mode. Both flags' defaults on the pet
+// -demo picks the autonomous-behavior mode. Both flags' defaults on the buddy
 // side (onidia, demo off) match this app's defaults, so a default launch is
 // flagless.
 func petLaunchArgs(character string, demo bool) []string {
@@ -176,10 +256,10 @@ func normalizeGender(v string) string {
 }
 
 // LaunchPet (re)builds the onidia binary if its sources changed, then starts
-// it detached from the chat-app process (new session, no shared stdout) so it
-// keeps running when chat-app exits. character picks the sprite: "kama" for
+// it detached from the onidia-chat process (new session, no shared stdout) so it
+// keeps running when onidia-chat exits. character picks the sprite: "kama" for
 // the settings dialog's BOY gender, "onidia" (the binary's own default, so
-// no flag is passed) for GIRL. demo enables the pet's autonomous mode
+// no flag is passed) for GIRL. demo enables the buddy's autonomous mode
 // (random roaming + unsolicited chatter); demo=false keeps it planted — it
 // still enters with the launch flourish and walks to its parking spot, but
 // then stays there instead of wandering, still reactive and still idly
@@ -188,7 +268,7 @@ func normalizeGender(v string) string {
 func LaunchPet(character string, demo bool) error {
 	bin := onidiaPath()
 	if bin == "" {
-		return errors.New("onidia binary not found - looked for onidia/onidia, desktop-pet/desktop-pet")
+		return errors.New("onidia binary not found - looked in the working dir, next to onidia-chat, and on PATH (install the onidia .deb, or run from the repo root)")
 	}
 	if err := ensureOnidiaFresh(bin); err != nil {
 		log.Printf("pet: refresh build skipped (%v) - launching the existing binary", err)
@@ -196,7 +276,7 @@ func LaunchPet(character string, demo bool) error {
 	cmd := exec.Command(bin, petLaunchArgs(character, demo)...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from chat-app
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from onidia-chat
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("launching %s: %w", bin, err)
 	}
@@ -208,11 +288,11 @@ func LaunchPet(character string, demo bool) error {
 	return nil
 }
 
-// QuitPet asks the running pet to exit gracefully: a bare "quit" line on its
+// QuitPet asks the running buddy to exit gracefully: a bare "quit" line on its
 // command FIFO makes it play the poof-out (disappear) animation and then
-// close. A watcher confirms the exit and escalates to SIGTERM when the pet
+// close. A watcher confirms the exit and escalates to SIGTERM when the buddy
 // ignores the command (a stale binary without the quit handler, or a missed
-// FIFO write). Signals `gone` exactly once once the pet is (believed) gone.
+// FIFO write). Signals `gone` exactly once once the buddy is (believed) gone.
 func QuitPet(cmdPath string, gone chan<- struct{}) {
 	if cmdPath != "" {
 		petCmd(cmdPath, "quit")
@@ -220,11 +300,11 @@ func QuitPet(cmdPath string, gone chan<- struct{}) {
 	go watchPetQuit(cmdPath, gone)
 }
 
-// watchPetQuit polls the pet's cmd FIFO until its reader disappears (the pet
+// watchPetQuit polls the buddy's cmd FIFO until its reader disappears (the buddy
 // process exited) or the deadline passes; two consecutive readerless probes
 // count, so a single poll landing in the listener's reopen gap is not
-// mistaken for an exit. On the deadline it SIGTERMs the pet we launched, or -
-// for an adopted instance we have no handle on - the pet process by exact
+// mistaken for an exit. On the deadline it SIGTERMs the buddy we launched, or -
+// for an adopted instance we have no handle on - the buddy process by exact
 // name, then signals `gone` either way.
 func watchPetQuit(cmdPath string, gone chan<- struct{}) {
 	deadline := time.Now().Add(5 * time.Second)
@@ -252,8 +332,8 @@ func watchPetQuit(cmdPath string, gone chan<- struct{}) {
 	signalGone(gone)
 }
 
-// stopPetByName SIGTERMs any running pet process (exact name match: onidia,
-// or its older desktop-pet name) - used when chat-app adopted a pet it did
+// stopPetByName SIGTERMs any running buddy process (exact name match: onidia,
+// or its older desktop-pet name) - used when onidia-chat adopted a buddy it did
 // not launch and therefore has no process handle for.
 func stopPetByName() {
 	for _, name := range []string{"onidia", "desktop-pet"} {
@@ -281,7 +361,7 @@ func signalGone(gone chan<- struct{}) {
 	}
 }
 
-// petPipeReady reports whether the pet's say-FIFO currently has a reader
+// petPipeReady reports whether the buddy's say-FIFO currently has a reader
 // attached, i.e. the desktop-pet process is running and listening. It probes
 // with a non-blocking write-open and closes immediately without writing a
 // line. False for an empty path, a pipe that does not exist yet (ENOENT), or
@@ -298,20 +378,20 @@ func petPipeReady(path string) bool {
 	return true
 }
 
-// petSay writes one reply to the pet say-FIFO: the image (if any) is encoded
+// petSay writes one reply to the buddy say-FIFO: the image (if any) is encoded
 // to a temp PNG and the assembled line is pushed via petSayLine. Best-effort -
-// the FIFO write never hangs the chat: with no pet listening, the open fails
+// the FIFO write never hangs the chat: with no buddy listening, the open fails
 // with ENXIO and we quietly skip.
-func petSay(path, mood, text string, img image.Image) {
-	petSayLine(path, buildPetSayLine(path, mood, text, img))
+func petSay(path, mood, text, thinking string, img image.Image) {
+	petSayLine(path, buildPetSayLine(path, mood, text, thinking, img))
 }
 
 // buildPetSayLine prepares the say-pipe line for a reply: the image is encoded
-// to a temp PNG, then the mood tag + caption are assembled in the pet's parse
+// to a temp PNG, then the mood tag + caption are assembled in the buddy's parse
 // order. Returns "" when there is nothing to show. The line is handed to
 // petSayLine later (possibly by the TTS worker, synchronised with audio
 // playback), so building and writing are kept separate.
-func buildPetSayLine(path, mood, text string, img image.Image) string {
+func buildPetSayLine(path, mood, text, thinking string, img image.Image) string {
 	if path == "" || (text == "" && img == nil) {
 		return ""
 	}
@@ -321,22 +401,22 @@ func buildPetSayLine(path, mood, text string, img image.Image) string {
 		if err != nil {
 			log.Printf("pet: encoding say-image: %v", err)
 		} else {
-			cleanupSayImages(p) // drop generations the pet has long consumed
+			cleanupSayImages(p) // drop generations the buddy has long consumed
 			imgPath = p
 		}
 	}
-	return buildSayLine(mood, text, imgPath)
+	return buildSayLine(mood, text, thinking, imgPath)
 }
 
 // petSayLine writes one pre-built line to the say-FIFO. Best-effort and
 // never blocking: O_NONBLOCK so a missing reader yields ENXIO instead of a
-// hang, with a short retry that covers the pet reopening the pipe between
+// hang, with a short retry that covers the buddy reopening the pipe between
 // messages. A line whose write fails cleans up any temp image it references.
 func petSayLine(path, line string) {
 	if path == "" || line == "" {
 		return
 	}
-	// O_NONBLOCK so we get ENXIO instead of blocking forever when the pet
+	// O_NONBLOCK so we get ENXIO instead of blocking forever when the buddy
 	// is not running (a FIFO write-open waits for a reader otherwise).
 	var f *os.File
 	var err error
@@ -346,7 +426,7 @@ func petSayLine(path, line string) {
 			break
 		}
 		if !errors.Is(err, syscall.ENXIO) {
-			petTryRemoveSayImage(line) // no pipe at all -> pet not running
+			petTryRemoveSayImage(line) // no pipe at all -> buddy not running
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -362,10 +442,10 @@ func petSayLine(path, line string) {
 	}
 }
 
-// petClear asks the pet to close its current speech bubble (text-to-speech
+// petClear asks the buddy to close its current speech bubble (text-to-speech
 // playback just finished). It writes the reserved clear token as its own
 // say-pipe line, so bubble open and close share one FIFO and keep their
-// ordering even on a slow pet.
+// ordering even on a slow buddy.
 func petClear(path string) {
 	if path == "" {
 		return
@@ -374,9 +454,9 @@ func petClear(path string) {
 }
 
 // petCmd sends one command line (e.g. "action dance" or "event love") to the
-// pet's command FIFO so the LLM's [ACTION: ...] / [EVENT: ...] reply tags
-// translate into the pet acting out the reply. Best-effort and identical to
-// petSayLine in spirit: O_NONBLOCK, no hang when no pet is listening, retry
+// buddy's command FIFO so the LLM's [ACTION: ...] / [EVENT: ...] reply tags
+// translate into the buddy acting out the reply. Best-effort and identical to
+// petSayLine in spirit: O_NONBLOCK, no hang when no buddy is listening, retry
 // once to cover a pipe reopen.
 func petCmd(path, line string) {
 	if path == "" || line == "" {
@@ -392,7 +472,7 @@ func petCmd(path, line string) {
 			return
 		}
 		if !errors.Is(err, syscall.ENXIO) {
-			return // no cmd pipe at all -> pet not running
+			return // no cmd pipe at all -> buddy not running
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -406,12 +486,21 @@ func petTryRemoveSayImage(line string) {
 	}
 }
 
-// buildSayLine assembles the line the pet expects, in its parse order: mood
-// tag, then image tag, then the caption text.
-func buildSayLine(mood, text, imgPath string) string {
+// buildSayLine assembles the line the buddy expects, in its parse order: mood
+// tag, then the thinking block, then image tag, then the caption text.
+//
+// The thinking block is FORWARDED to the buddy so she can show it in her own
+// small thought cloud (onidia parses <THINKING>...</THINKING> out of the
+// say-line and renders it above the speech bubble). It is deliberately not
+// part of the caption: the caption is what she speaks, and the reasoning is
+// not said out loud.
+func buildSayLine(mood, text, thinking, imgPath string) string {
 	line := text
 	if imgPath != "" {
 		line = "[image " + imgPath + "] " + line
+	}
+	if t := sanitizeThinking(thinking); t != "" {
+		line = thinkTagOpen + t + thinkTagClose + " " + line
 	}
 	if mood != "" {
 		line = "[" + mood + "] " + line
@@ -419,10 +508,16 @@ func buildSayLine(mood, text, imgPath string) string {
 	return line
 }
 
+// sanitizeThinking keeps the block on ONE line: the say-pipe is line-oriented,
+// so a newline here would be read by the buddy as a second message.
+func sanitizeThinking(s string) string {
+	return strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+}
+
 // sayImagePath extracts the path from an "[image <path>]" say-tag.
 var sayImagePath = regexp.MustCompile(`\[image ([^\]]+)\]`)
 
-// sayImagePattern matches the temp PNGs written for pet say-lines.
+// sayImagePattern matches the temp PNGs written for buddy say-lines.
 const sayImagePattern = "chat-app-say-*.png"
 
 // saveTempPNG encodes img as a PNG in a unique temp file and returns its
@@ -446,7 +541,7 @@ func saveTempPNG(img image.Image) (string, error) {
 }
 
 // cleanupSayImages removes temp say-images from earlier replies, keeping
-// keep (the file referenced by the newest line - the pet may still be about
+// keep (the file referenced by the newest line - the buddy may still be about
 // to read it). Keeps /tmp tidy during long chat sessions.
 func cleanupSayImages(keep string) {
 	matches, err := filepath.Glob(filepath.Join(os.TempDir(), sayImagePattern))

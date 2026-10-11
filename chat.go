@@ -7,7 +7,7 @@ package main
 // (see pet.go) so Onidia speaks them, using a leading [mood] tag the model is
 // asked to emit. When images are enabled, the model can also emit an [IMG: ...]
 // tag; the app fetches or generates the picture, shows it above the bot's
-// bubble, and hands it to the pet bridge so the same picture shows up in
+// bubble, and hands it to the buddy bridge so the same picture shows up in
 // Onidia's speech bubble. Without a provider configured the bot falls back to
 // a stub so the UI keeps working offline.
 
@@ -23,7 +23,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 const (
@@ -41,9 +41,9 @@ const (
 	maxHistTurns  = 20 // conversation turns sent as context
 )
 
-// botPersona shapes every answer: short (the pet bubble is small), playful,
+// botPersona shapes every answer: short (the buddy bubble is small), playful,
 // no markdown/emoji (the bitmap font cannot draw them), and an optional
-// leading [mood] tag that drives the pet's facial expression.
+// leading [mood] tag that drives the buddy's facial expression.
 const botPersona = `You are Buddy, a tiny cheerful chat companion living in a chat window on a ` +
 	`Linux desktop, friends with Onidia, a desktop-pet chibi girl. ` +
 	`Keep every reply SHORT and playful: 1-3 plain sentences, no markdown, no emoji, no lists ` +
@@ -70,14 +70,14 @@ const imageTagInstruction = ` When your answer would benefit from an image (plac
 // match a real page. Descriptive phrases ("sunny beach with palm trees") 404.
 const wikiImageTagInstruction = ` When your answer would benefit from an image (place, landmark, animal, famous person, object, food, etc.), start your reply with "[IMG: <concise Wikipedia article title>]" on its own line. Pick a single, well-known article name (e.g. "Bali", "Eiffel Tower", "Capybara"), not a descriptive sentence. If you also want to express an emotion, put the image tag first, then the mood tag. All tags are stripped before display.`
 
-// visualLanguageInstruction teaches the model the pet's action/event tags so a
-// reply can also make the pet pose (action) or overlay FX (event), not just
+// visualLanguageInstruction teaches the model the buddy's action/event tags so a
+// reply can also make the buddy pose (action) or overlay FX (event), not just
 // change her expression. The app parses these out of the reply header and
-// forwards them to the pet's command FIFO; the tags are stripped before the
+// forwards them to the buddy's command FIFO; the tags are stripped before the
 // text is shown. The INI's system-prompt-multi typically carries a fuller
 // version (see docs/llm-visual-language.md); this default keeps the built-in
 // persona consistent when no config overrides it.
-const visualLanguageInstruction = ` Beyond the mood tag, you may also start the reply with ONE action tag on its own line - "[ACTION: <name>]" - and/or ONE event tag on its own line - "[EVENT: <name>]" - so the desktop-pet girl acts out the reply (pose or FX overlay). Actions: skip (jump rope), juggle, dance, eat, work, guitar, sneeze, sixseven, basketball, drive, ride (skateboard), kitten (something cute arrives), wave (hello/goodbye - great for greetings and farewells). Events: love (hearts), idea (light bulb), celebration (confetti), sleep (Zzz), peace (V sign), halloween, matrix (hacker rain), magic (curtain trick - use only for magic/vanishing talk, she really does disappear). Never use disappear or appear - those are internal pet states, not reply decorations. Pick what matches the content, at most one action and one event per reply, never mid-sentence (a tag only counts at the very start of the reply or of a line). The image tag, when used, comes first on its own line, then the action/event/mood tags; every tag is stripped before display and never shown to the user.`
+const visualLanguageInstruction = ` Beyond the mood tag, you may also start the reply with ONE action tag on its own line - "[ACTION: <name>]" - and/or ONE event tag on its own line - "[EVENT: <name>]" - so the desktop-pet girl acts out the reply (pose or FX overlay). Actions: skip (jump rope), juggle, dance, eat, work, guitar, sneeze, sixseven, basketball, drive, ride (skateboard), kitten (something cute arrives), wave (hello/goodbye - great for greetings and farewells). Events: love (hearts), idea (light bulb), celebration (confetti), sleep (Zzz), peace (V sign), halloween, matrix (hacker rain), magic (curtain trick - use only for magic/vanishing talk, she really does disappear), robot (iron-man suit-up, then she flies off the screen - use for hero/launch/departure talk). Never use disappear or appear - those are internal pet states, not reply decorations. Pick what matches the content, at most one action and one event per reply, never mid-sentence (a tag only counts at the very start of the reply or of a line). The image tag, when used, comes first on its own line, then the action/event/mood tags; every tag is stripped before display and never shown to the user.`
 
 // ageInstructionFmt is appended to the system prompt when a character age is
 // set in the settings dialog (7-13), so answers stay age-appropriate.
@@ -99,6 +99,7 @@ type Bot struct {
 	Model             string // provider-specific model ID
 	APIURL            string // Gemini endpoint base
 	PetPipe           string // desktop-pet say FIFO; empty disables forwarding
+	PetThinkingOff    bool   // buddy bridge honours "thinking = off" too; negative so &Bot{} keeps today's behaviour (see petThinking)
 	SystemInstruction string // system prompt sent to every model
 	ImageSource       string // "pixabay" | "wiki" | "gemini" | "off"
 	ForceImageKeyword string // if set, always fetch/generate an image for this keyword
@@ -137,20 +138,34 @@ func NewBot() *Bot {
 	}
 }
 
-// ReplyResult is what Bot.Reply returns: text plus an optional image. The pet
+// ReplyResult is what Bot.Reply returns: text plus an optional image. The buddy
 // say-pipe line (with mood/image tags) travels with it so the bubble can be
 // shown in sync with text-to-speech playback instead of the moment the text is
-// generated (see main.go). An optional pet command (action/event from the
+// generated (see main.go). An optional buddy command (action/event from the
 // LLM's [ACTION: ...] / [EVENT: ...] reply tags) travels alongside it so the
-// pet can act out the reply.
+// buddy can act out the reply.
 type ReplyResult struct {
 	Text  string
 	Image image.Image
 
+	// Thinking is the model's <THINKING>...</THINKING> reasoning, shown in the
+	// UI as its own thought-cloud bubble ABOVE the speech bubble. It is
+	// deliberately absent from Text: the answer is what the buddy speaks and what
+	// goes into the reply, and reasoning must not be read aloud. Empty when the
+	// provider sends no reasoning.
+	Thinking string
+
 	petLine    string // assembled say-pipe line ("" = nothing to forward)
 	petPipe    string // say-FIFO path it should be written to ("" = disabled)
-	petCmdLine string // command line for the cmd-FIFO ("action dance", "event love")
+	petCmdLine string // command line for the cmd-FIFO ("action dance", "event love", "jump")
 	petCmdPipe string // cmd-FIFO path to write it to ("" = disabled)
+	petExpr    string // bare "[mood]" say-line an agent asked for ("" = none)
+
+	// UsedAbility records that at least one ability ran for this reply. The UI
+	// keeps it on the message it stores, so the NEXT turn's history carries
+	// visible proof the ability worked - see agentbridge.historyEvidence, which
+	// is why a single refusal would otherwise snowball into a permanent one.
+	UsedAbility bool
 }
 
 // resolveSystemPrompt merges a -system-prompt override and a -system-file
@@ -284,13 +299,24 @@ type geminiResponse struct {
 	} `json:"error,omitempty"`
 }
 
+// agentPayloadPat matches the inside of one [AGENT: ...] tag. The tag grammar
+// parses quoted values as units and allows anything but the closing quote in
+// them (agent.ParseCall, and the catalog tells the model to quote values with
+// spaces: title="Havana [live]"), so a value may contain a ']' of its own. The
+// naive [^\]]* the other tag families use stops at that inner bracket, which
+// leaves the tag's tail - the leftover '"]' of
+// [AGENT: play_song title="Havana [live]"] - in the middle of the reply and
+// hands the truncated payload to the parser, so a legal call came back as a
+// parse error. Quoted runs are matched as a unit instead.
+const agentPayloadPat = `(?:"[^"]*"|[^\]"])*`
+
 // replyTag matches one [IMG: ...], [action]/[event], [mood] or [AGENT: ...]
 // tag plus any blanks after it. Group 2 holds the image description, group 3
 // the action name, group 4 the event name, group 5 the mood word, and group 6
 // the raw agent payload (id + key=value args, parsed by agent.ParseCall).
-var replyTag = regexp.MustCompile(`(\[IMG:\s*([^\]]*)\]|\[ACTION:\s*([a-zA-Z]+)\]|\[EVENT:\s*([a-zA-Z]+)\]|\[([a-zA-Z]+)\]|\[AGENT:\s*([^\]]*)\])[ \t]*`)
+var replyTag = regexp.MustCompile(`(\[IMG:\s*([^\]]*)\]|\[ACTION:\s*([a-zA-Z]+)\]|\[EVENT:\s*([a-zA-Z]+)\]|\[([a-zA-Z]+)\]|\[AGENT:\s*(` + agentPayloadPat + `)\])[ \t]*`)
 
-// petMoods are the tags the pet understands (see desktop-pet docs).
+// petMoods are the tags the buddy understands (see desktop-pet docs).
 var petMoods = map[string]bool{
 	"happy": true, "wink": true, "sad": true, "thinking": true,
 	"anxious": true, "angry": true, "surprised": true, "sleepy": true,
@@ -298,39 +324,100 @@ var petMoods = map[string]bool{
 	"skeptical": true, "embarrassed": true, "neutral": true, "adore": true,
 }
 
-// petActions are the pose animations the pet knows (desktop-pet actions.go).
+// petActions are the pose animations the buddy knows (desktop-pet actions.go).
 var petActions = map[string]bool{
 	"skip": true, "juggle": true, "dance": true, "eat": true, "work": true,
 	"guitar": true, "sneeze": true, "sixseven": true, "basketball": true,
 	"drive": true, "ride": true, "kitten": true, "wave": true,
 }
 
-// petEvents are the overlay FX the pet knows (desktop-pet events.go).
+// petEvents are the overlay FX the buddy knows (desktop-pet events.go).
 var petEvents = map[string]bool{
 	"love": true, "idea": true, "celebration": true, "sleep": true,
 	"peace": true, "disappear": true, "appear": true, "halloween": true,
-	"matrix": true, "magic": true,
+	"matrix": true, "magic": true, "robot": true,
 }
 
-// knownPetCmd reports whether an agent-supplied cmd-FIFO line ("action dance")
-// names a pose/FX the pet actually has. An ability is third-party code, so its
+// petMove describes one locomotion verb the buddy's behaviour layer knows. args
+// is the set of arguments the verb accepts, or nil when it takes none - which
+// matters for more than tidiness: it is what keeps a second command from being
+// smuggled onto the cmd-FIFO behind a valid verb (see knownPetCmd).
+type petMove struct {
+	args map[string]bool
+}
+
+func petMoveNoArg() petMove { return petMove{} }
+func petMoveArgs(a ...string) petMove { // gofmt-friendly helper
+	m := map[string]bool{"": true} // the bare verb is always valid
+	for _, s := range a {
+		m[s] = true
+	}
+	return petMove{args: m}
+}
+
+// petMoves are the buddy's own movement commands (desktop-pet behaviour.go).
+// walk/go/move take an optional direction; the rest take nothing.
+var petMoves = map[string]petMove{
+	"stand": petMoveNoArg(), "stop": petMoveNoArg(), "freeze": petMoveNoArg(),
+	"hold": petMoveNoArg(), "stay": petMoveNoArg(),
+	"idle": petMoveNoArg(), "auto": petMoveNoArg(), "wander": petMoveNoArg(),
+	"walk": petMoveArgs("left", "right"), "go": petMoveArgs("left", "right"),
+	"move": petMoveArgs("left", "right"),
+	"left": petMoveNoArg(), "l": petMoveNoArg(),
+	"right": petMoveNoArg(), "r": petMoveNoArg(),
+	"jump": petMoveNoArg(), "hop": petMoveNoArg(), "bounce": petMoveNoArg(),
+	"parachute": petMoveNoArg(), "chute": petMoveNoArg(),
+	"drop": petMoveNoArg(), "fall": petMoveNoArg(),
+	"skateboard": petMoveNoArg(), "skate": petMoveNoArg(),
+	"ride": petMoveNoArg(), "board": petMoveNoArg(),
+}
+
+// knownPetCmd reports whether an agent-supplied cmd-FIFO line names a
+// pose/FX/movement the buddy actually has. An ability is third-party code, so its
 // PET line is checked against the same tables the model's [ACTION:]/[EVENT:]
 // tags are: an unknown name is logged and dropped, never written to the FIFO.
+//
+// The table lookup doubles as the injection guard. A line is split on the first
+// space and every part is matched against a closed set, so "action dance\nevent
+// love" fails on the newline in the name and a second command can never ride
+// along behind a valid verb. The move table is why "walk" may carry an
+// argument at all: its allowed values are enumerated rather than passed through.
 func knownPetCmd(line string) bool {
-	verb, name, ok := strings.Cut(strings.TrimSpace(line), " ")
-	if !ok {
-		return false
-	}
+	verb, name, _ := strings.Cut(strings.TrimSpace(line), " ")
+	name = strings.TrimSpace(name)
 	switch verb {
 	case "action":
 		return petActions[name]
 	case "event":
 		return petEvents[name]
+	case "expr":
+		return petMoods[name]
+	}
+	if m, isMove := petMoves[verb]; isMove {
+		if m.args == nil {
+			return name == "" // verb takes no argument at all
+		}
+		return m.args[name]
 	}
 	return false
 }
 
-// moodHint pairs one pet mood with the lowercase phrases that suggest it.
+// petExprOf returns the mood name when line is an "expr <mood>" command.
+// Expressions are the odd one out: the buddy has NO cmd-FIFO verb for them.
+// Its face is set from the say-FIFO by a bare [mood] tag with no text, which
+// holds the expression for a few seconds without opening a speech bubble -
+// exactly what the buddy controller app sends. So this is the one PET verb that
+// has to travel on the other pipe.
+func petExprOf(line string) (string, bool) {
+	verb, name, _ := strings.Cut(strings.TrimSpace(line), " ")
+	name = strings.TrimSpace(name)
+	if verb != "expr" {
+		return "", false
+	}
+	return name, petMoods[name]
+}
+
+// moodHint pairs one buddy mood with the lowercase phrases that suggest it.
 type moodHint struct {
 	mood  string
 	words []string
@@ -359,7 +446,7 @@ var moodHints = []moodHint{
 	{"happy", []string{"yay", "awesome", "amazing", "congrats", "congratulations", "woohoo", "party", "celebrate", "celebration", "happy", "glad", "excited", "good news", "great job", "you're the best", "love you", "love it", "birthday"}},
 }
 
-// inferMood guesses a pet mood from the reply text when the model skips the
+// inferMood guesses a buddy mood from the reply text when the model skips the
 // [mood] tag. Returns "neutral" when nothing matches. Used only as a fallback,
 // so a real tag the model emits always wins.
 func inferMood(text string) string {
@@ -396,6 +483,16 @@ func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 	for i, m := range history {
 		clean[i] = m
 		clean[i].Text = sanitizeUserInput(m.Text)
+		// A bot turn that used an ability says so, in the copy the model reads.
+		// This is the fix for abilities that work once and then stop: the
+		// [AGENT: ...] tag is stripped before display, so without this note the
+		// history shows only the model's own text - and when that text is a
+		// refusal ("outside of my capabilities"), the next turn inherits the
+		// refusal as if it were a fact. The note is added AFTER sanitizing and
+		// is our own constant, so it cannot carry injected text.
+		if m.UsedAbility {
+			clean[i].Text += historyEvidence
+		}
 		if m.From == "you" {
 			lastUser = i
 		}
@@ -418,11 +515,14 @@ func (b *Bot) Reply(history []Msg, userText string) ReplyResult {
 	// abilities - they run here (concurrently, under one cancel token) and
 	// their results are handed back so the model can finalize the reply or
 	// chain one more ability. A reply with no [AGENT: ...] tag pays nothing.
-	rawReply, runs, err := b.runAgentLoop(sys, clean, sanitizeUserInput(userText))
+	// runAgentLoop returns the agent-decoded chart image as its third value:
+	// the agent's IMG png line wins over any [IMG:] model tag (see
+	// finishReply).
+	rawReply, runs, agentImg, err := b.runAgentLoop(sys, clean, sanitizeUserInput(userText))
 	if err != nil {
 		return ReplyResult{Text: fmt.Sprintf("ouch - %s call failed: %v", b.Provider.Name(), err)}
 	}
-	return b.finishReply(rawReply, runs)
+	return b.finishReply(rawReply, runs, agentImg)
 }
 
 // generateText performs one model call: streaming through OnDelta when the
@@ -461,7 +561,7 @@ func (b *Bot) Greeting() ReplyResult {
 	}
 	// Greetings run no abilities (the prompt asks for plain text); nil runs
 	// simply means any stray [AGENT: ...] tag is stripped from display.
-	return b.finishReply(rawReply, nil)
+	return b.finishReply(rawReply, nil, nil)
 }
 
 // quietNow reports whether the current time falls inside the sleep or busy
@@ -483,20 +583,40 @@ func (b *Bot) quietNow() bool {
 }
 
 // finishReply post-processes a raw model answer: splits off the mood, image,
-// action and event tags, fetches the picture, builds the pet say/cmd lines,
+// action and event tags, fetches the picture, builds the buddy say/cmd lines,
 // and packages everything into a ReplyResult. Shared by Reply and Greeting.
 // runs holds the abilities the agent loop already executed (nil for
-// greetings): their messages join the reply text and the first pet command
+// greetings): their messages join the reply text and the first buddy command
 // they produced is forwarded when the model sent no [ACTION:]/[EVENT:] tag.
-func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
+func (b *Bot) finishReply(rawReply string, runs []agentRun, agentImg image.Image) ReplyResult {
 	// Split off the mood, image, action and event tags: chat shows bare text,
-	// the pet gets the mood plus an optional action/event command, and the
+	// the buddy gets the mood plus an optional action/event command, and the
 	// image tag drives the picture (if enabled). Leftover [AGENT: ...] tags
 	// (the loop's step limit was hit) are stripped from the display here.
-	mood, imgDesc, action, event, _, text := stripTags(rawReply)
+	// Peels the <THINKING> block off FIRST, so a tag inside the reasoning can
+	// never drive the buddy, the pager or an ability - a model that writes
+	// "[AGENT: play_song ...]" while thinking has not asked for anything.
+	thinking, answer := splitThinking(rawReply)
+	// Split off the mood, image, action and event tags: chat shows bare text,
+	// the buddy gets the mood plus an optional action/event command, and the
+	// image tag drives the picture (if enabled). Leftover [AGENT: ...] tags
+	// (the loop's step limit was hit) are stripped from the display here.
+	mood, imgDesc, action, event, _, text := stripTags(answer)
+	// stripTags removes every well-formed tag, but the bubble still showed the
+	// markup it could not match whole: a bracket inside a value, a tag cut off
+	// mid-flight, a tag written in another case, and a bare ability name the
+	// model cited ("[pet_control]") with no tag grammar around it. In the first
+	// case the truncated payload was also parsed, turning a legal call into a
+	// parse error. scrubTags is the second, nesting-aware and case-insensitive
+	// pass that hides bracket markup; it runs BEFORE the mood guess so leftover
+	// markup cannot skew it, and on the reasoning too, where a [AGENT: ...] the
+	// model merely mused about is markup rather than prose (it is inert either
+	// way - splitThinking saw to that before any tag parsing).
+	text = scrubTags(text)
+	thinking = scrubTags(thinking)
 	// The model sometimes skips the [mood] tag entirely (the replies come back
-	// as plain text), leaving the pet with a blank neutral face. Fall back to
-	// a keyword guess so the pet's expression still matches the reply.
+	// as plain text), leaving the buddy with a blank neutral face. Fall back to
+	// a keyword guess so the buddy's expression still matches the reply.
 	if mood == "" {
 		mood = inferMood(text)
 	}
@@ -514,7 +634,12 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 	}
 
 	var img image.Image
-	if imgDesc != "" && b.ImageSource != "off" {
+	// Phase 3 precedence: the agent's decoded IMG png line wins over any
+	// [IMG:] model tag. If the agent produced no chart, fall back to the
+	// model's [IMG:] tag so wiki/gemini/pixabay still drives the picture.
+	if agentImg != nil {
+		img = agentImg
+	} else if imgDesc != "" && b.ImageSource != "off" {
 		switch b.ImageSource {
 		case "gemini":
 			var err error
@@ -540,10 +665,10 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 	}
 
 	// The say-line is only BUILT here (image -> temp PNG, mood tag); it is
-	// written to the pet's FIFO by main.go, synchronised with TTS playback.
+	// written to the buddy's FIFO by main.go, synchronised with TTS playback.
 	// The action/event command (if any) rides along on the sibling cmd-FIFO,
-	// and only exists when pet forwarding is enabled (mirroring buildPetSayLine).
-	cmdLine := ""
+	// and only exists when buddy forwarding is enabled (mirroring buildPetSayLine).
+	cmdLine, exprLine := "", ""
 	if b.PetPipe != "" {
 		switch {
 		case action != "":
@@ -551,23 +676,44 @@ func (b *Bot) finishReply(rawReply string, runs []agentRun) ReplyResult {
 		case event != "":
 			cmdLine = "event " + event
 		case knownPetCmd(agentCmd):
-			cmdLine = agentCmd // full line from agent.Result.PetCmd
+			// "expr <mood>" is the one verb the cmd-FIFO cannot carry, so it
+			// leaves by the say-pipe instead; everything else (action, event,
+			// move) is a normal cmd-FIFO line.
+			if mood, isExpr := petExprOf(agentCmd); isExpr {
+				exprLine = "[" + mood + "]"
+			} else {
+				cmdLine = agentCmd // full line from agent.Result.PetCmd
+			}
 		case agentCmd != "":
 			log.Printf("agents: ignoring unknown pet command %q", agentCmd)
 		}
 	}
 	return ReplyResult{
-		Text:       text,
-		Image:      img,
-		petLine:    buildPetSayLine(b.PetPipe, mood, text, img),
-		petPipe:    b.PetPipe,
-		petCmdLine: cmdLine,
-		petCmdPipe: petCmdPathFor(b.PetPipe),
+		Text:        text,
+		Thinking:    thinking,
+		Image:       img,
+		petLine:     buildPetSayLine(b.PetPipe, mood, text, b.petThinking(thinking), img),
+		petPipe:     b.PetPipe,
+		petCmdLine:  cmdLine,
+		petCmdPipe:  petCmdPathFor(b.PetPipe),
+		petExpr:     exprLine,
+		UsedAbility: anyRunSucceeded(runs),
 	}
 }
 
+// petThinking applies the THINKING BUBBLE setting to the block headed for the
+// buddy's say-pipe. The chat window hides the cloud itself (UI.think), but the
+// line still travels to onidia, which would draw its own cloud from it - so the
+// block is dropped here instead of shipped and ignored.
+func (b *Bot) petThinking(thinking string) string {
+	if b.PetThinkingOff {
+		return ""
+	}
+	return thinking
+}
+
 // effectiveSystem returns the system prompt to send for a chat reply. The
-// visual-language instruction (pet action/event tags) is always included; when
+// visual-language instruction (buddy action/event tags) is always included; when
 // images are enabled it also appends the image-tag instruction, unless the
 // prompt already contains one (custom prompts may define their own convention).
 func effectiveSystem(base, imageSource string) string {
@@ -659,6 +805,101 @@ func userDataBlock(text string) string {
 // -> page-break conversion downstream still sees them. agentCalls holds the
 // raw payload of every header-position [AGENT: ...] tag, in order (empty when
 // none) - Phase 2 executes all of them.
+// thinkTagOpen / thinkTagClose are the literal markers the buddy recognises.
+// They are spelled out rather than derived from the regex, so the tag the buddy
+// is told to look for and the tag the buddy actually parses are the same two
+// strings.
+const (
+	thinkTagOpen  = "<THINKING>"
+	thinkTagClose = "</THINKING>"
+)
+
+// thinkingRe matches a whole <THINKING>...</THINKING> block, case-insensitively
+// and across lines: providers wrap the reasoning freely. The non-greedy body
+// stops at the first closing tag, so a second block is handled by the caller's
+// loop rather than swallowing everything between the outermost pair.
+var thinkingRe = regexp.MustCompile(`(?is)<thinking>(.*?)</thinking>`)
+
+// splitThinking separates a model's visible reasoning from its answer. The
+// reasoning is returned separately instead of being deleted, because the UI
+// shows it in its own thought-cloud bubble.
+//
+// It runs BEFORE stripTags so a tag inside the reasoning ([mood], [AGENT: ...])
+// can never reach the buddy, the pager or an ability. That matters: a [AGENT:
+// ...] tag mentioned while "thinking" is not a request, and acting on it would
+// run something the user never asked for.
+//
+// An UNCLOSED <THINKING> (a stream caught mid-block) counts as open, so the
+// partial text is treated as reasoning rather than leaking into the answer
+// bubble. Anything before an unclosed tag is kept as the answer.
+func splitThinking(raw string) (thinking, rest string) {
+	loc := thinkingRe.FindStringSubmatchIndex(raw)
+	if loc == nil {
+		// No closed block. A dangling open tag means the answer has not
+		// started yet: everything after it is still reasoning.
+		if i := openThinkingIndex(raw); i >= 0 {
+			return strings.TrimSpace(raw[i+len("<thinking>"):]), strings.TrimSpace(raw[:i])
+		}
+		return "", strings.TrimSpace(raw)
+	}
+	var b strings.Builder
+	last := 0
+	for loc != nil {
+		// The segments either side of the block are concatenated VERBATIM, with
+		// no separator invented. Two reasons: a model that wrote "A</THINKING>B"
+		// means "AB", not "A B"; and inserting a newline here would create a
+		// page break, because in this app every newline is one.
+		b.WriteString(raw[last:loc[0]])
+		if thinking == "" {
+			thinking = strings.TrimSpace(raw[loc[2]:loc[3]])
+		}
+		last = loc[1]
+		// Continue the search in the remainder, then shift the indices back so
+		// they index the whole string again (submatch indices are 4 entries).
+		next := thinkingRe.FindStringSubmatchIndex(raw[last:])
+		if next == nil {
+			break
+		}
+		loc = []int{last + next[0], last + next[1], last + next[2], last + next[3]}
+	}
+	b.WriteString(raw[last:])
+	return thinking, collapseSpaces(b.String())
+}
+
+// collapseSpaces squashes runs of blank space to one space. It runs only on the
+// answer left after a reasoning block was removed, where the cut usually lands
+// next to a space the model wrote for the tag's sake.
+func collapseSpaces(s string) string {
+	var b strings.Builder
+	space := false
+	for _, r := range strings.TrimSpace(s) {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			space = true
+			continue
+		}
+		if space && b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		space = false
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// openThinkingIndex finds a "<thinking>" with no closing tag after it, in any
+// case, and returns its byte offset (-1 when there is none).
+func openThinkingIndex(raw string) int {
+	lower := strings.ToLower(raw)
+	open := strings.LastIndex(lower, "<thinking>")
+	if open < 0 {
+		return -1
+	}
+	if strings.Contains(lower[open:], "</thinking>") {
+		return -1 // a later close tag exists: the block is complete, not partial
+	}
+	return open
+}
+
 func stripTags(raw string) (mood, imgDesc, action, event string, agentCalls []string, text string) {
 	text = strings.TrimSpace(raw)
 	prevEnd, prevCounted := -1, false
@@ -691,7 +932,7 @@ func stripTags(raw string) (mood, imgDesc, action, event string, agentCalls []st
 		case loc[12] >= 0: // [AGENT: id key=value ...]
 			// Captured as raw payload whatever the id - agentbridge.go
 			// reports unknown agents / bad args to the user instead of
-			// dropping them silently like unknown pet actions.
+			// dropping them silently like unknown buddy actions.
 			if counted {
 				agentCalls = append(agentCalls, strings.TrimSpace(text[loc[12]:loc[13]]))
 			}
@@ -701,9 +942,245 @@ func stripTags(raw string) (mood, imgDesc, action, event string, agentCalls []st
 	return mood, imgDesc, action, event, agentCalls, strings.TrimSpace(replyTag.ReplaceAllString(text, ""))
 }
 
+// tagNames are the tag names the reply grammar defines with a colon (see
+// replyTag). scrubTags reads them to recognise a tag head - the one unclosed
+// shape whose payload grammar can be read, so a tag cut off mid-flight goes as
+// far as it really reaches instead of to the end of the answer - and so leaves
+// a stray '[' in prose alone. "image" is here because models reach for it when
+// they misspell [IMG:.
+var tagNames = []string{"agent", "img", "image", "action", "event"}
+
+// isTagName reports whether name (the text before the colon) is a reply tag.
+func isTagName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, n := range tagNames {
+		if name == n {
+			return true
+		}
+	}
+	return false
+}
+
+// tagGroupEnd returns the index just past the ']' closing the '[' at i,
+// counting nested pairs, or -1 when the group is never closed. The nesting
+// matters because a tag may legitimately carry a bracket inside a quoted value
+// (title="Havana [live]"): the first ']' is not the end of the tag.
+func tagGroupEnd(s string, i int) int {
+	depth := 0
+	for j := i; j < len(s); j++ {
+		switch s[j] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return j + 1
+			}
+		}
+	}
+	return -1
+}
+
+// opensTag reports whether rest (the text after a '[') opens a tag, i.e. a tag
+// name followed by a ':' - the head of a tag that was never closed.
+func opensTag(rest string) bool {
+	c := firstColon(rest)
+	return c < len(rest) && isTagName(rest[:c])
+}
+
+// tagToken reads one whitespace-separated payload token at i, keeping a quoted
+// run together (key="a b" is one token). It returns the token, the index just
+// past it, and whether it ran off the end inside an unterminated quote - in
+// which case everything after it is still part of that value.
+func tagToken(s string, i int) (tok string, end int, openQuote bool) {
+	start := i
+	for i < len(s) {
+		switch s[i] {
+		case '"':
+			openQuote = !openQuote
+		case ' ', '\t':
+			if !openQuote {
+				return s[start:i], i, false
+			}
+		}
+		i++
+	}
+	return s[start:i], i, openQuote
+}
+
+// unclosedTagEnd returns the index just past the text an unclosed tag at i
+// still owns. An unclosed tag is normally a model cut off by its token limit,
+// so dropping to the end of the reply is right - but a model that simply
+// forgot the ']' and carried on writing would lose the rest of its answer that
+// way. The payload grammar decides instead: an id token, then key=value
+// parameters (quoted values allowed). The first token that is neither ends the
+// tag, and the prose after it is kept.
+func unclosedTagEnd(s string, i int) int {
+	j := i + 1 + firstColon(s[i+1:]) + 1 // just past "[<name>:"
+	for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+		j++
+	}
+	_, j, open := tagToken(s, j)
+	if open {
+		return len(s) // the id itself runs into an unterminated quoted value
+	}
+	for j < len(s) {
+		k := j
+		for k < len(s) && (s[k] == ' ' || s[k] == '\t') {
+			k++
+		}
+		if k >= len(s) {
+			return len(s)
+		}
+		tok, end, open := tagToken(s, k)
+		if open {
+			return len(s)
+		}
+		if key, _, ok := strings.Cut(tok, "="); !ok || key == "" {
+			return k // prose, not a parameter: the tag ended here
+		}
+		j = end
+	}
+	return len(s)
+}
+
+// scrubTags hides bracket markup in a reply, so the bubble (and the cloud, and
+// the buddy's say-line) show the model's words and never the plumbing it wrote
+// for the app. stripTags removes every well-formed tag; four shapes reached the
+// bubble anyway, all of them seen in the chat:
+//
+//   - a tag whose payload holds a bracket of its own. [AGENT: play_song
+//     title="Havana [live]"] used to match only up to the inner ']' (see
+//     agentPayloadPat, which now keeps quoted values whole), leaving the tail
+//     (here '"]') in the text; an UNQUOTED value with a bracket
+//     ([AGENT: pet_control action=dance [fast]]) still matches only up to it,
+//     and leaves the same tail;
+//   - a tag the model was cut off inside of (its token limit), which has no
+//     closing ']' at all, so no pattern can match it;
+//   - a tag written in another case. replyTag is case-sensitive on the name,
+//     so [Agent: ...] never matched and the whole tag reached the bubble;
+//   - a bare ability name - "[pet_control] [read_story]" - which needs no tag
+//     grammar at all: the model cites the ability it used, or lists the ones it
+//     has, without the "AGENT:" the grammar looks for.
+//
+// The last shape is why the rule here is the blunt one: any bracketed group is
+// markup, not prose, and goes with its brackets. A reply is short spoken text
+// ("sure! here is one for you."), the catalog hands the model ability names
+// without brackets ("- play_song: ..."), and a bracketed aside of the reader's
+// own is rare enough that hiding one costs less than showing plumbing. Nesting
+// is counted, so a group carrying brackets of its own goes whole; a markdown
+// link is the one exception, because its label is written to be read.
+//
+// Two shapes still need a guess, because their '[' is gone or unmatched. A
+// closing bracket with no opening one before it is the tail of a match
+// truncated at a bracket inside an unquoted value, and prose does not use a
+// lone ']', so it goes. An opener that is never closed is a tag cut off
+// mid-flight or a stray '[': a tag head goes as far as its payload grammar
+// reaches (so an answer continued after a forgotten ']' is not eaten with the
+// tag), and a bare "[word" goes with its word, leaving the text after it.
+func scrubTags(s string) string {
+	out := make([]byte, 0, len(s))
+	skipSpace := false // swallow the blanks a removed group left next to it
+	for i := 0; i < len(s); {
+		c := s[i]
+		if skipSpace && (c == ' ' || c == '\t') {
+			i++
+			continue
+		}
+		skipSpace = false
+		switch {
+		case c == '[':
+			end := tagGroupEnd(s, i)
+			if end < 0 {
+				// Never closed: the '[' goes with whatever it owned.
+				end = unclosedGroupEnd(s, i)
+				skipSpace = true
+			} else if target, ok := markdownLink(s, end); ok {
+				// A markdown link is the one group written for the reader: its
+				// label stays (scrubbed in turn, since a label may carry
+				// brackets of its own), its target goes.
+				out = append(out, scrubTags(s[i+1:end-1])...)
+				end = target
+				skipSpace = false
+			} else {
+				skipSpace = true
+			}
+			i = end
+			continue
+		case c == ']':
+			// No '[' in front of it: the tail of a match that stopped at a
+			// bracket inside an unquoted value. Prose has no use for a lone
+			// ']', so it goes - with the value's opening quote when that is
+			// the last thing emitted.
+			if n := len(out); n > 0 && out[n-1] == '"' {
+				out = out[:n-1]
+			}
+			i, skipSpace = i+1, true
+			continue
+		}
+		out = append(out, c)
+		i++
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// unclosedGroupEnd returns the index just past what an unclosed '[' at i owns.
+// A tag head is the one shape whose payload grammar can be read, so it is the
+// one shape that may swallow a run of text (see unclosedTagEnd); otherwise the
+// '[' goes with the bare word it opens - the shape of an ability name the model
+// cited, cut off mid-flight - and the prose after a stray '[' is kept.
+func unclosedGroupEnd(s string, i int) int {
+	if opensTag(s[i+1:]) {
+		return unclosedTagEnd(s, i)
+	}
+	j := i + 1
+	for j < len(s) && isNameByte(s[j]) {
+		j++
+	}
+	if j > i+1 {
+		return j
+	}
+	return i + 1 // a stray '[': only the bracket itself goes
+}
+
+// isNameByte reports whether c can appear in an ability or tag name - the
+// alphabet an unclosed "[word" is judged by.
+func isNameByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' ||
+		c >= '0' && c <= '9' || c == '_' || c == '-'
+}
+
+// markdownLink reports whether the "[label]" that ends at end is the label of a
+// markdown link, i.e. is followed by a "(target)" holding no blanks, and returns
+// the index just past that target. Models write links rarely, but dropping the
+// label and leaving a bare "(https://...)" behind - in a bubble the buddy also
+// speaks - would read worse than either half alone.
+func markdownLink(s string, end int) (targetEnd int, ok bool) {
+	if end >= len(s) || s[end] != '(' {
+		return 0, false
+	}
+	close := strings.IndexByte(s[end:], ')')
+	if close < 2 { // no target at all
+		return 0, false
+	}
+	if strings.ContainsAny(s[end+1:end+close], " \t[") {
+		return 0, false
+	}
+	return end + close + 1, true
+}
+
+// firstColon returns the offset of the first ':' in s, or len(s) when there is
+// none - the boundary isTagName reads a name up to.
+func firstColon(s string) int {
+	if i := strings.IndexByte(s, ':'); i >= 0 {
+		return i
+	}
+	return len(s)
+}
+
 // newlineToPageBreak turns every newline form a model reply might use - an
 // actual LF/CRLF, or the literal two-character escape "\n" LLMs often emit -
-// into a form-feed page break (\f). The chat bubble (and the pet bubble, which
+// into a form-feed page break (\f). The chat bubble (and the buddy bubble, which
 // keeps \f verbatim in sanitizeSay) splits pages on \f, so each paragraph the
 // model separated with a newline becomes one page in the pager strip.
 func newlineToPageBreak(s string) string {

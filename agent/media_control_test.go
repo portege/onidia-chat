@@ -186,7 +186,7 @@ func TestMediaControlAgent(t *testing.T) {
 	}
 	os.Remove(movie)
 
-	// stop -> process gone, session pruned, the pet told the music stopped.
+	// stop -> process gone, session pruned, the buddy told the music stopped.
 	res, err = Run("media_control", map[string]string{"cmd": "stop"})
 	if err != nil || !strings.Contains(res.Message, "Stopped") {
 		t.Fatalf("stop = (%q, %v)", res.Message, err)

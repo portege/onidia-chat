@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/jezek/xgb/xproto"
+	"github.com/portege/onidia-chat/internal/confpath"
 	"image"
 	"image/color"
 	"image/draw"
@@ -8,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/jezek/xgb/xproto"
 )
 
 // frameHasString reports whether the frame contains s rendered in the bitmap
@@ -272,7 +272,7 @@ func TestHaiyaButton(t *testing.T) {
 
 	// One-shot: the flag was consumed by the WantPet() read above. No later
 	// click - toggle button or plain title bar - may re-fire the launch/quit
-	// action; the stale flag used to poof the running pet whenever the
+	// action; the stale flag used to poof the running buddy whenever the
 	// header was clicked to collapse/expand.
 	u.Press(WToggle)
 	if !u.Release(WToggle) || u.WantPet() {
@@ -284,7 +284,7 @@ func TestHaiyaButton(t *testing.T) {
 	}
 
 	// The header area immediately around the button still hit-tests as the
-	// drag handle, and clicking it does nothing (no toggle, no pet request).
+	// drag handle, and clicking it does nothing (no toggle, no buddy request).
 	u2 := NewUI(380, 520)
 	if u2.HitTest(u2.haiyaRect().Min.X-8, headerH/2) != WHeader {
 		t.Error("left of the Haiya button should fall through to WHeader (drag handle)")
@@ -377,6 +377,86 @@ func TestAboutModal(t *testing.T) {
 	}
 }
 
+// TestAboutConfigPathDisplay guards the About page's answer to "which config is
+// the character actually reading?". The buddy (the sibling onidia binary) resolves
+// its config through internal/confpath in onidia/sleep.go, whose candidate list
+// is a copy of this module's; on a checkout the chat window loads a
+// checkout-relative chat-app.ini while the buddy reads
+// $XDG_CONFIG_HOME/chat-app/chat-app.ini. configPathForDisplay therefore must
+// show the path the buddy reads, not the file the chat window saves to, so the
+// About line and the busy-time it displays cannot lie about which file carries
+// TestAboutConfigPathDisplay guards the About page's answer to "which config is
+// the character actually reading?". The buddy (the sibling onidia binary) resolves
+// its config through internal/confpath in onidia/sleep.go, whose candidate list
+// is a copy of this module's; on a checkout the chat window loads a
+// checkout-relative chat-app.ini while the buddy reads
+// $XDG_CONFIG_HOME/chat-app/chat-app.ini. configPathForDisplay therefore must
+// show the path the buddy reads, not the file the chat window saves to, so the
+// About line and the busy-time it displays cannot lie about which file carries
+// the window. The test is split into two cases:
+//
+//  1. the user config the buddy reads exists: the About line must surface that
+//     path (its "Config" label and path), not the file the chat window saves
+//     to;
+//  2. the user config does NOT exist: the About line falls back to the
+//     chat window's savePath, absolute.
+func TestAboutConfigPathDisplay(t *testing.T) {
+	// Case 1: the user config the buddy reads exists. Leave the real XDG
+	//_CONFIG_HOME; the buddy's config (Dir()/chat-app.ini) is on disk, so the
+	// About line must surface that, not savePath.
+	t.Run("user config present: surface the pet's resolved config", func(t *testing.T) {
+		u := NewUI(380, 520)
+		u.savePath = filepath.Join(t.TempDir(), "chat-app.ini")
+		got := u.configPathForDisplay()
+		want := filepath.Join(confpath.Dir(), confpath.Name)
+		if got != want {
+			t.Fatalf("configPathForDisplay = %q, want the pet's resolved config %q", got, want)
+		}
+		if !filepath.IsAbs(got) {
+			t.Fatalf("configPathForDisplay = %q, want absolute", got)
+		}
+		// Render must actually paint the "Config" label and the path.
+		u.openAbout()
+		frame := u.Render()
+		if !frameHasString(frame, "Config", 1, colMuted) {
+			t.Error("About should label the config path (\"Config\" in muted)")
+		}
+		if !frameHasString(frame, want, 1, colHeader) {
+			t.Errorf("About should render the resolved config path %q in teal", want)
+		}
+	})
+
+	// Case 2: the user config does NOT exist. Point XDG_CONFIG_HOME at a temp
+	// dir that holds no chat-app.ini, so confpath.Dir()/chat-app.ini does not
+	// exist and the About line falls back to the absolute savePath.
+	t.Run("user config absent: fall back to absolute savePath", func(t *testing.T) {
+		orig := os.Getenv("XDG_CONFIG_HOME")
+		xdg := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", xdg)
+		t.Cleanup(func() { t.Setenv("XDG_CONFIG_HOME", orig) })
+
+		// A short absolute savePath keeps the rendered frame deterministic
+		// (the bitmap-font matcher is exact and path lengths matter).
+		const shortSave = "/tmp/short"
+		u := NewUI(380, 520)
+		u.savePath = shortSave
+		got := u.configPathForDisplay()
+		want := shortSave
+		if got != want {
+			t.Fatalf("configPathForDisplay = %q, want the absolute savePath %q", got, want)
+		}
+		if !filepath.IsAbs(got) {
+			t.Fatalf("configPathForDisplay = %q, want absolute", got)
+		}
+		// Render: the About line must paint the path in teal.
+		u.openAbout()
+		frame := u.Render()
+		if !frameHasString(frame, want, 1, colHeader) {
+			t.Errorf("About should render the savePath %q in teal", want)
+		}
+	})
+}
+
 // TestAboutModalNarrow checks the About modal degrades gracefully in a narrow
 // window: the panel clamps to the window, the hero strip drops the badge and
 // still fits the word-art name, the credit survives (link only) and nothing
@@ -424,27 +504,122 @@ func TestAboutModalNarrow(t *testing.T) {
 	}
 }
 
-// TestRenderRoundedCorners verifies the window shell is not a hard rectangle:
-// the four corner pixels of a rendered frame are fully transparent (the
-// compositor rounds the window) while edge midpoints and the centre stay
-// opaque.
+// TestAboutShowsBusyConfigPath is the regression test for the busy-mode
+// mystery: the character and the chat settings read DIFFERENT copies of
+// chat-app.ini, so busy-time = 08:00-08:30 sat the buddy down at 14:57 while
+// the settings window denied any busy window. main.go must hand the UI the
+// resolved path (confpath.Default, i.e. the buddy's candidate #1) and About
+// must surface it verbatim so the next such mismatch is diagnosed, not
+// debugged. The fixture uses a short absolute path on purpose: long paths
+// are trimmed to the tail by design (see TestAboutTrimsLongConfigPath), and
+// this test asserts the full path survives when it fits.
+func TestAboutShowsBusyConfigPath(t *testing.T) {
+	// Short absolute path on purpose: the panel fits ~50 runes of
+	// label+path (6px per glyph at scale 1, 300px available), and a
+	// t.TempDir() prefix alone blows past that - long paths are trimmed
+	// to the tail by design (see TestAboutTrimsLongConfigPath). /tmp/c.ini
+	// is not on any loader's candidate list, so writing the busy-time
+	// fixture here cannot leak into other tests.
+	ini := "/tmp/c.ini"
+	if err := os.WriteFile(ini, []byte("busy-time = 08:00-08:30\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(ini) })
+
+	u := NewUI(380, 560)
+	u.collapsed = false
+	u.savePath = ini
+	u.openAbout()
+	frame := u.Render()
+	if !frameHasString(frame, "Config", 1, colMuted) {
+		t.Error("About should label the config path (\"Config\" in muted)")
+	}
+	if !frameHasString(frame, ini, 1, colHeader) {
+		t.Errorf("About should render the resolved config path %q in teal", ini)
+	}
+}
+
+// TestAboutTrimsLongConfigPath locks in the overflow rule: when the config path
+// the About line must surface (the buddy's resolved config, see
+// TestAboutConfigPathDisplay) is too wide to fit, the "Config" label is dropped
+// and only the tail of the path survives, so the last directory segments and the
+// filename — the parts that distinguish two chat-app.ini files — stay legible.
+// The test raises XDG_CONFIG_HOME to a very long value so the resolved config
+// path exceeds the panel width, then asserts the label is dropped and the
+// tail (the filename) is kept.
+func TestAboutTrimsLongConfigPath(t *testing.T) {
+	// Construct a path that is long enough to overflow a 300px panel at scale 1
+	// (roughly 45 runes). confpath.Dir() comes from $XDG_CONFIG_HOME, and the
+	// About line surfaces the user config (confpath.Dir()/chat-app.ini), so
+	// pointing XDG_CONFIG_HOME at a very long prefix makes the resolved config
+	// path overflow. Then assert the "Config" label is dropped and only the
+	// tail (the filename) survives.
+	longDir := filepath.Join(t.TempDir(), `a/really/deep/nested/`+
+		`slow/relative/prefix/that/forces/the/config/path/to/over//flow`)
+	if err := os.MkdirAll(longDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Getenv("XDG_CONFIG_HOME")
+	t.Setenv("XDG_CONFIG_HOME", longDir)
+	t.Cleanup(func() { t.Setenv("XDG_CONFIG_HOME", orig) })
+
+	// The About line surfaces the user config (confpath.Dir()/chat-app.ini),
+	// which we have ensured exceeds the panel width.
+	u := NewUI(380, 560)
+	u.collapsed = false
+	u.savePath = filepath.Join(longDir, confpath.Name)
+	u.openAbout()
+	frame := u.Render()
+	got := u.configPathForDisplay()
+	if frameHasString(frame, "Config", 1, colMuted) {
+		t.Error("About should drop the \"Config\" label when the pair overflows")
+	}
+	if !frameHasString(frame, filepath.Base(got), 1, colHeader) {
+		t.Errorf("About should keep the filename %q when trimming a long path", filepath.Base(got))
+	}
+	if frameHasString(frame, got, 1, colHeader) {
+		t.Errorf("About should trim the long config path %q, got untrimmed", got)
+	}
+}
+
+// TestConfigPathForDisplayAbsolutisesCwdRelativeSave verifies the About line
+// never shows a bare filename: with no candidate on disk main.go falls back
+// to "chat-app.ini", which would otherwise answer "which file?" with a path
+// meaningful only in one directory.
+func TestConfigPathForDisplayAbsolutisesCwdRelativeSave(t *testing.T) {
+	u := NewUI(380, 560)
+	u.savePath = "chat-app.ini"
+	got := u.configPathForDisplay()
+	if !filepath.IsAbs(got) || filepath.Base(got) != "chat-app.ini" {
+		t.Errorf("configPathForDisplay() = %q, want the absolute cwd-joined path", got)
+	}
+	u.savePath = ""
+	if got := u.configPathForDisplay(); got != "" {
+		t.Errorf("configPathForDisplay() with no savePath = %q, want \"\"", got)
+	}
+}
+
+// TestRenderRoundedCorners guards the shell's corner treatment. Rounding is
+// off (winRadius 0): the window is a square rectangle, so the four extreme
+// corner pixels are opaque like every other pixel - no alpha seam that a
+// compositor may or may not honour, and no clipped corner that can show up as
+// a stray block. Raise winRadius and this test is expected to be revisited.
 func TestRenderRoundedCorners(t *testing.T) {
 	u := NewUI(380, 520)
 	frame := u.Render()
 	w, h := frame.Bounds().Dx(), frame.Bounds().Dy()
 	opaque := func(x, y int) bool { return frame.Pix[frame.PixOffset(x, y)+3] == 255 }
-	for _, c := range [][2]int{{0, 0}, {w - 1, 0}, {0, h - 1}, {w - 1, h - 1}} {
-		if opaque(c[0], c[1]) {
-			t.Errorf("corner (%d,%d) should be transparent", c[0], c[1])
-		}
+	if winRadius != 0 {
+		t.Errorf("winRadius = %d, want 0 (square shell)", winRadius)
 	}
 	for _, p := range [][2]int{
+		{0, 0}, {w - 1, 0}, {0, h - 1}, {w - 1, h - 1}, // the four corners
 		{w / 2, 0}, {w / 2, h - 1}, // top/bottom edge midpoints
 		{0, h / 2}, {w - 1, h / 2}, // left/right edge midpoints
-		{w / 2, h / 2}, {winRadius, winRadius}, // centre + just inside a corner
+		{w / 2, h / 2}, {1, 1}, {w - 2, h - 2}, // centre + just inside the corners
 	} {
 		if !opaque(p[0], p[1]) {
-			t.Errorf("point (%d,%d) should be opaque", p[0], p[1])
+			t.Errorf("point (%d,%d) should be opaque on a square shell", p[0], p[1])
 		}
 	}
 }
@@ -1311,11 +1486,413 @@ func TestSettingsMuteCheckbox(t *testing.T) {
 	}
 }
 
+// TestSettingsThinkingCheckbox verifies the THINKING BUBBLE checkbox that
+// shares the MUTE SPEECH row: it sits to the right of mute and inside the
+// panel, hit-tests as WThink without stealing mute's clicks, toggles the draft
+// on click (committing only on SAVE), re-seeds from the committed value, and
+// SAVE persists "thinking" as on/off. It also checks the gate itself: with the
+// box unchecked the block carries no cloud lines and is shorter by exactly the
+// cloud plus its gap, so hiding the reasoning really does pull the answer up
+// rather than leaving a hole.
+func TestSettingsThinkingCheckbox(t *testing.T) {
+	path := writeTempINI(t, "[character]\ncharacter-age = 7\n")
+	u := NewUI(380, 520)
+	u.age = 7
+	u.savePath = path
+	u.collapsed = false
+	u.H = 520
+	u.openSettings()
+
+	// Layout: same row as mute, to its right, and inside the panel.
+	mr, tr := u.muteRect(), u.thinkRect()
+	p := u.modalPanel()
+	if tr.Min.Y != mr.Min.Y || tr.Max.Y != mr.Max.Y {
+		t.Fatalf("thinkRect %v must share muteRect's %v row", tr, mr)
+	}
+	if tr.Min.X < mr.Max.X {
+		t.Fatalf("thinkRect %v must sit right of muteRect %v", tr, mr)
+	}
+	if tr.Max.X > p.Max.X-modalPad {
+		t.Fatalf("thinkRect %v overflows the panel's %v content box", tr, p)
+	}
+	// The two rows must not overlap, so a click on one is never the other.
+	if mx, my := (mr.Min.X+mr.Max.X)/2, (mr.Min.Y+mr.Max.Y)/2; u.HitTest(mx, my) != WMute {
+		t.Fatalf("mute centre hit: got %v want WMute", u.HitTest(mx, my))
+	}
+	if tx, ty := (tr.Min.X+tr.Max.X)/2, (tr.Min.Y+tr.Max.Y)/2; u.HitTest(tx, ty) != WThink {
+		t.Fatalf("think centre hit: got %v want WThink", u.HitTest(tx, ty))
+	}
+	// The cloud is on by default, so the box opens checked.
+	if !u.thinkDraft || !u.think {
+		t.Fatal("thinking should default to on")
+	}
+
+	// Uncheck and SAVE: the INI gains thinking = off and the committed state
+	// flips. Nothing commits before the save.
+	u.Press(WThink)
+	u.Release(WThink)
+	if u.thinkDraft || !u.think {
+		t.Fatal("click should uncheck the draft; nothing commits before SAVE")
+	}
+	_, save := u.modalButtons()
+	w := u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if u.settingsOpen {
+		t.Fatal("save should close the modal")
+	}
+	if u.think {
+		t.Error("committed thinking should be false after saving the unchecked box")
+	}
+	// The same save must reach the buddy bridge, or the character keeps drawing a
+	// cloud from the say-line the window has stopped drawing.
+	if !u.Bot.PetThinkingOff {
+		t.Error("saving thinking = off should also stop the pet's cloud")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "thinking = off") {
+		t.Errorf("INI lacks thinking = off:\n%s", b)
+	}
+	if !strings.Contains(string(b), "character-age = 7") {
+		t.Errorf("INI lost the age while saving thinking:\n%s", b)
+	}
+
+	// Re-open and confirm the draft re-seeds, then turn it back on.
+	u.openSettings()
+	if u.thinkDraft {
+		t.Fatal("reopen should seed the draft from the committed thinking")
+	}
+	u.Press(WThink)
+	u.Release(WThink)
+	_, save = u.modalButtons()
+	w = u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if !u.think {
+		t.Error("committed thinking should be true again")
+	}
+	if u.Bot.PetThinkingOff {
+		t.Error("re-enabling thinking should bring the pet's cloud back")
+	}
+	b, _ = os.ReadFile(path)
+	if !strings.Contains(string(b), "thinking = on") {
+		t.Errorf("INI lacks the rewritten thinking = on:\n%s", b)
+	}
+}
+
+// TestThinkingGateHidesCloud verifies the checkbox actually gates the drawing:
+// the cloud is skipped at measure time, so an unchecked box leaves the block
+// exactly as tall as a reply with no reasoning at all.
+func TestThinkingGateHidesCloud(t *testing.T) {
+	u := NewUI(380, 520)
+	m := Msg{From: u.Bot.Name, Text: "here you go!", Thinking: "the user asked for music so play_song is the ability to use"}
+
+	u.think = true
+	on := u.blockFor(m, 40, 300)
+	if len(on.thinkLines) == 0 {
+		t.Fatal("checked box should measure cloud lines")
+	}
+
+	u.think = false
+	off := u.blockFor(m, 40, 300)
+	if len(off.thinkLines) != 0 {
+		t.Fatalf("unchecked box should drop the cloud, got %d lines", len(off.thinkLines))
+	}
+	if off.h != on.h-on.thinkH-thinkGap {
+		t.Fatalf("hidden cloud height: got %d want %d (checked %d minus cloud %d and gap %d)",
+			off.h, on.h-on.thinkH-thinkGap, on.h, on.thinkH, thinkGap)
+	}
+	// And the answer itself is untouched: hiding the reasoning must not touch
+	// the text, so the two blocks wrap identically.
+	if len(off.lines) != len(on.lines) || off.bubW != on.bubW {
+		t.Errorf("hiding the cloud changed the bubble: %d/%d lines, widths %d/%d",
+			len(off.lines), len(on.lines), off.bubW, on.bubW)
+	}
+}
+
+// TestSttNoteMatchesMode guards the input-bar status against the mode. The
+// manual note's whole content is the instruction "press again to stop", which
+// is precisely what AUTO STOP removes - showing it to someone using AUTO STOP
+// tells them the app does not do the thing they just enabled.
+func TestSttNoteMatchesMode(t *testing.T) {
+	for _, tc := range []struct {
+		autoStop bool
+		want     string
+	}{
+		{false, "Recording… (press again to stop)"},
+		{true, sttHandsFreeNote},
+	} {
+		u := newSTTTestUI(t, &fakeSTT{name: "fake"})
+		u.autoStop = tc.autoStop
+		u.startMic()
+		if got := u.sttNote; got != tc.want {
+			t.Errorf("autoStop=%v: note = %q, want %q", tc.autoStop, got, tc.want)
+		}
+		if tc.autoStop && strings.Contains(u.sttNote, "press") {
+			t.Error("the hands-free note must not tell the user to press the mic again")
+		}
+		// And unlike the manual note, it has to survive the note area.
+		u2 := NewUI(defaultWinW, defaultWinH)
+		cols := (u2.inputRect().Dx() - 20) / (advW * uiFontScale)
+		if got := fitCols(sttHandsFreeNote, cols); got != sttHandsFreeNote {
+			t.Errorf("hands-free note %q does not fit in %d columns, renders as %q",
+				sttHandsFreeNote, cols, got)
+		}
+		u.CancelMic()
+	}
+}
+
+// TestSettingsAutoStopCheckbox mirrors the AUTO SUBMIT test for the AUTO STOP
+// row below it, and additionally checks that unticking it mid-take drops the
+// watcher - the one place a setting change has to reach something already
+// running rather than the next take.
+func TestSettingsAutoStopCheckbox(t *testing.T) {
+	path := writeTempINI(t, "[character]\ncharacter-age = 7\n")
+	u := NewUI(380, 520)
+	u.age = 7
+	u.savePath = path
+	u.collapsed = false
+	u.H = 520
+	u.openSettings()
+
+	ar, as := u.autoRect(), u.autoStopRect()
+	cancel, _ := u.modalButtons()
+	p := u.modalPanel()
+	if as.Min.Y <= ar.Max.Y {
+		t.Errorf("autoStopRect %v must sit below the auto-submit row %v", as, ar)
+	}
+	if as.Max.Y >= cancel.Min.Y {
+		t.Errorf("autoStopRect %v must clear the buttons %v", as, cancel)
+	}
+	if as.Max.X > p.Max.X-modalPad || as.Max.Y > p.Max.Y-modalPad {
+		t.Errorf("autoStopRect %v overflows the panel %v", as, p)
+	}
+	if u.autoStopDraft || u.autoStop {
+		t.Fatal("auto-stop should default to off")
+	}
+
+	px, py := (as.Min.X+as.Max.X)/2, (as.Min.Y+as.Max.Y)/2
+	if w := u.HitTest(px, py); w != WAutoStop {
+		t.Fatalf("auto-stop checkbox hit: got %v want WAutoStop", w)
+	}
+	u.Press(WAutoStop)
+	u.Release(WAutoStop)
+	if !u.autoStopDraft {
+		t.Fatal("click should check the auto-stop draft")
+	}
+	if u.autoStop {
+		t.Fatal("nothing should commit before SAVE")
+	}
+
+	_, save := u.modalButtons()
+	w := u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if !u.autoStop {
+		t.Error("the committed flag should be set after saving a checked box")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "auto-stop = true") {
+		t.Errorf("INI lacks the saved auto-stop key:\n%s", b)
+	}
+	// The neighbours must survive the extra key.
+	for _, want := range []string{"auto-submit = false", "demo-mode = false"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("INI lost %q while saving auto-stop:\n%s", want, b)
+		}
+	}
+
+	u.openSettings()
+	if !u.autoStopDraft {
+		t.Fatal("reopen should seed the draft from the committed value")
+	}
+}
+
+// TestAutoStopImpliesAutoSubmit pins the coupling, because it is the one place
+// where two checkboxes are not independent and a reader would reasonably
+// expect them to be: enabling AUTO STOP means the user never presses anything,
+// so leaving a SEND click behind would be a trap rather than a choice.
+func TestAutoStopImpliesAutoSubmit(t *testing.T) {
+	for _, tc := range []struct {
+		stop, submit, want bool
+	}{
+		{false, false, false},
+		{false, true, true},
+		{true, false, true}, // the coupling
+		{true, true, true},
+	} {
+		u := NewUI(320, 480)
+		u.autoStop, u.autoSubmit = tc.stop, tc.submit
+		if got := u.handsFree(); got != tc.want {
+			t.Errorf("autoStop=%v autoSubmit=%v: handsFree() = %v, want %v",
+				tc.stop, tc.submit, got, tc.want)
+		}
+	}
+}
+
+// TestAutoStopFallsBackToManual: with the setting off, a take must survive the
+// whole silence window and still be waiting for the user to click.
+func TestAutoStopFallsBackToManual(t *testing.T) {
+	u := newSTTTestUI(t, &fakeSTT{name: "fake"})
+	u.autoStop = false
+	u.ToggleMic()
+	if !u.Recording() {
+		t.Skip("no system recorder available in this environment")
+	}
+	// Nothing is watching, so no amount of waiting ends the take.
+	for i := 0; i < 20; i++ {
+		u.DrainSTT()
+	}
+	if !u.Recording() {
+		t.Fatal("the take ended on its own with auto-stop off")
+	}
+	u.ToggleMic()
+	drainUntilSettled(t, u)
+}
+
+// AUTO SUBMIT row beside it: layout inside the panel, hit-testing, draft-only
+// toggling, persistence to the INI, and re-seeding on reopen.
+func TestSettingsAutoSubmitCheckbox(t *testing.T) {
+	path := writeTempINI(t, "[character]\ncharacter-age = 7\n")
+	u := NewUI(380, 520)
+	u.age = 7
+	u.savePath = path
+	u.collapsed = false
+	u.H = 520
+	u.openSettings()
+
+	// Layout: the row shares the DEMO MODE row, sits to its right, and stays
+	// inside the panel and clear of the buttons.
+	ar, dr := u.autoRect(), u.demoRect()
+	cancel, _ := u.modalButtons()
+	if ar.Min.Y != dr.Min.Y {
+		t.Errorf("autoRect row %d should align with demoRect row %d", ar.Min.Y, dr.Min.Y)
+	}
+	if ar.Min.X <= dr.Max.X {
+		t.Errorf("autoRect %v should sit to the right of demoRect %v", ar, dr)
+	}
+	if ar.Max.X > u.modalPanel().Max.X-modalPad {
+		t.Errorf("autoRect %v overflows the panel %v", ar, u.modalPanel())
+	}
+	if ar.Max.Y >= cancel.Min.Y {
+		t.Errorf("autoRect %v must clear the buttons %v", ar, cancel)
+	}
+	if u.autoSubmitDraft || u.autoSubmit {
+		t.Fatal("auto-submit should default to off")
+	}
+
+	// Click it: the draft toggles, nothing commits.
+	px, py := (ar.Min.X+ar.Max.X)/2, (ar.Min.Y+ar.Max.Y)/2
+	if w := u.HitTest(px, py); w != WAutoSubmit {
+		t.Fatalf("auto-submit checkbox hit: got %v want WAutoSubmit", w)
+	}
+	u.Press(WAutoSubmit)
+	u.Release(WAutoSubmit)
+	if !u.autoSubmitDraft {
+		t.Fatal("click should check the auto-submit draft")
+	}
+	if u.autoSubmit {
+		t.Fatal("nothing should commit before SAVE")
+	}
+
+	// SAVE persists it.
+	_, save := u.modalButtons()
+	w := u.HitTest((save.Min.X+save.Max.X)/2, (save.Min.Y+save.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+	if u.settingsOpen {
+		t.Fatal("save should close the modal")
+	}
+	if !u.autoSubmit {
+		t.Error("the committed flag should be set after saving a checked box")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "auto-submit = true") {
+		t.Errorf("INI lacks the saved auto-submit key:\n%s", b)
+	}
+	// And it must not have cost the neighbouring settings their values.
+	for _, want := range []string{"demo-mode = false", "character-age = 7"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("INI lost %q while saving auto-submit:\n%s", want, b)
+		}
+	}
+
+	// Re-open: the draft re-seeds from the committed value.
+	u.openSettings()
+	if !u.autoSubmitDraft {
+		t.Fatal("reopen should seed the draft from the committed value")
+	}
+}
+
+// TestSettingsAutoSubmitCancel: CANCEL discards the flip, and a pending
+// auto-submit survives neither the cancel nor the box being left off.
+func TestSettingsAutoSubmitCancel(t *testing.T) {
+	path := writeTempINI(t, "[character]\ncharacter-age = 7\n")
+	u := NewUI(380, 520)
+	u.age = 7
+	u.savePath = path
+	u.collapsed = false
+	u.H = 520
+	u.openSettings()
+	u.Press(WAutoSubmit)
+	u.Release(WAutoSubmit)
+	if !u.autoSubmitDraft {
+		t.Fatal("click should check the draft")
+	}
+	cancel, _ := u.modalButtons()
+	w := u.HitTest((cancel.Min.X+cancel.Max.X)/2, (cancel.Min.Y+cancel.Max.Y)/2)
+	u.Press(w)
+	u.Release(w)
+
+	u.openSettings()
+	if u.autoSubmitDraft || u.autoSubmit {
+		t.Error("CANCEL should have discarded the flip")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "auto-submit") {
+		t.Errorf("CANCEL should not have written the key:\n%s", b)
+	}
+}
+
+// TestSettingsAutoSubmitReadsBack makes sure the INI value actually reaches the
+// running UI, which is the half of the round trip saveSettings does not cover.
+func TestSettingsAutoSubmitReadsBack(t *testing.T) {
+	path := writeTempINI(t, "[character]\nauto-submit = true\ncharacter-age = 7\n")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AutoSubmit {
+		t.Error("auto-submit = true should load as true")
+	}
+	// A file written before this setting existed must read as off, not error.
+	old := writeTempINI(t, "[character]\ncharacter-age = 7\n")
+	cfg2, err := LoadConfig(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.AutoSubmit {
+		t.Error("a missing auto-submit key should default to off")
+	}
+}
+
 // TestSettingsDemoCheckbox verifies the DEMO MODE checkbox row (directly
 // below MUTE SPEECH): it hit-tests as WDemo, toggles the draft on click
 // (committing only on SAVE), re-seeds from the committed value when the
 // dialog reopens, SAVE persists "demo-mode" to the INI, and flipping it
-// while a pet is running flags the restart so the mode takes effect at
+// while a buddy is running flags the restart so the mode takes effect at
 // once.
 func TestSettingsDemoCheckbox(t *testing.T) {
 	path := writeTempINI(t, "[character]\ncharacter-age = 7\n")
@@ -1381,8 +1958,8 @@ func TestSettingsDemoCheckbox(t *testing.T) {
 		t.Fatal("reopen should seed the draft from the committed demo mode")
 	}
 
-	// Flipping it while the pet runs must schedule a restart, so the new
-	// mode reaches the running pet immediately instead of on the next
+	// Flipping it while the buddy runs must schedule a restart, so the new
+	// mode reaches the running buddy immediately instead of on the next
 	// manual Haiya! click.
 	u.SetPetRunning(true)
 	dr = u.demoRect()
@@ -1722,8 +2299,8 @@ func TestPagerFlip(t *testing.T) {
 
 // TestStreamingBubblePreview verifies the synthetic thinking bubble grows
 // into the streamed reply: "..." before the first delta, the tag-stripped
-// preview afterwards (newlines flattened, a trailing unclosed "[" dropped),
-// and gone once Thinking ends.
+// preview afterwards (newlines flattened, bracket markup hidden), and gone
+// once Thinking ends.
 func TestStreamingBubblePreview(t *testing.T) {
 	u := NewUI(380, 520)
 	u.Thinking = true
@@ -1733,6 +2310,18 @@ func TestStreamingBubblePreview(t *testing.T) {
 	u.SetStreamText("[happy] hello\nthere [happ")
 	if got := u.blocks()[len(u.msgs)].m.Text; got != "hello there" {
 		t.Errorf("after delta: synthetic text = %q, want %q", got, "hello there")
+	}
+	// A tag the regex cannot match whole is hidden here too, so the preview
+	// reads exactly like the bubble that replaces it (finishReply scrubs the
+	// same leftovers): the tail of a truncated match, and a case variant.
+	u.SetStreamText("[happy] hi [AGENT: play_song title=\"Havana [live]\" and more")
+	if got := u.blocks()[len(u.msgs)].m.Text; got != "hi and more" {
+		t.Errorf("after leftover tag: synthetic text = %q, want %q", got, "hi and more")
+	}
+	// Bare ability names the model cited in brackets while streaming.
+	u.SetStreamText("[pet_control] [read_story] on it")
+	if got := u.blocks()[len(u.msgs)].m.Text; got != "on it" {
+		t.Errorf("after bare ability names: synthetic text = %q, want %q", got, "on it")
 	}
 	u.Thinking = false
 	u.streamText = ""

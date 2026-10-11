@@ -156,7 +156,7 @@ func TestWriteWav(t *testing.T) {
 		t.Fatalf("writeWav: %v", err)
 	}
 	defer os.Remove(path)
-	if !strings.HasPrefix(path, "/tmp/") || !strings.Contains(path, "chat-app-tts-") {
+	if !strings.HasPrefix(path, "/tmp/") || !strings.Contains(path, "onidia-chat-tts-") {
 		t.Errorf("unexpected temp path: %q", path)
 	}
 	b, err := os.ReadFile(path)
@@ -218,7 +218,7 @@ func TestTTSProcessShowBeforeHide(t *testing.T) {
 
 // TestTTSProcessFetchFailureShowsOnly checks the fallback: when the audio can
 // never be produced the bubble is still shown (immediately), but no hide hook
-// fires - the pet closes it by its normal reading-time duration.
+// fires - the buddy closes it by its normal reading-time duration.
 func TestTTSProcessFetchFailureShowsOnly(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no credits", http.StatusBadRequest)
@@ -253,7 +253,7 @@ func TestTruncate(t *testing.T) {
 }
 
 func TestLoadConfigTTSCases(t *testing.T) {
-	tmp, err := os.CreateTemp("", "chat-app-config-tts-*.ini")
+	tmp, err := os.CreateTemp("", "onidia-chat-config-tts-*.ini")
 	if err != nil {
 		t.Fatal(err)
 	}

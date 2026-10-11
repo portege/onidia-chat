@@ -1,6 +1,6 @@
 package main
 
-// pet_test.go - the pet say-pipe bridge: path auto-detection, flag/config
+// pet_test.go - the buddy say-pipe bridge: path auto-detection, flag/config
 // resolution precedence (including the "auto" keyword), and the say-line
 // composition for text + image replies.
 
@@ -18,7 +18,7 @@ import (
 
 func TestResolvePetPipe(t *testing.T) {
 	t.Setenv("DISPLAY", ":0")
-	const want = "/tmp/desktop-pet--0.say" // ":0" maps to "-0" like the pet
+	const want = "/tmp/desktop-pet--0.say" // ":0" maps to "-0" like the buddy
 
 	cases := []struct {
 		name            string
@@ -50,6 +50,16 @@ func TestPetPipePath(t *testing.T) {
 		{":0", "/tmp/desktop-pet--0.say"},
 		{":1", "/tmp/desktop-pet--1.say"},
 		{"", ""}, // no DISPLAY -> forwarding disabled
+		// The same desktop spelled four ways must give the same pipe, or the
+		// buddy listens where we never write (the buddy canonicalises too - see
+		// onidia's internal/single, and keep the two in step).
+		{":0.0", "/tmp/desktop-pet--0.say"},
+		{"localhost:0.0", "/tmp/desktop-pet--0.say"},
+		{"unix:0", "/tmp/desktop-pet--0.say"},
+		{"unix/:0", "/tmp/desktop-pet--0.say"},
+		// ... while a different display, screen or host still differs.
+		{":0.1", "/tmp/desktop-pet--0-1.say"},
+		{"MyHost:2.0", "/tmp/desktop-pet-myhost-2.say"},
 	}
 	for _, tc := range cases {
 		t.Setenv("DISPLAY", tc.display)
@@ -97,7 +107,7 @@ func TestPetLaunchArgs(t *testing.T) {
 }
 
 // TestPetCmdDeliversCommand checks that petCmd writes the exact command line to
-// the pet's cmd FIFO (action/event forward from the LLM reply tags).
+// the buddy's cmd FIFO (action/event forward from the LLM reply tags).
 func TestPetCmdDeliversCommand(t *testing.T) {
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "test.cmd")
@@ -134,9 +144,9 @@ func TestPetCmdDeliversCommand(t *testing.T) {
 	}
 }
 
-// TestQuitPet checks that QuitPet delivers the bare "quit" line to the pet's
-// cmd FIFO - the command the pet answers with its poof-out animation - and
-// reports `gone` once the FIFO's reader disappears (i.e. the pet exited).
+// TestQuitPet checks that QuitPet delivers the bare "quit" line to the buddy's
+// cmd FIFO - the command the buddy answers with its poof-out animation - and
+// reports `gone` once the FIFO's reader disappears (i.e. the buddy exited).
 func TestQuitPet(t *testing.T) {
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "test.cmd")
@@ -182,17 +192,71 @@ func TestQuitPet(t *testing.T) {
 
 func TestBuildSayLine(t *testing.T) {
 	cases := []struct {
-		name, mood, text, imgPath, want string
+		name, mood, text, thinking, imgPath, want string
 	}{
-		{"text only", "", "hello", "", "hello"},
-		{"mood first", "happy", "hello", "", "[happy] hello"},
-		{"image then caption", "wink", "look!", "/tmp/p.png", "[wink] [image /tmp/p.png] look!"},
-		{"image with empty caption", "", "", "/tmp/p.png", "[image /tmp/p.png] "},
+		{"text only", "", "hello", "", "", "hello"},
+		{"mood first", "happy", "hello", "", "", "[happy] hello"},
+		{"image then caption", "wink", "look!", "", "/tmp/p.png", "[wink] [image /tmp/p.png] look!"},
+		{"image with empty caption", "", "", "", "/tmp/p.png", "[image /tmp/p.png] "},
+		// The thinking block rides the say-pipe so the buddy can show it in her
+		// own cloud. It sits after the mood tag and before the caption, and it
+		// is NOT part of what she speaks.
+		{"thinking", "happy", "hi", "hmm", "", "[happy] <THINKING>hmm</THINKING> hi"},
+		{"thinking only, no mood", "", "hi", "hmm", "", "<THINKING>hmm</THINKING> hi"},
+		{"thinking before image", "wink", "ok", "hmm", "/tmp/p.png",
+			"[wink] <THINKING>hmm</THINKING> [image /tmp/p.png] ok"},
+		// Newlines would be read by the buddy as a second message.
+		{"multiline thinking collapses", "", "hi", "a\nb\nc", "", "<THINKING>a b c</THINKING> hi"},
+		{"blank thinking is dropped", "happy", "hi", "   ", "", "[happy] hi"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := buildSayLine(tc.mood, tc.text, tc.imgPath); got != tc.want {
-				t.Errorf("buildSayLine(%q, %q, %q) = %q, want %q", tc.mood, tc.text, tc.imgPath, got, tc.want)
+			got := buildSayLine(tc.mood, tc.text, tc.thinking, tc.imgPath)
+			if got != tc.want {
+				t.Errorf("buildSayLine(%q, %q, %q, %q) = %q, want %q",
+					tc.mood, tc.text, tc.thinking, tc.imgPath, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPetLineHonoursThinkingSetting: the THINKING BUBBLE setting has to govern
+// the buddy's cloud as well as the window's. onidia parses the <THINKING> block
+// out of the say-line and draws a thought cloud of her own, so a say-line that
+// still carries the block re-introduces the very bubble the user turned off.
+// The window's own decision is untouched: ReplyResult.Thinking stays populated
+// and UI.think decides whether to paint it.
+func TestPetLineHonoursThinkingSetting(t *testing.T) {
+	const reply = "[happy] <THINKING>she likes apples</THINKING> here you go"
+
+	for _, tc := range []struct {
+		name string
+		off  bool
+		want string
+	}{
+		{"default keeps the block", false, "[happy] <THINKING>she likes apples</THINKING> here you go"},
+		{"off drops the block", true, "[happy] here you go"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &fakeProvider{canned: reply}
+			bot := &Bot{Provider: p, Name: "Buddy", ImageSource: "off", PetPipe: "/tmp/test.say"}
+			bot.PetThinkingOff = tc.off
+			res := bot.Reply([]Msg{{From: "you", Text: "an apple?"}}, "an apple?")
+
+			if res.petLine != tc.want {
+				t.Errorf("petLine = %q, want %q", res.petLine, tc.want)
+			}
+			if strings.Contains(res.petLine, "<THINKING>") == tc.off {
+				t.Errorf("petLine %q: <THINKING> present = %v, want %v",
+					res.petLine, !tc.off, tc.off)
+			}
+			// The reasoning still reaches the reply result either way: the
+			// setting hides clouds, it does not change what the model said.
+			if res.Thinking != "she likes apples" {
+				t.Errorf("Thinking = %q, want the reasoning kept for the window", res.Thinking)
+			}
+			if res.Text != "here you go" {
+				t.Errorf("Text = %q, want the answer alone", res.Text)
 			}
 		})
 	}
@@ -249,7 +313,7 @@ func TestPetSayFIFODeliversImageLine(t *testing.T) {
 	}()
 	time.Sleep(50 * time.Millisecond) // let the reader open first (petSay retries ENXIO anyway)
 
-	petSay(fifo, "happy", "look at this", image.NewRGBA(image.Rect(0, 0, 3, 2)))
+	petSay(fifo, "happy", "look at this", "", image.NewRGBA(image.Rect(0, 0, 3, 2)))
 
 	select {
 	case line := <-lines:
@@ -288,14 +352,14 @@ func TestPetSayFailureCleansTempImage(t *testing.T) {
 	}
 	before := count()
 	// No FIFO at that path -> open fails -> the temp image must not linger.
-	petSay(filepath.Join(dir, "missing.say"), "happy", "hi", image.NewRGBA(image.Rect(0, 0, 2, 2)))
+	petSay(filepath.Join(dir, "missing.say"), "happy", "hi", "", image.NewRGBA(image.Rect(0, 0, 2, 2)))
 	if after := count(); after > before {
 		t.Errorf("failed say write leaked %d temp image(s)", after-before)
 	}
 }
 
 // TestPetClearWritesToken checks that petClear pushes the reserved token line
-// so the pet can dismiss its bubble exactly when audio playback ends.
+// so the buddy can dismiss its bubble exactly when audio playback ends.
 func TestPetClearWritesToken(t *testing.T) {
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "clear.say")
@@ -335,15 +399,15 @@ func TestPetClearWritesToken(t *testing.T) {
 // TestBuildPetSayLineEmpty verifies nothing is built when forwarding is off or
 // there is no content to show ("" text without an image).
 func TestBuildPetSayLineEmpty(t *testing.T) {
-	if got := buildPetSayLine("", "happy", "hi", image.NewRGBA(image.Rect(0, 0, 2, 2))); got != "" {
+	if got := buildPetSayLine("", "happy", "hi", "", image.NewRGBA(image.Rect(0, 0, 2, 2))); got != "" {
 		t.Errorf("buildPetSayLine with empty pipe returned %q, want \"\"", got)
 	}
-	if got := buildPetSayLine("/tmp/x.say", "happy", "", nil); got != "" {
+	if got := buildPetSayLine("/tmp/x.say", "happy", "", "", nil); got != "" {
 		t.Errorf("buildPetSayLine with empty text returned %q, want \"\"", got)
 	}
-	// Whitespace-only text is still a mood-only line (the pet shows the face
+	// Whitespace-only text is still a mood-only line (the buddy shows the face
 	// without a bubble) - kept for compatibility with petSay.
-	if got := buildPetSayLine("/tmp/x.say", "happy", "  ", nil); got != "[happy]   " {
+	if got := buildPetSayLine("/tmp/x.say", "happy", "  ", "", nil); got != "[happy]   " {
 		t.Errorf("buildPetSayLine with blank text returned %q, want a mood-only line", got)
 	}
 }
@@ -385,3 +449,91 @@ func TestPetSayLineKeepsSayImage(t *testing.T) {
 		t.Fatal("timed out waiting for the say-line")
 	}
 }
+
+// writeExe drops an executable file at path, creating its parent directory -
+// the stand-in for a buddy binary on disk.
+func writeExe(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOnidiaCandidates pins the resolution order, above all the package
+// layout: the .deb installs both binaries into /opt/onidia/bin, so from
+// /opt/onidia/bin/onidia-chat the buddy is the sibling ./onidia - and no
+// candidate may probe a developer home directory.
+func TestOnidiaCandidates(t *testing.T) {
+	t.Setenv("PATH", "") // keep exec.LookPath out of the assertions
+	cands := onidiaCandidates("/opt/onidia/bin/onidia-chat")
+	want := []string{
+		"onidia/onidia",
+		"desktop-pet/desktop-pet",
+		"/opt/onidia/bin/onidia", // the .deb layout
+		"/opt/onidia/bin/desktop-pet",
+		"/opt/onidia/onidia/onidia", // filepath.Join cleans the ".."
+		"/opt/onidia/desktop-pet/desktop-pet",
+		"../onidia/onidia",
+		"../desktop-pet/desktop-pet",
+	}
+	if len(cands) != len(want) {
+		t.Fatalf("onidiaCandidates() = %q, want %q", cands, want)
+	}
+	for i := range want {
+		if cands[i] != want[i] {
+			t.Errorf("candidate %d = %q, want %q", i, cands[i], want[i])
+		}
+	}
+	for _, c := range cands {
+		if strings.HasPrefix(c, "/home/") {
+			t.Errorf("candidate %q probes a developer home directory", c)
+		}
+	}
+}
+
+// TestOnidiaPathPrefersWorkingDirectory walks the development-checkout
+// resolution: working dir first, older name second, directories never
+// mistaken for the binary, and nothing at all reported as "".
+func TestOnidiaPathPrefersWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("PATH", "")
+	writeExe(t, filepath.Join(dir, "onidia", "onidia"))
+	writeExe(t, filepath.Join(dir, "desktop-pet", "desktop-pet"))
+	if got := onidiaPath(); got != "onidia/onidia" {
+		t.Fatalf("onidiaPath() = %q, want %q", got, "onidia/onidia")
+	}
+	if err := os.Remove(filepath.Join(dir, "onidia", "onidia")); err != nil {
+		t.Fatal(err)
+	}
+	if got := onidiaPath(); got != "desktop-pet/desktop-pet" {
+		t.Fatalf("onidiaPath() = %q, want %q", got, "desktop-pet/desktop-pet")
+	}
+	if err := os.Remove(filepath.Join(dir, "desktop-pet", "desktop-pet")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "onidia", "onidia"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := onidiaPath(); got != "" {
+		t.Fatalf("onidiaPath() = %q, want \"\" (a directory is not the buddy)", got)
+	}
+}
+
+// TestOnidiaPathFallsBackToPATH covers the last candidate: the .deb symlinks
+// /usr/bin/onidia -> /opt/onidia/bin/onidia, so a chat binary started from
+// somewhere unrelated still finds the installed buddy.
+func TestOnidiaPathFallsBackToPATH(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	bin := filepath.Join(dir, "bin")
+	writeExe(t, filepath.Join(bin, "onidia"))
+	t.Setenv("PATH", bin)
+	if got := onidiaPath(); got != filepath.Join(bin, "onidia") {
+		t.Fatalf("onidiaPath() = %q, want the PATH hit %q", got, filepath.Join(bin, "onidia"))
+	}
+}
+

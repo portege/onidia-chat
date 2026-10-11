@@ -27,6 +27,11 @@ import (
 
 // DefaultDir returns the conventional per-user agents directory
 // ($XDG_CONFIG_HOME/chat-app/agents or ~/.config/chat-app/agents).
+//
+// The "chat-app" component is the app's former name and is kept on purpose:
+// this directory is where every already-installed agent lives, alongside the
+// ini holding the user's key. Renaming it to "onidia-chat" would make a fresh
+// install look as though no agents were installed at all.
 func DefaultDir() string {
 	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
 		return filepath.Join(x, "chat-app", "agents")
@@ -36,6 +41,36 @@ func DefaultDir() string {
 		return ""
 	}
 	return filepath.Join(home, ".config", "chat-app", "agents")
+}
+
+// SystemDir is where a package install keeps the bundled agents. The combined
+// onidia package puts them in /opt/onidia/share/agents, and onidia-chat used to
+// miss them entirely: discovery only ever looked in the per-user directory,
+// so on a fresh install every bundled agent - including pet_control, the one
+// that makes the buddy act - was simply absent.
+//
+// It is a var rather than a const for one reason: the packaged path needs root
+// to create, so as a const the one behaviour that matters could only be tested
+// on a machine where the test would skip. Overridable, it is tested for real.
+var SystemDir = "/opt/onidia/share/agents"
+
+// DefaultDirs returns the directories to scan, in precedence order: the
+// per-user one first, then the system one if it exists. First registration
+// wins, so a user's own agent shadows a bundled one of the same id rather than
+// the other way round.
+//
+// A caller that was given an explicit directory (the -agents-dir flag or the
+// agents-dir key) must NOT use this - that setting replaces the defaults, so
+// an explicit choice is never quietly widened to include /opt.
+func DefaultDirs() []string {
+	var dirs []string
+	if d := DefaultDir(); d != "" {
+		dirs = append(dirs, d)
+	}
+	if st, err := os.Stat(SystemDir); err == nil && st.IsDir() {
+		dirs = append(dirs, SystemDir)
+	}
+	return dirs
 }
 
 // Discover scans dir for agent folders and registers every valid one.
@@ -82,7 +117,9 @@ func DiscoverWithPolicy(dir string, pol Policy) (ids []string, problems []string
 
 // discoverOne loads, validates and registers the agent in folder root.
 // skip=true means the manifest is valid but "disabled": not registered,
-// not an error.
+// not an error. Either its own manifest says so, or the user switched it off
+// with agents-disabled - which is the only option for a packaged agent, since
+// those live in root-owned /opt.
 func discoverOne(root string, pol Policy) (id string, skip bool, err error) {
 	if err := pol.Check(root); err != nil {
 		return "", false, err
@@ -91,7 +128,7 @@ func discoverOne(root string, pol Policy) (id string, skip bool, err error) {
 	if err != nil {
 		return "", false, err
 	}
-	if m.Disabled {
+	if m.Disabled || IsDisabled(m.ID) {
 		return "", true, nil
 	}
 	ext, err := NewExternal(m, root)

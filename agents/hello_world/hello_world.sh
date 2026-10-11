@@ -1,5 +1,5 @@
 #!/bin/sh
-# hello_world - the reference chat-app agent (protocol agent-line-v1).
+# hello_world - the reference onidia-chat agent (protocol agent-line-v1).
 #
 # Contract (see docs/AGENT-PROTOCOL.md):
 #   - one "RUN {json}" line arrives on stdin, keys = declared params only

@@ -1,4 +1,4 @@
-// Package agent defines the plug-in contract every chat-app ability
+// Package agent defines the plug-in contract every onidia-chat ability
 // ("agent") implements, plus a tiny registry so the model's [AGENT: ...]
 // reply tags and the agentctl CLI can discover and run them.
 //
@@ -12,7 +12,7 @@
 //     can write one in any language (sh, python, go, ...).
 //
 // The registry is process-global, mirroring characters.Register in the
-// sibling ../onidia pet. All validation happens HERE, in the brain, before
+// sibling ../onidia buddy. All validation happens HERE, in the brain, before
 // any agent code runs: the model only ever fills declared parameters.
 package agent
 
@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
 	"math"
 	"regexp"
 	"sort"
@@ -40,12 +41,15 @@ type Param struct {
 }
 
 // Result is what one agent run produced. Message is appended to the chat
-// reply (and therefore spoken by the pet); PetCmd optionally drives the
+// reply (and therefore spoken by the buddy); PetCmd optionally drives the
 // desktop-pet's cmd-FIFO ("action dance", "event love") when the model did
-// not emit its own [ACTION:]/[EVENT:] tag.
+// not emit its own [ACTION:]/[EVENT:] tag. Image optionally carries one
+// decoded chart (see the IMG line in docs/AGENT-PROTOCOL.md); the app
+// renders it next to Message, which stays the TTS/fallback caption.
 type Result struct {
 	Message string
 	PetCmd  string
+	Image   image.Image
 }
 
 // Agent is one callable ability.
@@ -122,6 +126,58 @@ func Reset() {
 	registryMu.Lock()
 	registry = map[string]Agent{}
 	registryMu.Unlock()
+	disabledMu.Lock()
+	disabledIDs = map[string]bool{}
+	disabledMu.Unlock()
+}
+
+// ---- enabling and disabling -------------------------------------------------
+
+// A manifest can carry "disabled": true to switch one agent off, but that only
+// works for agents the user owns: on a packaged install the agents live in
+// /opt/onidia/share/agents, root-owned, so switching one off means sudo nano.
+// This set is the owner-independent switch - onidia-chat's agents-disabled config
+// key (or -agents-disabled) fills it, and discovery skips those ids.
+//
+// Disabling is not the same as deleting: the agent stays on disk, keeps its
+// version and its folder, and comes back on the next start without a reinstall.
+var (
+	disabledMu  sync.RWMutex
+	disabledIDs = map[string]bool{}
+)
+
+// SetDisabled replaces the set of disabled agent ids. Unknown ids are kept, so
+// a config naming an agent that is not installed is not silently dropped and
+// starts working the day that agent is installed.
+func SetDisabled(ids []string) {
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			m[id] = true
+		}
+	}
+	disabledMu.Lock()
+	disabledIDs = m
+	disabledMu.Unlock()
+}
+
+// IsDisabled reports whether id is switched off.
+func IsDisabled(id string) bool {
+	disabledMu.RLock()
+	defer disabledMu.RUnlock()
+	return disabledIDs[id]
+}
+
+// DisabledIDs returns the disabled ids, sorted.
+func DisabledIDs() []string {
+	disabledMu.RLock()
+	out := make([]string, 0, len(disabledIDs))
+	for id := range disabledIDs {
+		out = append(out, id)
+	}
+	disabledMu.RUnlock()
+	sort.Strings(out)
+	return out
 }
 
 // ---- argument validation ---------------------------------------------------
@@ -354,8 +410,8 @@ func splitTokens(s string) ([]string, error) {
 // ---- system-prompt catalog -------------------------------------------------
 
 // agentCatalogIntro teaches the model the tag format before the list of
-// registered abilities (mirrors visualLanguageInstruction for pet tags).
-const agentCatalogIntro = ` You also control "agents" - special abilities this app can run for you (playing media, reading stories, ...). To perform one, START your reply with ONE "[AGENT: <id> <key>=<value> ...]" tag per ability, quoting values that contain spaces (example: title="some song"); use parameter names exactly as declared, never invent ids or keys, and only use listed abilities. The tag is stripped before display and the app appends the agent's result to your reply. Abilities you may use:`
+// registered abilities (mirrors visualLanguageInstruction for buddy tags).
+const agentCatalogIntro = ` You also control "agents" - special abilities this app can run for you (playing media, reading stories, animating the desktop pet, ...). To perform one, START your reply with ONE "[AGENT: <id> <key>=<value> ...]" tag per ability, quoting values that contain spaces (example: title="some song"); use parameter names exactly as declared, never invent ids or keys, and only use listed abilities. The tag is stripped before display and the app appends the agent's result to your reply. IMPORTANT: an ability listed below really runs on the user's machine and its effect is real, so use it rather than describing or apologising for the effect. Never tell the user an ability is "outside my capabilities" or "I cannot show that" - when an ability below covers the request, emit its tag. Abilities you may use:`
 
 // CatalogInstruction renders the system-prompt block listing every
 // registered agent with its declared parameters. Empty string when no

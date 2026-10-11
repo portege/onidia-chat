@@ -2,11 +2,12 @@ package main
 
 import (
 	"context"
+	"image"
 	"slices"
 	"strings"
 	"testing"
 
-	"github.com/portege/chat-app/agent"
+	"github.com/portege/onidia-chat/agent"
 )
 
 // echoAgent is a native (in-process) agent for bridge tests.
@@ -35,6 +36,10 @@ func TestStripTagsAgentPayload(t *testing.T) {
 	}{
 		{"[AGENT: echoer text=hi] done", "done", []string{"echoer text=hi"}, ""},
 		{`[AGENT: echoer text="hi there"] ok`, "ok", []string{`echoer text="hi there"`}, ""},
+		// A quoted value may contain a bracket: the tag must be removed whole,
+		// payload included (a [^\]]* payload stopped at the inner ']' and left
+		// '"]' in the text while handing the parser half a call).
+		{`[AGENT: echoer text="a [b] c"] done`, "done", []string{`echoer text="a [b] c"`}, ""},
 		{"[happy] [AGENT: echoer text=hi] chained", "chained", []string{"echoer text=hi"}, "happy"},
 		{"[AGENT: echoer text=hi]\nnew line", "new line", []string{"echoer text=hi"}, ""},
 		{"no tag here", "no tag here", nil, ""},
@@ -50,6 +55,31 @@ func TestStripTagsAgentPayload(t *testing.T) {
 		if !slices.Equal(agent, tc.wantAgent) || text != tc.wantText || mood != tc.wantMood {
 			t.Errorf("stripTags(%q) = agent(%q) text(%q) mood(%q), want agent(%q) text(%q) mood(%q)",
 				tc.raw, agent, text, mood, tc.wantAgent, tc.wantText, tc.wantMood)
+		}
+	}
+}
+
+// TestStripAgentTags covers the copy of a turn that goes back to the model:
+// dispatched [AGENT: ...] tags are removed so the model cannot re-ask for an
+// ability that already ran. The payload pattern is shared with replyTag, so a
+// quoted value carrying a bracket is removed whole rather than leaving half a
+// tag in the conversation history.
+func TestStripAgentTags(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"[AGENT: echoer text=hi] done", "done"},
+		{`[AGENT: echoer text="a [b] c"] done`, "done"},
+		// The blanks around a removed tag are left alone (harmless in the copy
+		// the model reads); the tag itself is what must not come back.
+		{"sneaky [AGENT: echoer text=x] end", "sneaky  end"},
+		// A tag the model never closed is not this pass's business: replyTag
+		// cannot match it either, so the load-bearing shape is the display
+		// scrub (see scrubTags).
+		{"[AGENT: echoer text=hi", "[AGENT: echoer text=hi"},
+		{"no tag here", "no tag here"},
+	}
+	for _, tc := range cases {
+		if got := stripAgentTags(tc.in); got != tc.want {
+			t.Errorf("stripAgentTags(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
@@ -129,9 +159,9 @@ func TestReplyRunsAgentEndToEnd(t *testing.T) {
 	}
 }
 
-// TestReplyPetCmdPrecedenceAndTrust pins the rules for the pet command an
+// TestReplyPetCmdPrecedenceAndTrust pins the rules for the buddy command an
 // ability can ask for: the model's own [ACTION:]/[EVENT:] tag wins, the agent's
-// line is only a fallback, and an agent naming a pose the pet does not have is
+// line is only a fallback, and an agent naming a pose the buddy does not have is
 // dropped instead of being written to the cmd-FIFO.
 func TestReplyPetCmdPrecedenceAndTrust(t *testing.T) {
 	agent.Reset()
@@ -150,7 +180,7 @@ func TestReplyPetCmdPrecedenceAndTrust(t *testing.T) {
 		t.Errorf("petCmdLine = %q, want the model's action wave", res.petCmdLine)
 	}
 
-	// With no model tag, the agent's command drives the pet.
+	// With no model tag, the agent's command drives the buddy.
 	res = newBot("[AGENT: echoer text=go]\nhi").Reply([]Msg{{From: "you", Text: "go"}}, "go")
 	if res.petCmdLine != "action dance" {
 		t.Errorf("petCmdLine = %q, want the agent's action dance", res.petCmdLine)
@@ -192,6 +222,28 @@ func (b *bogusCmdAgent) Params() []agent.Param {
 }
 func (b *bogusCmdAgent) Run(_ context.Context, args map[string]string) (agent.Result, error) {
 	return agent.Result{Message: "echo: " + args["text"], PetCmd: "action moonwalk"}, nil
+}
+
+// TestAgentImg: the reply's chart image is the FIRST run-decoded IMG png,
+// the same one-per-reply first-wins rule as agentPetCmd - nil when no run
+// carried an image.
+func TestAgentImg(t *testing.T) {
+	if got := agentImg(nil); got != nil {
+		t.Errorf("agentImg(nil) = %v, want nil", got)
+	}
+	if got := agentImg([]agentRun{{ID: "a", Msg: "ok"}}); got != nil {
+		t.Errorf("agentImg(text-only run) = %v, want nil", got)
+	}
+	first := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	second := image.NewRGBA(image.Rect(0, 0, 3, 3))
+	runs := []agentRun{
+		{ID: "plain", Msg: "ok"},
+		{ID: "chart1", Msg: "plotted", Image: first},
+		{ID: "chart2", Msg: "plotted", Image: second},
+	}
+	if got := agentImg(runs); got != first {
+		t.Errorf("agentImg(runs) returned the wrong chart, want the first non-nil image")
+	}
 }
 
 func TestEffectiveSystemAgentCatalog(t *testing.T) {

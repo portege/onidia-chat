@@ -6,13 +6,13 @@ package main
 // SpeakLine(), which queues a job. A single worker posts the text to
 // https://api.typecast.ai/v1/text-to-speech, saves the returned WAV to a temp
 // file and plays it with the first available system player (aplay -> paplay ->
-// ffplay). The pet bubble is shown ONLY once the audio is ready to play (the
+// ffplay). The buddy bubble is shown ONLY once the audio is ready to play (the
 // job's show hook, called right before playback starts) and is closed as soon
 // as playback ends (the hide hook) - so the bubble tracks the spoken words
 // instead of the reply landing time. Playback is serialised so replies never
 // talk over each other, and a quiet failure (no sound card, no player, API
 // hiccup) never blocks or crashes the UI: speech is skipped and the bubble is
-// shown immediately, the pet then dismisses it by its normal reading-time
+// shown immediately, the buddy then dismisses it by its normal reading-time
 // duration.
 
 import (
@@ -66,7 +66,7 @@ func pipewireRunning() bool {
 }
 
 // TTS turns reply text into spoken audio. Speak/SpeakLine are non-blocking:
-// the text (plus optional show/hide hooks for the pet bubble) lands in a small
+// the text (plus optional show/hide hooks for the buddy bubble) lands in a small
 // queue and a single worker fetches + plays each item in order.
 type TTS struct {
 	enabled bool
@@ -79,7 +79,7 @@ type TTS struct {
 }
 
 // ttsJob is one queued spoken reply. show fires when the audio is ready to
-// play (the pet bubble appears then); hide fires when playback finishes (the
+// play (the buddy bubble appears then); hide fires when playback finishes (the
 // bubble closes). Either may be nil.
 type ttsJob struct {
 	text string
@@ -135,7 +135,7 @@ func (t *TTS) Close() {
 }
 
 // Speak queues reply text for playback without any bubble hooks (used by callers
-// that do not run a pet). Empty text (e.g. image-only replies) is dropped, and
+// that do not run a buddy). Empty text (e.g. image-only replies) is dropped, and
 // a full queue drops the newest line with a log message - it never blocks the
 // caller.
 func (t *TTS) Speak(text string) {
@@ -143,7 +143,7 @@ func (t *TTS) Speak(text string) {
 }
 
 // SpeakLine queues reply text for playback with optional bubble hooks: show
-// fires when the audio is ready to play (the pet bubble appears then) and hide
+// fires when the audio is ready to play (the buddy bubble appears then) and hide
 // fires after playback ends (the bubble closes). Empty text is dropped, and a
 // full queue skips speech but still shows the bubble immediately (fallback) so
 // a reply is never lost silently.
@@ -163,7 +163,7 @@ func (t *TTS) SpeakLine(text string, show, hide func()) {
 	default:
 		log.Printf("tts: queue full, skipping speech for %q", truncate(text, 40))
 		if show != nil {
-			show() // still show the bubble; the pet closes it by duration
+			show() // still show the bubble; the buddy closes it by duration
 		}
 	}
 }
@@ -174,7 +174,7 @@ func (t *TTS) worker() {
 	}
 }
 
-// process performs one queued job: fetch the audio, then play it. The pet
+// process performs one queued job: fetch the audio, then play it. The buddy
 // bubble is shown right before playback starts (audio is ready) and closed
 // right after it ends. If the audio can never be produced, the bubble is shown
 // anyway as a fallback and left to close by its normal reading-time duration.
@@ -273,9 +273,9 @@ type ttsOutputSpec struct {
 	AudioFormat string `json:"audio_format"`
 }
 
-// writeWav stores raw WAV bytes in a fresh /tmp/chat-app-tts-*.wav file.
+// writeWav stores raw WAV bytes in a fresh /tmp/onidia-chat-tts-*.wav file.
 func writeWav(data []byte) (string, error) {
-	f, err := os.CreateTemp("", "chat-app-tts-*.wav")
+	f, err := os.CreateTemp("", "onidia-chat-tts-*.wav")
 	if err != nil {
 		return "", err
 	}

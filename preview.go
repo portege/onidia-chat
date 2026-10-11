@@ -70,7 +70,21 @@ func dumpPreviews() {
 		testImage(260, 140))
 	writePNG("chat_ui_image.png", u6.Render())
 
-	// Waiting for Gemini: the "..." thinking bubble below the user's entry.
+	// Reasoning: a <THINKING> cloud stacked above the answer bubble. Both a
+	// long thought (wrapped, multi-lobed) and a one-liner, because the cloud
+	// shape is meant to hold up at either size. No seeded conversation here,
+	// so the clouds are the first thing on screen.
+	u14 := NewUI(defaultWinW, defaultWinH)
+	u14.collapsed = false
+	u14.msgs = nil
+	u14.AddMsg("you", "do a happy dance for me")
+	u14.AddThinking(u14.Bot.Name, "sure! here is one for you.",
+		"the user asked for music, so play_song is the right ability - i will pass the title through",
+		nil, true)
+	u14.AddThinking(u14.Bot.Name, "ok", "tiny", nil, false)
+	writePNG("chat_ui_cloud.png", u14.Render())
+
+	// Waiting for Gemini: the "..." bubble while the call is in flight.
 	u5 := NewUI(defaultWinW, defaultWinH)
 	u5.collapsed = false
 	seedConvo(u5)
@@ -129,7 +143,7 @@ func dumpPreviews() {
 	writePNG("chat_ui_paged.png", u10.Render())
 
 	// About modal: the teal hero strip with the word-art name and the round
-	// character badge, the tagline, the live pet status and the credit.
+	// character badge, the tagline, the live buddy status and the credit.
 	u11 := NewUI(defaultWinW, defaultWinH)
 	u11.collapsed = false
 	seedConvo(u11)

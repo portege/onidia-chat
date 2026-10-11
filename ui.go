@@ -5,17 +5,23 @@ package main
 // Like the desktop-pet, the whole interface is composed in software into one
 // NRGBA frame per redraw: a header strip, a scrollable message list drawn
 // into a clipped layer, and an input bar with the textarea and the SEND
-// (submit) button. The palette reuses the pet's colors so both apps feel
+// (submit) button. The palette reuses the buddy's colors so both apps feel
 // like one family.
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
+	"math"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/portege/onidia-chat/internal/confpath"
 )
 
 // Widget identifies which UI region a pointer event landed on.
@@ -28,7 +34,7 @@ const (
 	WInput
 	WButton
 	WClose
-	WHaiya  // header "Haiya!" button: launches the onidia pet application
+	WHaiya  // header "Haiya!" button: launches the onidia buddy application
 	WAbout  // header "About" button: opens the About modal
 	WToggle // header +/- button: shows/hides the conversation history
 
@@ -48,7 +54,10 @@ const (
 	WDropToBM   // BUSY TO minute dropdown 0/15/30/45
 	WDropBad    // dropdown whose selected value is invalid (for validation prompt)
 	WMute       // mute-speech checkbox row
+	WThink      // thinking-bubble checkbox row (shares the mute row)
 	WDemo       // demo-mode checkbox row (below mute)
+	WAutoSubmit // auto-submit checkbox row (shares the demo row)
+	WAutoStop   // auto-stop checkbox row (below auto-submit)
 	WGirl       // gender picker: ONIDIA button (Haiya! launches the girl)
 	WBoy        // gender picker: KAMA button (Haiya! launches the boy)
 	WOption     // one row of an open dropdown list
@@ -65,6 +74,8 @@ const (
 	// toggle and the stop button of whatever a media agent is playing.
 	WMediaPlay
 	WMediaStop
+
+	WMic // input-bar microphone button (drawn only when speech input is on)
 )
 
 // Msg is one chat entry.
@@ -80,25 +91,42 @@ type Msg struct {
 	// Both stay nil for ordinary chat messages; the renderer ignores them.
 	Calls   []ToolCall
 	Results []ToolResult
+	// UsedAbility marks a bot turn that ran at least one ability. The renderer
+	// ignores it; the copy of history built for the model appends a short
+	// "an ability did this" note (agentbridge.historyEvidence) so the model
+	// can see the ability worked. Without it, the only evidence in history is
+	// the model's own past refusals, and it stops offering the ability at all.
+	UsedAbility bool
+
+	// Thinking is the model's reasoning, drawn as a thought cloud ABOVE the
+	// speech bubble. Kept out of Text on purpose: Text is what gets copied,
+	// paginated and sent onward, and none of that should carry the reasoning.
+	Thinking string
 }
 
 // Palette - shared with the desktop-pet (plum outlines, pastel teal).
 var (
-	colHeader      = color.RGBA{95, 207, 214, 255}  // pastel teal (pet hair)
+	colHeader      = color.RGBA{95, 207, 214, 255}  // pastel teal (buddy hair)
 	colTealShade   = color.RGBA{65, 174, 182, 255}  // darker teal
 	colHairLight   = color.RGBA{165, 236, 239, 255} // light teal (user bubbles)
 	colPlum        = color.RGBA{47, 34, 62, 255}    // deep plum outlines
 	colText        = color.RGBA{45, 38, 60, 255}    // bubble text
 	colMuted       = color.RGBA{148, 138, 164, 255} // secondary text
 	colBg          = color.RGBA{246, 243, 250, 255} // soft lilac-white
-	colBubbleFill  = color.RGBA{252, 250, 255, 255} // pet speech-bubble white
+	colBubbleFill  = color.RGBA{252, 250, 255, 255} // buddy speech-bubble white
 	colBtn         = color.RGBA{95, 207, 214, 255}  // SEND button (teal)
 	colBtnOff      = color.RGBA{221, 216, 230, 255} // disabled button
 	colInputBorder = color.RGBA{216, 210, 226, 255}
 	colWhite       = color.RGBA{255, 255, 255, 255}
 	colError       = color.RGBA{196, 60, 74, 255} // save-failure text in the modal
 
-	// Haiya! button while the onidia pet is running: bubblegum pink so the
+	// Thought cloud (the model's <THINKING> reasoning). Deliberately muted
+	// against the speech bubble so the two never read as the same thing: the
+	// cloud is a quiet aside, the bubble is what the character actually says.
+	colCloudFill = color.RGBA{236, 232, 246, 255} // pale lilac
+	colCloudEdge = color.RGBA{186, 178, 208, 255} // soft grey-lilac rim
+
+	// Haiya! button while the onidia buddy is running: bubblegum pink so the
 	// state change is obvious at a glance (teal = launch, pink = click quits).
 	colHaiyaPink   = color.RGBA{236, 96, 156, 255}  // base fill
 	colHaiyaPinkHi = color.RGBA{252, 150, 194, 255} // hover (lighter)
@@ -139,7 +167,29 @@ const (
 
 	// Pagination: a reply with 2+ paragraphs becomes a paged bubble.
 	pagStrip = 20 // height of the pager strip at the bubble's foot
-	pagBtn   = 14 // prev/next page button side
+
+	// Thought-cloud metrics. The reasoning is drawn at scale 1 (half the
+	// speech bubble's size) so a long ramble cannot crowd out the answer, and
+	// capped to a few lines so one turn's thinking can never fill the window.
+	thinkScale  = 1
+	thinkLineH  = (glyphH + 2) * thinkScale // tighter pitch than the bubble's
+	thinkPadX   = 10
+	thinkPadY   = 8
+	thinkStroke = 2 // outline width, the line-art look
+	thinkGap    = 6 // vertical gap between the cloud and the block below it
+	thinkMaxW   = 3 // the cloud is narrower than a bubble: 3/4 of the same max
+	thinkMaxLn  = 6 // lines kept before the reasoning is elided
+
+	// The cloud is never flatter than this width:height ratio, so a long ramble
+	// cannot flatten the outline into a lozenge.
+	thinkMaxAspect = 190 // width*100 / height, i.e. 1.9:1
+
+	// The two dots trailing away below the cloud: the detail that makes it read
+	// as "thinking" rather than as a small speech balloon.
+	thinkDotR     = 4
+	thinkDotGap   = 4
+	thinkDotDrift = 8
+	pagBtn        = 14 // prev/next page button side
 
 	// "Copy" pill on a bubble's sender-label row.
 	copyBtnPad   = 4 // padding around the Copy label inside its pill
@@ -154,8 +204,15 @@ const (
 	mediaLbl  = "NOW PLAYING"
 	mediaMaxT = 64 // title rune cap (the strip is narrow)
 
-	maxInput  = 280 // textarea rune cap
-	winRadius = 12  // window shell corner rounding (transparent corners)
+	maxInput = 280 // textarea rune cap
+
+	// Window shell corner rounding: 0 keeps the shell a square rectangle.
+	// Rounding was tried two ways - zeroing the alpha in the corners (the
+	// compositor alone decides whether that shows) and cutting a SHAPE
+	// outline - and on a labwc/Xwayland desktop both left the corners as
+	// visible blocks instead of clean see-through arcs. A square shell has no
+	// such seam, so it is the default; raise it to re-enable the rounding.
+	winRadius = 0
 
 	// Settings modal layout (drawSettings).
 	modalPad  = 20  // panel inner padding
@@ -163,22 +220,31 @@ const (
 	panelW    = 340 // modal panel width (clamped to the window; wide enough
 	// that the four sleep-time dropdowns fit their labels, chevrons and
 	// the expanded lists' dot + text)
-	panelH = 504 // modal panel height (name + age + sleep rows + busy rows +
-	// character picker + mute checkbox + demo-mode checkbox + buttons)
+	panelH = 534 // modal panel height (name + age + sleep rows + busy rows +
+	// character picker + mute/thinking row + demo/auto-submit row + auto-stop
+	// row + buttons)
 	dropH        = 32  // dropdown box height
 	optH         = 24  // dropdown list row height
 	genderRowY   = 314 // CHARACTER picker row top inside the panel (below busy time)
-	minSettingsH = 574 // window height forced while the modal is open
+	minSettingsH = 604 // window height forced while the modal is open
 
-	checkSide = 20  // checkbox square side (mute / demo mode)
-	muteRowY  = 370 // mute-checkbox row top inside the panel (below the character picker)
-	demoRowY  = 398 // demo-mode checkbox row top inside the panel (below mute)
+	checkSide   = 20  // checkbox square side (mute / thinking bubble / demo mode)
+	checkColGap = 24  // gap between the two checkboxes sharing the mute row
+	muteRowY    = 370 // mute-checkbox row top inside the panel (below the character picker)
+	demoRowY    = 398 // demo-mode checkbox row top inside the panel (below mute)
+
+	// autoStopRowY is the end-of-speech row, on its own line below AUTO SUBMIT.
+	// The rows above it are paired and will not fit a third column, so this one
+	// takes the full width of the panel and grows it rather than cramping them.
+	autoStopRowY = 426
 
 	// About modal layout (drawAbout): a small informational panel shown by
-	// the header's About button.
+	// the header's About button. 300 rather than 280 because the panel now
+	// carries the loaded config path between the divider and the credit -
+	// a line that has to be read, not squashed against the OK button.
 	aboutPanelW = 340 // panel width
-	aboutPanelH = 280 // panel height (hero art + tagline + status + credit + OK)
-	minAboutH   = 300 // window height forced while the About modal is open
+	aboutPanelH = 300 // panel height (hero art + tagline + status + config + credit + OK)
+	minAboutH   = 320 // window height forced while the About modal is open
 	aboutBtnW   = 90  // OK button width
 
 	maxNameChars = 16 // character-name field rune cap
@@ -225,10 +291,11 @@ type UI struct {
 	Stream   chan string      // accumulated partial bot text while SSE streams in
 	Thinking bool             // true while a Gemini call is in flight
 
-	msgs       []Msg
-	streamText string // preview shown in the synthetic bubble ("" = "...")
-	input      []rune
-	scroll     int // scrollTop in content px (clamped; 0 = oldest visible)
+	msgs        []Msg
+	streamText  string // preview shown in the synthetic bubble ("" = "...")
+	streamThink string // <THINKING> preview for the synthetic thought cloud
+	input       []rune
+	scroll      int // scrollTop in content px (clamped; 0 = oldest visible)
 
 	focused   bool // the textarea owns the keyboard
 	caret     bool // caret blink phase
@@ -236,12 +303,29 @@ type UI struct {
 
 	expandedH int // last non-collapsed height; restored when expanding
 
+	// Speech input (see stt.go). STT is the configured backend, nil when
+	// speech input is off. STTSess is the take in flight, sttBusy the
+	// transcription that follows it, and sttErr/sttNote the message shown in
+	// the input bar - the note persists as "the transcript is ready" until
+	// the user edits or sends it.
+	STT       STT
+	STTSess   *STTSession
+	sttBusy   bool
+	sttErr    string
+	sttNote   string
+	sttSince  time.Time
+	sttDevice string // capture device ("" = system default)
+	// sttAutoAt is when a pending auto-submit fires, or zero when none is
+	// pending. It is armed only once the transcript has actually landed, so it
+	// is never set while a take or a transcription is still in flight.
+	sttAutoAt time.Time
+
 	hover Widget
 	press Widget
 
 	wantClose  bool // set by a click on the header's close button
 	wantPet    bool // set by a click on the header's "Haiya!" button
-	petRunning bool // onidia pet is running: the button is pink and quits it
+	petRunning bool // onidia buddy is running: the button is pink and quits it
 
 	// About modal state (see drawAbout): a small informational panel with an
 	// OK button, opened from the header's About button.
@@ -268,10 +352,15 @@ type UI struct {
 	busyFromMinDraft  int       // busy start minute picked in the modal (0/15/30/45)
 	busyToMinDraft    int       // busy end minute picked in the modal (0/15/30/45)
 	muteDraft         bool      // mute-speech checkbox in the modal; committed on SAVE
-	demo              bool      // committed demo mode: true = pet roams & chatters (default off)
+	thinkDraft        bool      // thinking-bubble checkbox in the modal; committed on SAVE
+	demo              bool      // committed demo mode: true = buddy roams & chatters (default off)
+	autoSubmit        bool      // committed: a finished transcript is sent on its own (INI "auto-submit"; default off)
+	autoStop          bool      // committed: a take ends on silence, with no second click (INI "auto-stop"; default off)
 	demoDraft         bool      // demo-mode checkbox in the modal; committed on SAVE
-	wantPetRestart    bool      // SAVE changed demo mode while the pet runs: restart it
-	gender            string    // committed pet gender: "girl" (Onidia) or "boy" (Kama)
+	autoSubmitDraft   bool      // auto-submit checkbox in the modal; committed on SAVE
+	autoStopDraft     bool      // auto-stop checkbox in the modal; committed on SAVE
+	wantPetRestart    bool      // SAVE changed demo mode while the buddy runs: restart it
+	gender            string    // committed buddy gender: "girl" (Onidia) or "boy" (Kama)
 	genderDraft       string    // gender picked in the modal; committed on SAVE
 	prevH             int       // window height before the modal forced minSettingsH
 	name              string    // committed character name ("" = not set yet)
@@ -285,6 +374,7 @@ type UI struct {
 	busyTo            int       // committed busy-window end hour (-1 = unset)
 	busyToMin         int       // committed busy-window end minute (0/15/30/45)
 	mute              bool      // committed: replies are not spoken aloud (INI "mute")
+	think             bool      // committed: draw the reasoning cloud above a reply (INI "thinking")
 	savePath          string    // INI file settings are written to ("" = ./chat-app.ini)
 	saveErr           string    // last save error, shown inside the modal
 	optIdx            int       // dropdown row under the pointer (set by HitTest)
@@ -318,6 +408,7 @@ func NewUI(w, h int) *UI {
 		collapsed: true,
 		expandedH: max(h, 260),
 		gender:    "girl", // GIRL picker active until the INI says boy
+		think:     true,   // reasoning cloud on unless the INI says thinking = off
 		sleepFrom: -1,     // -1 = no sleep window configured yet
 		sleepTo:   -1,
 		pagerMsg:  -1, // no pager under the pointer yet
@@ -377,8 +468,37 @@ func (u *UI) msgArea() (y, h int) {
 	return headerH, u.H - headerH - inputH - u.mediaBarH()
 }
 
+// micW is the side of the square microphone button in the input bar. It only
+// takes space when speech input is enabled, so a default install looks
+// exactly as before.
+const micW = 44
+
+// sttHandsFreeNote is the input-bar status while a take is running under AUTO
+// STOP. Unlike the manual note it is short enough to render in full: the note
+// area is 21 columns at the default window width and fitCols cuts from the
+// right, which is where the meaning is.
+const sttHandsFreeNote = "Listening… auto-send"
+
+// micEnabled reports whether the microphone button is shown at all.
+func (u *UI) micEnabled() bool { return u.STT != nil }
+
+// micRect is the microphone button, parked to the left of the SEND button.
+// The textarea and the SEND button both shrink by micW to make room.
+func (u *UI) micRect() image.Rectangle {
+	top := u.H - inputH + (inputH-btnH)/2
+	return image.Rect(u.W-btnW-btnGap-micW-padX, top, u.W-btnW-btnGap-padX, top+btnH)
+}
+
+// micSpace is the width the input bar reserves for the mic, 0 when off.
+func (u *UI) micSpace() int {
+	if u.micEnabled() {
+		return micW + btnGap
+	}
+	return 0
+}
+
 func (u *UI) inputRect() image.Rectangle {
-	return image.Rect(padX, u.H-inputH+inputPad, u.W-btnW-btnGap-padX, u.H-inputPad)
+	return image.Rect(padX, u.H-inputH+inputPad, u.W-btnW-btnGap-u.micSpace()-padX, u.H-inputPad)
 }
 
 func (u *UI) buttonRect() image.Rectangle {
@@ -417,7 +537,7 @@ func (u *UI) toggleRect() image.Rectangle {
 	return image.Rect(x1-hdrBtn, y, x1, y+hdrBtn)
 }
 
-// haiyaLabel is the text on the header button that launches the onidia pet.
+// haiyaLabel is the text on the header button that launches the onidia buddy.
 const haiyaLabel = "Haiya!"
 
 // aboutLabel is the text on the header button that opens the About modal.
@@ -425,8 +545,8 @@ const aboutLabel = "About"
 
 // haiyaRect is the "Haiya!" button: a rounded pill right after the CHAT
 // label in the header, deliberately larger than the close/gear squares so the
-// pet toggle is easy to hit. Clicking it runs the pet application, or - when
-// the pet is already running (PetRunning) - quits it with a poof-out.
+// buddy toggle is easy to hit. Clicking it runs the buddy application, or - when
+// the buddy is already running (PetRunning) - quits it with a poof-out.
 func (u *UI) haiyaRect() image.Rectangle {
 	x1 := padX + textWidth("ONIDIA", uiFontScale) + btnGap
 	h := hdrBtn + 8 // taller than the close/gear squares
@@ -556,6 +676,40 @@ func (u *UI) demoRect() image.Rectangle {
 	w := checkSide + 10 + textWidth("DEMO MODE", 1)
 	return image.Rect(p.Min.X+modalPad, p.Min.Y+demoRowY,
 		p.Min.X+modalPad+w, p.Min.Y+demoRowY+checkSide)
+}
+
+// autoRect is the auto-submit checkbox row: the box plus its label, so clicking
+// either toggles the draft. It shares the DEMO MODE row to that row's right, and
+// is derived from it for the same reason thinkRect derives from muteRect - the
+// two can never drift apart.
+func (u *UI) autoRect() image.Rectangle {
+	d := u.demoRect()
+	w := checkSide + 10 + textWidth("AUTO SUBMIT", 1)
+	return image.Rect(d.Max.X+checkColGap, d.Min.Y,
+		d.Max.X+checkColGap+w, d.Min.Y+checkSide)
+}
+
+// autoStopRect is the end-of-speech checkbox row, on its own line below
+// AUTO SUBMIT. It is anchored to autoStopRowY rather than derived from the row
+// above, because it is the only one of these that sits alone.
+func (u *UI) autoStopRect() image.Rectangle {
+	p := u.modalPanel()
+	w := checkSide + 10 + textWidth("AUTO STOP", 1)
+	return image.Rect(p.Min.X+modalPad, p.Min.Y+autoStopRowY,
+		p.Min.X+modalPad+w, p.Min.Y+autoStopRowY+checkSide)
+}
+
+// thinkRect is the thinking-bubble checkbox row: the box plus its label, so
+// clicking either toggles the draft. It shares the MUTE SPEECH row, sitting to
+// its right, and is derived from that row rather than pinned to its own Y so
+// the two can never drift apart. Checked means a reply's reasoning is drawn in
+// the cloud above its bubble; unchecked hides the cloud and lays the block out
+// exactly as if the model had produced no reasoning at all.
+func (u *UI) thinkRect() image.Rectangle {
+	m := u.muteRect()
+	w := checkSide + 10 + textWidth("THINKING BUBBLE", 1)
+	return image.Rect(m.Max.X+checkColGap, m.Min.Y,
+		m.Max.X+checkColGap+w, m.Min.Y+checkSide)
 }
 
 // genderRects returns the ONIDIA and KAMA picker buttons: a centred pair on
@@ -740,8 +894,17 @@ func (u *UI) HitTest(x, y int) Widget {
 		if r := u.muteRect(); inRect(x, y, r) {
 			return WMute
 		}
+		if r := u.thinkRect(); inRect(x, y, r) {
+			return WThink
+		}
 		if r := u.demoRect(); inRect(x, y, r) {
 			return WDemo
+		}
+		if r := u.autoRect(); inRect(x, y, r) {
+			return WAutoSubmit
+		}
+		if r := u.autoStopRect(); inRect(x, y, r) {
+			return WAutoStop
 		}
 		if girl, boy := u.genderRects(); inRect(x, y, girl) {
 			return WGirl
@@ -784,6 +947,11 @@ func (u *UI) HitTest(x, y int) Widget {
 		if x >= br.Min.X && x < br.Max.X && y >= br.Min.Y && y < br.Max.Y {
 			return WButton
 		}
+		// The mic sits to the left of SEND and is its own widget, so a click
+		// on it must not fall through and focus the textarea.
+		if u.micEnabled() && inRect(x, y, u.micRect()) {
+			return WMic
+		}
 		return WInput
 	}
 	if !u.collapsed {
@@ -824,6 +992,33 @@ func (u *UI) AddMsg(from, text string) {
 // AddMsgWithImage appends a message that may include an image.
 func (u *UI) AddMsgWithImage(from, text string, img image.Image) {
 	u.msgs = append(u.msgs, newMsg(from, text, img))
+	u.scroll = u.maxScroll()
+}
+
+// AddMsgUsed appends a plain text message and records whether an ability ran
+// for it, so the next turn's model-facing history can say so.
+func (u *UI) AddMsgUsed(from, text string, used bool) {
+	m := newMsg(from, text, nil)
+	m.UsedAbility = used
+	u.msgs = append(u.msgs, m)
+	u.scroll = u.maxScroll()
+}
+
+// AddThinking appends a bot message with a separate thought cloud above it.
+func (u *UI) AddThinking(from, text, thinking string, img image.Image, used bool) {
+	m := newMsg(from, text, img)
+	m.UsedAbility = used
+	m.Thinking = thinking
+	u.msgs = append(u.msgs, m)
+	u.scroll = u.maxScroll()
+}
+
+// AddMsgWithImageUsed appends a message that may include an image and records
+// whether an ability ran for it.
+func (u *UI) AddMsgWithImageUsed(from, text string, img image.Image, used bool) {
+	m := newMsg(from, text, img)
+	m.UsedAbility = used
+	u.msgs = append(u.msgs, m)
 	u.scroll = u.maxScroll()
 }
 
@@ -985,12 +1180,14 @@ func (u *UI) Release(w Widget) bool {
 		case WButton:
 			u.focused = true
 			u.Submit()
+		case WMic:
+			u.ToggleMic()
 		case WClose:
 			// The app is frameless, so this button is the way out besides
 			// Alt+F4; main() polls WantClose and exits.
 			u.wantClose = true
 		case WHaiya:
-			// Header "Haiya!" button: launches the onidia pet application,
+			// Header "Haiya!" button: launches the onidia buddy application,
 			// or quits it with a poof-out when it is already running.
 			// main() consumes the request via WantPet (one-shot), which
 			// decides from PetRunning; later header clicks must not re-fire.
@@ -1028,8 +1225,14 @@ func (u *UI) Release(w Widget) bool {
 			u.toggleDrop(dropBusyToM)
 		case WMute:
 			u.muteDraft = !u.muteDraft // commits on SAVE, like the drafts
+		case WThink:
+			u.thinkDraft = !u.thinkDraft // commits on SAVE, like the drafts
 		case WDemo:
 			u.demoDraft = !u.demoDraft // commits on SAVE, like the drafts
+		case WAutoSubmit:
+			u.autoSubmitDraft = !u.autoSubmitDraft // commits on SAVE, like the drafts
+		case WAutoStop:
+			u.autoStopDraft = !u.autoStopDraft // commits on SAVE, like the drafts
 		case WGirl:
 			u.genderDraft = "girl" // commits on SAVE, like the drafts
 		case WBoy:
@@ -1180,9 +1383,9 @@ func (u *UI) WantClose() bool { return u.wantClose }
 // WantPet reports whether the header's "Haiya!" button was clicked, and
 // consumes the flag (one-shot): a single click fires exactly one launch/quit
 // action. Without the consume, the stale flag would re-fire on every later
-// title-bar click - quitting the pet with a poof whenever the header was
+// title-bar click - quitting the buddy with a poof whenever the header was
 // clicked to collapse/expand. The main loop decides what the click means
-// from PetRunning: launch the onidia pet (button teal) or quit it with a
+// from PetRunning: launch the onidia buddy (button teal) or quit it with a
 // poof-out (button pink).
 func (u *UI) WantPet() bool {
 	if !u.wantPet {
@@ -1192,15 +1395,15 @@ func (u *UI) WantPet() bool {
 	return true
 }
 
-// PetDemo reports whether the pet should run in demo mode (autonomous
+// PetDemo reports whether the buddy should run in demo mode (autonomous
 // roaming + unsolicited chatter) per the settings dialog's DEMO MODE
 // checkbox. False plants it at the screen edge, still reactive to app
 // speech and still idly blinking.
 func (u *UI) PetDemo() bool { return u.demo }
 
-// WantPetRestart reports whether SAVE changed the demo mode of a pet that is
+// WantPetRestart reports whether SAVE changed the demo mode of a buddy that is
 // currently running, and consumes the flag (one-shot): the main loop then
-// quits and relaunches the pet so the new mode takes effect immediately.
+// quits and relaunches the buddy so the new mode takes effect immediately.
 func (u *UI) WantPetRestart() bool {
 	if !u.wantPetRestart {
 		return false
@@ -1209,16 +1412,16 @@ func (u *UI) WantPetRestart() bool {
 	return true
 }
 
-// SetPetRunning records whether the onidia pet application is running; the
+// SetPetRunning records whether the onidia buddy application is running; the
 // header button turns pink while it is, signalling that a click now quits it.
 func (u *UI) SetPetRunning(running bool) { u.petRunning = running }
 
-// PetRunning reports whether the onidia pet application is running.
+// PetRunning reports whether the onidia buddy application is running.
 func (u *UI) PetRunning() bool { return u.petRunning }
 
 // PetCharacter reports which character the Haiya! button should launch for
 // the gender chosen in the settings dialog: Kama for a boy, Onidia (the
-// pet binary's own default) for a girl.
+// buddy binary's own default) for a girl.
 func (u *UI) PetCharacter() string {
 	if normalizeGender(u.gender) == "boy" {
 		return "kama"
@@ -1272,7 +1475,10 @@ func (u *UI) openSettings() bool {
 	}
 	u.busyToMinDraft = minuteIndex(u.busyToMin)
 	u.muteDraft = u.mute
+	u.thinkDraft = u.think
 	u.demoDraft = u.demo
+	u.autoSubmitDraft = u.autoSubmit
+	u.autoStopDraft = u.autoStop
 	u.genderDraft = u.gender
 	// The modal keeps its full designed size, so the window grows in height
 	// when it is too short (prevH remembers the old height). collapsed is
@@ -1443,7 +1649,26 @@ func (u *UI) saveSettings() {
 		u.saveErr = err.Error()
 		return
 	}
+	// Stored as on/off rather than true/false (the same convention as "tts")
+	// because the cloud is on by default: a bool would make an INI that predates
+	// this setting read as false and silently lose the reasoning.
+	thinkVal := "off"
+	if u.thinkDraft {
+		thinkVal = "on"
+	}
+	if err := SetConfigValue(path, "character", "thinking", thinkVal); err != nil {
+		u.saveErr = err.Error()
+		return
+	}
 	if err := SetConfigValue(path, "character", "demo-mode", strconv.FormatBool(u.demoDraft)); err != nil {
+		u.saveErr = err.Error()
+		return
+	}
+	if err := SetConfigValue(path, "character", "auto-submit", strconv.FormatBool(u.autoSubmitDraft)); err != nil {
+		u.saveErr = err.Error()
+		return
+	}
+	if err := SetConfigValue(path, "character", "auto-stop", strconv.FormatBool(u.autoStopDraft)); err != nil {
 		u.saveErr = err.Error()
 		return
 	}
@@ -1471,19 +1696,41 @@ func (u *UI) saveSettings() {
 	u.busyFrom, u.busyTo = u.busyFromDraft, u.busyToDraft
 	u.busyFromMin, u.busyToMin = sleepMinutes[u.busyFromMinDraft], sleepMinutes[u.busyToMinDraft]
 	u.mute = u.muteDraft
-	// A demo-mode flip must reach a running pet immediately, so flag a
+	// No buddy restart is needed here, unlike demo mode: the transcript is laid
+	// out from scratch every frame, so the clouds appear or vanish the moment
+	// the checkbox is committed.
+	u.think = u.thinkDraft
+	// A demo-mode flip must reach a running buddy immediately, so flag a
 	// restart (the main loop quits + relaunches it) — the checkbox would
 	// otherwise only take effect on the next manual Haiya! click.
 	if u.demo != u.demoDraft && u.petRunning {
 		u.wantPetRestart = true
 	}
 	u.demo = u.demoDraft
+	// Unlike demo mode this needs no buddy restart, and it must also drop any
+	// send already counting down: the user has just said they do not want the
+	// app sending on its own, so the one it is about to do is the last one.
+	if !u.autoSubmitDraft {
+		u.cancelAutoSubmit()
+	}
+	u.autoSubmit = u.autoSubmitDraft
+	// Turning auto-stop off only affects the next take, but a take in progress
+	// should not be left with a watcher that can no longer be undone - so drop
+	// it, and the take reverts to needing a second click.
+	if !u.autoStopDraft {
+		u.cancelAutoStop()
+	}
+	u.autoStop = u.autoStopDraft
 	u.gender = u.genderDraft
 	if u.Bot != nil {
 		if name != "" {
 			u.Bot.Name = name // bubble sender label
 		}
 		u.Bot.CharacterName = name
+		// The buddy draws her own cloud from the say-line's <THINKING> block, so
+		// the same checkbox has to gate the line the Bot builds - otherwise
+		// unchecking this row silences the window but not the character.
+		u.Bot.PetThinkingOff = !u.thinkDraft
 		u.Bot.CharacterAge = u.ageDraft
 		u.Bot.SleepSet = true
 		u.Bot.SleepFromH, u.Bot.SleepToH = u.sleepFromDraft, u.sleepToDraft
@@ -1579,19 +1826,32 @@ func (u *UI) Key(r rune, sym uint32) bool {
 		u.Submit()
 		return true
 	case ksBackspace:
+		// Editing the transcript is the clearest signal that the user wants to
+		// keep control of it, so it cancels the pending send.
 		if n := len(u.input); n > 0 {
+			u.cancelAutoSubmit()
 			u.input = u.input[:n-1]
 			return true
 		}
 		return false
 	case ksEscape:
+		// Escape abandons a take in flight before it falls through to
+		// clearing the textarea: a live recording is the more urgent thing
+		// to stop.
+		if u.STTSess != nil {
+			u.CancelMic()
+			return true
+		}
 		if len(u.input) > 0 {
+			u.cancelAutoSubmit()
 			u.input = nil
+			u.sttNote = "" // a discarded transcript note is no longer true
 			return true
 		}
 		return false
 	}
 	if r >= 0x20 && r <= 0x7e && len(u.input) < maxInput {
+		u.cancelAutoSubmit() // the user is adding to it by hand
 		u.input = append(u.input, r)
 		return true
 	}
@@ -1605,27 +1865,255 @@ var streamNewlines = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ", `\\n
 // SetStreamText replaces the preview shown in the synthetic "..." bubble
 // while an SSE reply is streaming in. Called from the main loop only - the
 // reply goroutine hands text over via u.Stream and never touches UI state.
-// Tags are stripped to match the final bubble, a trailing unclosed "[" (a tag
-// cut off mid-flight) is dropped, and newlines collapse to spaces: the real
-// page breaks are decided later by finishReply. The view follows the bottom
-// only if the user was already there.
+// Tags are stripped to match the final bubble, including the bracket markup
+// scrubTags hides there (see finishReply) - every '[' is consumed with the
+// group it opens, so half an arrived tag cannot flash into the bubble - and
+// newlines collapse to spaces: the real page breaks are decided later by
+// finishReply. The view follows the bottom only if the user was already there.
 func (u *UI) SetStreamText(s string) {
 	follow := u.scroll >= u.maxScroll()
-	_, _, _, _, _, txt := stripTags(s)
-	if i := strings.LastIndex(txt, "["); i >= 0 && !strings.Contains(txt[i:], "]") {
-		txt = txt[:i]
-	}
-	u.streamText = strings.TrimSpace(streamNewlines.Replace(txt))
+	// Same split as the final bubble: reasoning goes to the cloud, the answer
+	// to the speech bubble. A half-arrived <THINKING> block counts as open, so
+	// mid-stream text lands in the cloud instead of flashing in the answer.
+	think, answer := splitThinking(s)
+	_, _, _, _, _, txt := stripTags(answer)
+	txt, think = scrubTags(txt), scrubTags(think)
+	oneLine := func(s string) string { return strings.TrimSpace(streamNewlines.Replace(s)) }
+	u.streamText = oneLine(txt)
+	u.streamThink = oneLine(think)
 	if follow {
 		u.scroll = u.maxScroll()
 	}
 }
+
+// drawCircle fills a circle of radius rad centred on (cx, cy). The mic
+// button is the only round widget, so this stays local to the UI file.
+// drawLevelRing paints the input level as a ring of dots around the mic, lit
+// from the top clockwise in proportion to level (0..100). It exists so the
+// end-of-speech threshold is observable: the dots moving is the difference
+// between "it is listening" and "it cannot hear me", which a take that never
+// stops and a take that stops instantly look identical without it.
+func drawLevelRing(frame *image.NRGBA, cx, cy, rad, level int) {
+	const dots = 12
+	lit := dots * max(0, min(100, level)) / 100
+	for i := 0; i < dots; i++ {
+		// Start at the top and go clockwise, a quarter turn per three dots.
+		a := -math.Pi/2 + 2*math.Pi*float64(i)/dots
+		px, py := cx+int(math.Cos(a)*float64(rad)), cy+int(math.Sin(a)*float64(rad))
+		if i < lit {
+			drawCircle(frame, px, py, 2, colError)
+		} else {
+			drawCircle(frame, px, py, 1, colInputBorder)
+		}
+	}
+}
+
+func drawCircle(frame *image.NRGBA, cx, cy, rad int, col color.RGBA) {
+	for y := -rad; y <= rad; y++ {
+		for x := -rad; x <= rad; x++ {
+			if x*x+y*y <= rad*rad {
+				px, py := cx+x, cy+y
+				if image.Pt(px, py).In(frame.Bounds()) {
+					frame.Set(px, py, col)
+				}
+			}
+		}
+	}
+}
+
+// ---- speech input -----------------------------------------------------------
+
+// ToggleMic starts a take, or finishes the one in flight. It is the whole
+// mic interaction: no mode flags beyond the session itself, which already
+// knows whether it is recording.
+func (u *UI) ToggleMic() {
+	// Any mic interaction supersedes a send that is counting down: the user is
+	// about to record again, so the words waiting to go out should just wait.
+	u.cancelAutoSubmit()
+	switch {
+	case u.STT == nil:
+		return
+	case u.STTSess != nil:
+		// Recording: stop and hand the audio to the backend.
+		u.STTSess.Stop()
+		u.sttBusy = true
+		u.sttNote = "Transcribing…"
+		u.sttErr = ""
+		u.focused = true
+	case u.sttBusy:
+		// A transcription is already in flight; starting a second recorder
+		// alongside it would talk over the first.
+		return
+	default:
+		u.startMic()
+	}
+}
+
+// startMic begins a fresh take, reporting a failure in the input bar rather
+// than silently doing nothing.
+func (u *UI) startMic() {
+	sess, err := StartSTTSession(u.STT, findSTTRecorder(), u.sttDevice, u.autoStop)
+	if err != nil {
+		u.sttErr, u.sttNote = err.Error(), ""
+		return
+	}
+	if err := sess.Record(); err != nil {
+		u.sttErr, u.sttNote = err.Error(), ""
+		return
+	}
+	u.STTSess = sess
+	// The instruction depends on the mode. Telling someone using AUTO STOP to
+	// "press again to stop" is not just a wasted phrase, it is the one thing
+	// they were trying not to have to do. The hands-free note is held to 21
+	// columns so the whole sentence survives the note area at the default
+	// window width - unlike the manual one, which fitCols has always cut.
+	note := "Recording… (press again to stop)"
+	if u.autoStop {
+		note = sttHandsFreeNote
+	}
+	u.sttErr, u.sttNote = "", note
+	u.sttSince = time.Now()
+}
+
+// CancelMic abandons a take in flight (Escape). Safe to call when idle.
+func (u *UI) CancelMic() {
+	if u.STTSess != nil {
+		u.STTSess.Cancel()
+		u.STTSess = nil
+		u.sttNote = ""
+	}
+}
+
+// armAutoSubmit schedules the prompt to go out on its own, and says so in the
+// input bar. Only ever called with words already in the textarea.
+//
+// The wording is held to what actually fits: at the default window width the
+// note area is 21 columns, so anything longer is silently cut by fitCols and
+// loses the part that matters - which key to press. TestAutoSubmitNoteFits
+// pins that.
+func (u *UI) armAutoSubmit() {
+	u.sttAutoAt = time.Now().Add(sttAutoSubmitDelay)
+	u.sttErr = ""
+	u.sttNote = "Sending, Esc to stop"
+}
+
+// cancelAutoSubmit drops a pending send, leaving the text where it is. Every
+// route out of the grace window goes through here: the user editing, sending,
+// pressing Escape, starting another take, or switching the setting off.
+func (u *UI) cancelAutoSubmit() { u.sttAutoAt = time.Time{} }
+
+// handsFree reports whether a finished transcript should send itself.
+//
+// AUTO SUBMIT is the explicit half. AUTO STOP implies it, and that is the whole
+// point of the setting: if the app is going to end the take by itself, leaving
+// the user a SEND click afterwards would not be hands-free, it would be a trap
+// - a take that has already been closed, waiting on a button the user has no
+// reason to think they still have to press. So the two make a clean set:
+//
+//	neither  - fully manual, today's behaviour
+//	submit   - you stop, it sends
+//	stop     - it stops, it sends  (fully hands-free)
+//	both     - same as stop
+func (u *UI) handsFree() bool { return u.autoSubmit || u.autoStop }
+
+// cancelAutoStop drops the end-of-speech watcher on the take in flight, so
+// unchecking the setting mid-take takes effect immediately rather than at the
+// next one. The take is not stopped: it simply goes back to needing a click.
+func (u *UI) cancelAutoStop() {
+	if u.STTSess != nil && u.STTSess.vad != nil {
+		u.STTSess.vad.stop()
+		u.STTSess.vad = nil
+	}
+}
+
+// autoSubmitPending reports whether a send is counting down.
+func (u *UI) autoSubmitPending() bool { return !u.sttAutoAt.IsZero() }
+
+// DrainSTT collects a finished take. It is non-blocking: a take that is still
+// transcribing has nothing on the channel yet, so the next poll picks it up.
+// Call it every frame from main.
+func (u *UI) DrainSTT() {
+	// The countdown is checked before the take is even looked at, because by the
+	// time a transcript has landed sttBusy is already false and the guard below
+	// would return first. Nothing else can be pending meanwhile: every mic
+	// interaction cancels the countdown, so a new take and a pending send can
+	// never overlap.
+	if u.autoSubmitPending() {
+		if time.Now().Before(u.sttAutoAt) {
+			return // still inside the grace window
+		}
+		u.cancelAutoSubmit()
+		u.sttNote = ""
+		u.Submit()
+		return
+	}
+	if u.STTSess == nil {
+		return
+	}
+	// A take the end-of-speech watcher ended has no click behind it, so nobody
+	// has marked it busy yet. Pick it up here, where the poll already is.
+	if !u.sttBusy && !u.STTSess.Recording() {
+		u.sttBusy = true
+		u.sttErr = ""
+		if u.STTSess.AutoStopped() {
+			u.sttNote = "Heard you - transcribing…"
+		} else {
+			u.sttNote = "Transcribing…"
+		}
+	}
+	if !u.sttBusy {
+		return
+	}
+	select {
+	case res := <-u.STTSess.Done:
+		u.STTSess = nil
+		u.sttBusy = false
+		switch {
+		case errors.Is(res.Err, errSTTCanceled):
+			// Abandoned on purpose: no message, no text.
+		case res.Err != nil:
+			u.sttErr, u.sttNote = res.Err.Error(), ""
+		default:
+			// The words go straight into the textarea, so there is nothing
+			// to announce: the text appearing IS the confirmation, and a
+			// "transcript ready" line would only sit on top of it.
+			u.sttErr, u.sttNote = "", ""
+			// Land the words in the textarea instead of sending them: a
+			// misheard sentence is far cheaper to fix here than to re-record.
+			if len(u.input) > 0 && !strings.HasSuffix(string(u.input), " ") {
+				u.input = append(u.input, ' ')
+			}
+			u.input = append(u.input, []rune(res.Text)...)
+			u.focused = true
+			// With auto-submit on, the words still land in the textarea first
+			// and the countdown starts from here - so the one second is a grace
+			// window the user can read and interrupt, not a replacement for
+			// showing them what was heard. An empty take arms nothing: there
+			// would be nothing to send, and the note would flash for no reason.
+			if u.handsFree() && strings.TrimSpace(string(u.input)) != "" {
+				u.armAutoSubmit()
+			}
+		}
+	default:
+		// Still transcribing.
+	}
+}
+
+// Recording reports whether a take is in flight (for the live mic state).
+func (u *UI) Recording() bool { return u.STTSess != nil && u.STTSess.Recording() }
+
+// Busy reports whether a transcription is in flight. The main loop uses it to
+// keep redrawing the animated mic while the backend works.
+func (u *UI) Busy() bool { return u.sttBusy }
 
 // Submit sends the current input: the message is appended to the history and
 // the bot answers asynchronously (Gemini can take seconds; the UI shows a
 // "..." bubble meanwhile and the reply arrives on u.Replies). Empty input is
 // a no-op.
 func (u *UI) Submit() {
+	// Every send is final, including an automatic one, so a countdown that is
+	// somehow still live must not fire a second time behind it.
+	u.cancelAutoSubmit()
 	text := strings.TrimSpace(string(u.input))
 	if text == "" {
 		return
@@ -1706,8 +2194,8 @@ func (u *UI) drawHeader(frame *image.NRGBA) {
 	// "ONIDIA" label is followed by the "Haiya!" launch button.
 	drawText(frame, padX, (headerH-glyphH*uiFontScale)/2, "ONIDIA", uiFontScale, colWhite)
 
-	// "Haiya!" button: runs the onidia pet application, or quits it (pink)
-	// while the pet is running. Painted like the other header buttons.
+	// "Haiya!" button: runs the onidia buddy application, or quits it (pink)
+	// while the buddy is running. Painted like the other header buttons.
 	if hr := u.haiyaRect(); hr.Max.X < u.W { // keep it on-screen on tiny windows
 		fill, glyphCol := colTealShade, colWhite
 		border := colTealShade
@@ -1805,7 +2293,7 @@ func (u *UI) drawHeader(frame *image.NRGBA) {
 // drawAbout renders the About modal: a dim backdrop and a centred card with a
 // teal hero strip carrying the word-art title (gradient drop shadow, plum
 // outline, sparkles) beside the round character badge, then the tagline, a live
-// status line naming whichever pet is up, and the engineering credit, plus an
+// status line naming whichever buddy is up, and the engineering credit, plus an
 // OK button (a backdrop click dismisses it too).
 func (u *UI) drawAbout(frame *image.NRGBA) {
 	fillRect(frame, 0, 0, u.W, u.H, color.RGBA{40, 30, 55, 120}) // dim backdrop
@@ -1823,8 +2311,12 @@ func (u *UI) drawAbout(frame *image.NRGBA) {
 
 	// Word art: the biggest letter size that still fits next to the badge; on a
 	// very narrow window the badge is dropped rather than squeezing the title.
+	// 84 is the width the mark wants: the old hand-drawn portrait read fine at
+	// 72, but the traced logo carries the fringe, the lashes and the tongue, and
+	// at 72 those collapse into a band across the face. The strip is 96 tall,
+	// so this is the largest diameter that still leaves a margin.
 	const title = "ONIDIA"
-	const badgeD = 72
+	const badgeD = 84
 	cy := heroY + heroH/2
 	scale, withBadge := 2, false
 	for _, s := range []int{4, 3, 2} {
@@ -1899,25 +2391,115 @@ func (u *UI) drawAbout(frame *image.NRGBA) {
 	fillDisc(frame, sx+4, lineY+36, 3, dot)
 	drawText(frame, sx+12, lineY+32, status, 1, colText)
 
-	// Hairline divider between the status and the credit.
+	// Hairline divider between the status and the system lines below it.
 	fillRect(frame, p.Min.X+modalPad, lineY+72, p.Dx()-2*modalPad, 1, colInputBorder)
+
+	// The exact INI this process is reading, so "which config is it using?" is
+	// answerable on screen instead of from a log line. Two chat-app.ini files
+	// can exist on one machine and disagree about the busy window, and the
+	// desktop buddy resolves its own list independently - so what the chat window
+	// loaded is not necessarily what the character is acting on, and this line
+	// is how you tell.
+	//
+	// Rendered exactly like the credit below: label dropped when the pair is
+	// too wide, then the path itself trimmed from the left. Trimming from the
+	// left, not the right, because the tail carries the directory segments that
+	// distinguish ~/.config/chat-app from a checkout's onidia-chat.
+	const cfgLabel = "Config "
+	avail := p.Dx() - 2*modalPad
+	if path := u.configPathForDisplay(); path != "" {
+		line := cfgLabel + path
+		if textWidth(line, 1) > avail {
+			line = path
+		}
+		if textWidth(line, 1) > avail {
+			line = leftEllipsis(path, avail)
+		}
+		cx := p.Min.X + (p.Dx()-textWidth(line, 1))/2
+		if strings.HasPrefix(line, cfgLabel) {
+			drawText(frame, cx, lineY+84, cfgLabel, 1, colMuted)
+			drawText(frame, cx+textWidth(cfgLabel, 1), lineY+84, line[len(cfgLabel):], 1, colHeader)
+		} else {
+			drawText(frame, cx, lineY+84, line, 1, colHeader)
+		}
+	}
 
 	// Engineering credit on one line, two-tone: muted label + teal link.
 	// On a narrow panel the label is dropped so the link still fits.
 	const label, link = "Engineered by ", "https://mas-mas.it"
 	line := label + link
-	if textWidth(line, 1) > p.Dx()-2*modalPad {
+	if textWidth(line, 1) > avail {
 		line = link
 	}
 	cx := p.Min.X + (p.Dx()-textWidth(line, 1))/2
 	if line == link {
-		drawText(frame, cx, lineY+84, link, 1, colHeader)
+		drawText(frame, cx, lineY+100, link, 1, colHeader)
 	} else {
-		drawText(frame, cx, lineY+84, label, 1, colMuted)
-		drawText(frame, cx+textWidth(label, 1), lineY+84, link, 1, colHeader)
+		drawText(frame, cx, lineY+100, label, 1, colMuted)
+		drawText(frame, cx+textWidth(label, 1), lineY+100, link, 1, colHeader)
 	}
 
 	u.drawModalButton(frame, u.aboutOKRect(), WAboutOK, "OK")
+}
+
+// configPathForDisplay answers "which config is the character actually reading?"
+// for the About line. It is NOT the file that gets saved to - that is savePath,
+// which main.go sets from confpath.Default() and falls back to "chat-app.ini".
+// The character the window plays belongs to the sibling onidia binary, which
+// resolves its config through internal/confpath in onidia/sleep.go and whose
+// candidate list is deliberately a copy of this one. On this machine the chat
+// window's first existing candidate (a checkout-relative chat-app.ini) and the
+// buddy's first existing candidate (a checkout-relative chat-app.ini next to the
+// buddy binary) are two different files, and both disagree with the high-quality
+// copy in $XDG_CONFIG_HOME/chat-app or ~/.config/chat-app. The character reads
+// the latter, so that is the path the About line shows, so the displayed busy
+// window is the one the buddy is actually acting on.
+func (u *UI) configPathForDisplay() string {
+	if u.savePath == "" {
+		return ""
+	}
+	// The character the window plays belongs to the sibling onidia binary, which
+	// resolves its config through internal/confpath in onidia/sleep.go and whose
+	// candidate list is deliberately a copy of this one. On this machine the chat
+	// window's first existing candidate (a checkout-relative chat-app.ini) and
+	// the buddy's first existing candidate (a checkout-relative chat-app.ini next
+	// to the buddy binary) are two different files, and both disagree with the
+	// high-quality copy in the XDG config home or ~/.config/chat-app. The
+	// character reads the latter, so that is the path the About line shows, so
+	// the displayed busy window is the one the buddy is actually acting on.
+	if d := confpath.Dir(); d != "" {
+		if _, err := os.Stat(filepath.Join(d, confpath.Name)); err == nil {
+			if a, err := filepath.Abs(filepath.Join(d, confpath.Name)); err == nil {
+				return a
+			}
+		}
+	}
+	if filepath.IsAbs(u.savePath) {
+		return u.savePath
+	}
+	if a, err := filepath.Abs(u.savePath); err == nil {
+		return a
+	}
+	return u.savePath
+}
+
+// leftEllipsis trims s from the left until it fits width at scale 1, keeping the
+// tail. For a config path the tail is the useful half: the last directory
+// segments plus the filename are what tell two candidate files apart, while the
+// leading /home/<user> is boilerplate on every one of them.
+func leftEllipsis(s string, width int) string {
+	if textWidth(s, 1) <= width {
+		return s
+	}
+	const ell = "..."
+	r := []rune(s)
+	for len(r) > 0 && textWidth(ell+string(r), 1) > width {
+		r = r[1:]
+	}
+	if len(r) == 0 {
+		return ""
+	}
+	return ell + string(r)
 }
 
 // Settings modal -------------------------------------------------------------
@@ -1969,8 +2551,11 @@ func (u *UI) drawSettings(frame *image.NRGBA) {
 	u.drawSelectBox(frame, busyTM, minuteLabel(u.busyToMinDraft), u.openDrop == dropBusyToM, WDropToBM)
 
 	u.drawMuteRow(frame)
+	u.drawThinkRow(frame)
 
 	u.drawDemoRow(frame)
+	u.drawAutoRow(frame)
+	u.drawAutoStopRow(frame)
 
 	u.drawGenderRow(frame)
 
@@ -2147,17 +2732,37 @@ func (u *UI) drawMinuteList(frame *image.NRGBA) {
 	}
 }
 
-// drawMuteRow paints the MUTE SPEECH checkbox and drawDemoRow the DEMO MODE
-// one directly below it; both share drawCheckRow.
+// drawMuteRow paints the MUTE SPEECH checkbox, drawThinkRow the THINKING
+// BUBBLE one sharing that row, and drawDemoRow the DEMO MODE one below; all
+// three share drawCheckRow.
 func (u *UI) drawMuteRow(frame *image.NRGBA) {
 	u.drawCheckRow(frame, u.muteRect(), WMute, u.muteDraft, "MUTE SPEECH")
 }
 
-// drawDemoRow paints the DEMO MODE checkbox: checked means the pet roams and
+// drawThinkRow paints the THINKING BUBBLE checkbox: checked draws a reply's
+// reasoning in the cloud above its bubble, unchecked hides the cloud.
+func (u *UI) drawThinkRow(frame *image.NRGBA) {
+	u.drawCheckRow(frame, u.thinkRect(), WThink, u.thinkDraft, "THINKING BUBBLE")
+}
+
+// drawDemoRow paints the DEMO MODE checkbox: checked means the buddy roams and
 // chatters on its own; unchecked plants it at the screen edge (still reactive
 // and still idly blinking).
 func (u *UI) drawDemoRow(frame *image.NRGBA) {
 	u.drawCheckRow(frame, u.demoRect(), WDemo, u.demoDraft, "DEMO MODE")
+}
+
+// drawAutoRow paints the AUTO SUBMIT checkbox beside DEMO MODE: checked sends a
+// finished transcript on its own after a short grace window, unchecked leaves it
+// in the textarea for the user to read and send.
+func (u *UI) drawAutoRow(frame *image.NRGBA) {
+	u.drawCheckRow(frame, u.autoRect(), WAutoSubmit, u.autoSubmitDraft, "AUTO SUBMIT")
+}
+
+// drawAutoStopRow paints the AUTO STOP checkbox: checked ends a take on
+// silence, so a turn is mic-click then talk.
+func (u *UI) drawAutoStopRow(frame *image.NRGBA) {
+	u.drawCheckRow(frame, u.autoStopRect(), WAutoStop, u.autoStopDraft, "AUTO STOP")
 }
 
 // drawCheckRow paints one labelled checkbox: a rounded square that is white
@@ -2337,6 +2942,13 @@ type msgBlock struct {
 	img       image.Image // scaled image to draw above the bubble (may be nil)
 	paginated bool        // bubble has a pager strip (m.Pages > 1)
 	pageCount int         // number of pages (len m.Pages)
+
+	// Thought cloud (m.Thinking). Laid out above the label strip, as its own
+	// little block: the cloud is the reasoning, the bubble is the answer, and
+	// they are different things at different sizes.
+	thinkLines []string
+	thinkW     int
+	thinkH     int
 }
 
 func (u *UI) blocks() []msgBlock {
@@ -2347,13 +2959,14 @@ func (u *UI) blocks() []msgBlock {
 		bs = append(bs, u.blockFor(m, cols, maxW))
 	}
 	if u.Thinking {
-		// Synthetic bubble while the call is in flight: "..." until the
-		// first SSE delta arrives, then the streaming preview.
-		txt := "..."
+		// Synthetic bubble while the call is in flight: "..." until the first
+		// SSE delta arrives, then the streaming preview. The <THINKING> half
+		// goes to its own cloud, exactly where it lands in the final bubble.
+		txt, think := "...", u.streamThink
 		if u.streamText != "" {
 			txt = u.streamText
 		}
-		bs = append(bs, u.blockFor(Msg{From: u.Bot.Name, Text: txt}, cols, maxW))
+		bs = append(bs, u.blockFor(Msg{From: u.Bot.Name, Text: txt, Thinking: think}, cols, maxW))
 	}
 	return bs
 }
@@ -2393,7 +3006,38 @@ func (u *UI) blockFor(m Msg, cols, maxW int) msgBlock {
 	if imgH > 0 {
 		h += imgGapTop + imgH + imgGapBot
 	}
-	return msgBlock{m: m, lines: lines, bubW: bubW, bubH: bubH, h: h, img: img, paginated: paginated, pageCount: len(m.Pages)}
+	b := msgBlock{m: m, lines: lines, bubW: bubW, bubH: bubH, h: h, img: img, paginated: paginated, pageCount: len(m.Pages)}
+	// The thought cloud is measured at the smaller font and stacks on top of
+	// everything else, so the block's total height grows by the cloud's height
+	// plus the gap that keeps it off the label strip. The THINKING BUBBLE
+	// checkbox gates it right here, at measure time: a hidden cloud leaves the
+	// block laid out exactly as if the model had produced no reasoning at all,
+	// so the answer bubble simply moves up rather than leaving a hole. One gate
+	// covers both the settled reasoning and the live streaming preview, since
+	// both arrive here as Msg.Thinking.
+	if t := strings.TrimSpace(m.Thinking); t != "" && u.think {
+		// Wrap to the real body budget, then clamp each line to it in pixels.
+		// fitThinkLines is the safety net for an unbreakable token - a word
+		// longer than the body - not for the ordinary case: wrapping to the
+		// body means no word is elided to make the cloud fit.
+		bodyMax := maxW * thinkMaxW / 4
+		b.thinkLines = capLines(fitThinkLines(wrapText(t, thinkCols(maxW)), bodyMax-2*thinkPadX), thinkMaxLn)
+		tw := 0
+		for _, l := range b.thinkLines {
+			tw = max(tw, textWidth(l, thinkScale))
+		}
+		// The body is the text box, floored to keep the outline rounded rather
+		// than a flat lozenge, plus room for the trailing dots.
+		bw := tw + 2*thinkPadX
+		bh := len(b.thinkLines)*thinkLineH + 2*thinkPadY
+		if minH := bw * 100 / thinkMaxAspect; bh < minH {
+			bh = minH
+		}
+		b.thinkW = min(bw, bodyMax)
+		b.thinkH = bh + thinkDotsHeight()
+		b.h += b.thinkH + thinkGap
+	}
+	return b
 }
 
 func (u *UI) contentHeight() int {
@@ -2412,13 +3056,231 @@ func (u *UI) maxScroll() int {
 	return max(0, u.contentHeight()-areaH)
 }
 
+// thinkCols is the reasoning's wrap width in glyph cells for a bubble cap of
+// maxW pixels: the cloud body's budget minus its padding, converted to cells.
+// At scale 1 each glyph is half as wide as in a bubble, so this fits about
+// twice the characters a bubble line does.
+//
+// Deriving it from the same maxW the body is sized with is the point. The body
+// is a FRACTION of that cap (thinkMaxW/4 of it), and the old code did not wrap
+// to the real window at all: it divided by thinkMaxW and multiplied by 3, which
+// cancels, so every line was measured against the full bubble width and then
+// centred straight through the outline and off the edge of the window.
+func thinkCols(maxW int) int {
+	body := maxW * thinkMaxW / 4
+	return max(12, (body-2*thinkPadX)/(advW*thinkScale))
+}
+
+// fitThinkLines hard-splits any line wider than the cloud's text budget, so no
+// line can be wider than the body it is centred in. Wrapping already targets
+// that budget, so this only ever bites on an unbreakable token - a "word" longer
+// than the body - but it is what makes the bound absolute rather than nominal.
+func fitThinkLines(lines []string, budget int) []string {
+	// textWidth is n*advW*scale-scale, so cells and pixels are a straight
+	// conversion. Work in cells, convert once.
+	cells := budget / (advW * thinkScale)
+	if cells < 1 {
+		cells = 1
+	}
+	// Room for the marker is only reserved on a line actually being cut: a line
+	// that already fits keeps its full cell budget.
+	cut := max(1, cells-len("..."))
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		r := []rune(l)
+		if len(r) <= cells {
+			out[i] = l
+			continue
+		}
+		if len(r) > cut {
+			r = r[:cut]
+		}
+		out[i] = strings.TrimRight(string(r), " .,;:") + "..."
+	}
+	return out
+}
+
+// capLines keeps at most n lines, marking the cut with an ellipsis on the last
+// one. The reasoning is an aside; an unbounded monologue must not push the
+// answer out of view.
+func capLines(lines []string, n int) []string {
+	if n <= 0 || len(lines) <= n {
+		return lines
+	}
+	out := append([]string(nil), lines[:n]...)
+	out[n-1] = strings.TrimRight(out[n-1], " .,;:") + "..."
+	return out
+}
+
+// thinkBlob is one circle in the thought cloud's outline.
+type thinkBlob struct{ cx, cy, r int }
+
+// thinkBlobR is the nominal lobe radius for a text area of tw x th: about a
+// third of the short side, so the lobes are big and round.
+func thinkBlobR(tw, th int) int { return max(5, min(20, min(tw, th)/3)) }
+
+// thinkLobes returns the circles whose union forms the cloud body.
+//
+// Each disc is placed so its OUTER edge is tangent to the ellipse: the centre
+// sits one radius in along the outward normal. That is what makes the union a
+// clean scalloped oval instead of discs floating on or inside it.
+//
+// The discs are spaced by ARC LENGTH, not by angle. On a wide ellipse, even
+// angular steps bunch at the curved ends and stretch along the flats, which
+// leaves a notch on one side.
+//
+// Radii vary a little (+/-20%), deterministically from the index: enough to
+// read as a drawn cloud, not enough to open a gap. Deterministic because the
+// cloud is redrawn every frame - a random radius would make it shimmer.
+func thinkLobes(tw, th, base int) []thinkBlob {
+	a, b := float64(tw)/2, float64(th)/2
+	thetas := thinkArcAngles(a, b, base)
+	out := make([]thinkBlob, 0, len(thetas))
+	for i, t := range thetas {
+		// The multiply is done in uint32, not int: 2654435761 (0x9E3779B1, the
+		// golden-ratio step) does not fit a 32-bit int, so `i*2654435761` is a
+		// compile error on GOARCH=arm. Wrapping here is the same value the 64-bit
+		// build got from truncating the 64-bit product to its low 32 bits.
+		frac := int((uint32(i) * 2654435761) % 1000)
+		r := base * (80 + frac*40/1000) / 100
+		ct, st := math.Cos(t), math.Sin(t)
+		nx, ny := b*ct, a*st // outward normal, normalised
+		if L := math.Hypot(nx, ny); L > 0 {
+			nx, ny = nx/L, ny/L
+		}
+		out = append(out, thinkBlob{
+			cx: int(a*ct - float64(r)*nx),
+			cy: int(b*st - float64(r)*ny),
+			r:  r,
+		})
+	}
+	return out
+}
+
+// thinkArcAngles returns angles spread evenly by ARC LENGTH around the ellipse,
+// with the count chosen so neighbouring discs overlap by roughly a third of a
+// radius.
+func thinkArcAngles(a, b float64, r int) []float64 {
+	const samples = 720
+	p := math.Pi * (3*(a+b) - math.Sqrt((3*a+b)*(a+3*b))) // Ramanujan
+	n := max(8, min(28, int(p/(1.25*float64(r)))))
+	cum := make([]float64, samples+1)
+	px, py := a, 0.0
+	for i := 1; i <= samples; i++ {
+		t := 2 * math.Pi * float64(i) / float64(samples)
+		x, y := a*math.Cos(t), b*math.Sin(t)
+		cum[i] = cum[i-1] + math.Hypot(x-px, y-py)
+		px, py = x, y
+	}
+	total := cum[samples]
+	out := make([]float64, 0, n)
+	j := 1
+	for i := 0; i < n; i++ {
+		target := total * float64(i) / float64(n)
+		for j < samples && cum[j] < target {
+			j++
+		}
+		out = append(out, 2*math.Pi*float64(j)/float64(samples))
+	}
+	return out
+}
+
+// drawThinkBlob outlines one circle: rim, then fill inset by sw, so every circle
+// in the cloud gets the same stroke weight as the body.
+func drawThinkBlob(layer *image.NRGBA, cx, cy, r, sw int, rim, fill color.RGBA) {
+	fillDisc(layer, cx, cy, r, rim)
+	if r-sw > 0 {
+		fillDisc(layer, cx, cy, r-sw, fill)
+	}
+}
+
+// thinkFillEllipse paints a solid ellipse row by row. The discs draw the
+// outline; this only has to make the middle solid.
+func thinkFillEllipse(layer *image.NRGBA, cx, cy, a, b int, col color.RGBA) {
+	if a <= 0 || b <= 0 {
+		return
+	}
+	for dy := -b; dy <= b; dy++ {
+		f := 1 - float64(dy*dy)/float64(b*b)
+		if f < 0 {
+			continue
+		}
+		hw := int(float64(a) * math.Sqrt(f))
+		fillRect(layer, cx-hw, cy+dy, 2*hw, 1, col)
+	}
+}
+
+// drawThinkCloud paints the thought cloud into the layer at (x,y): the scalloped
+// oval body plus the two dots trailing below it. w/h are the OUTER bounds,
+// including the dot trail, matching what blockFor reserved.
+func drawThinkCloud(layer *image.NRGBA, x, y, w, h int) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	dotH := thinkDotsHeight()
+	bodyW, bodyH := w, h-dotH
+	if bodyW <= 0 || bodyH <= 0 {
+		return
+	}
+	ox, oy := x+bodyW/2, y+bodyH/2
+	base := thinkBlobR(bodyW, bodyH)
+	lobes := thinkLobes(bodyW, bodyH, base)
+
+	// Rim pass: interior ellipse + every disc.
+	thinkFillEllipse(layer, ox, oy, bodyW/2, bodyH/2, colCloudEdge)
+	for _, l := range lobes {
+		fillDisc(layer, ox+l.cx, oy+l.cy, l.r, colCloudEdge)
+	}
+	// Fill pass, inset by the stroke: the same shape, shrunk.
+	thinkFillEllipse(layer, ox, oy, bodyW/2-thinkStroke, bodyH/2-thinkStroke, colCloudFill)
+	for _, l := range lobes {
+		fillDisc(layer, ox+l.cx, oy+l.cy, l.r-thinkStroke, colCloudFill)
+	}
+	// The trailing dots, stepping down-left and shrinking.
+	d1x := ox - bodyW/10
+	d1y := oy + bodyH/2 + thinkDotGap + thinkDotR
+	drawThinkBlob(layer, d1x, d1y, thinkDotR, 1, colCloudEdge, colCloudFill)
+	drawThinkBlob(layer, d1x-thinkDotDrift, d1y+thinkDotR+thinkDotGap,
+		thinkDotR-1, 1, colCloudEdge, colCloudFill)
+}
+
+// thinkDotsHeight is the vertical room the trailing dots need below the body.
+func thinkDotsHeight() int {
+	return thinkDotGap + 3*thinkDotR + thinkDotGap - 1
+}
+
 func (u *UI) drawMsgBlock(layer *image.NRGBA, b msgBlock, y int, copyPill, copyFlash, copyHover, copyPress bool) {
 	isBot := b.m.From != "you"
 	imgH := 0
 	if b.img != nil {
 		imgH = b.img.Bounds().Dy()
 	}
-	bubH := b.h - labelH
+	// The cloud sits at the very top of the block, above the label strip. It is
+	// left-aligned with the bubble (bot) or right-aligned (user) so the two read
+	// as one stack rather than two unrelated shapes.
+	if len(b.thinkLines) > 0 {
+		var cx int
+		if isBot {
+			cx = padX
+		} else {
+			cx = u.W - padX - b.thinkW
+		}
+		drawThinkCloud(layer, cx, y, b.thinkW, b.thinkH)
+		// Text centred in the cloud body.
+		tw := 0
+		for _, l := range b.thinkLines {
+			tw = max(tw, textWidth(l, thinkScale))
+		}
+		tx := cx + (b.thinkW-tw)/2
+		ty := y + (b.thinkH-thinkDotsHeight()-len(b.thinkLines)*thinkLineH)/2
+		for _, l := range b.thinkLines {
+			drawText(layer, tx, ty, l, thinkScale, colText)
+			ty += thinkLineH
+		}
+		y += b.thinkH + thinkGap
+	}
+
+	bubH := b.h - labelH - b.thinkH - thinkGap
 	if imgH > 0 {
 		bubH -= imgGapTop + imgH + imgGapBot
 	}
@@ -2452,7 +3314,7 @@ func (u *UI) drawMsgBlock(layer *image.NRGBA, b msgBlock, y int, copyPill, copyF
 
 	outline, fill := colTealShade, colHairLight // user (right)
 	if isBot {
-		outline, fill = colPlum, colBubbleFill // bot (left): pet speech bubble
+		outline, fill = colPlum, colBubbleFill // bot (left): buddy speech bubble
 	}
 	drawRoundRect(layer, bx, by, b.bubW, bubH, bubRadius+bubOutline, outline)
 	drawRoundRect(layer, bx+bubOutline, by+bubOutline,
@@ -2638,9 +3500,86 @@ func (u *UI) drawInputBar(frame *image.NRGBA) {
 	}
 	drawRoundRect(frame, ta.Min.X, ta.Min.Y, ta.Dx(), ta.Dy(), 7, border)
 	drawRoundRect(frame, ta.Min.X+2, ta.Min.Y+2, ta.Dx()-4, ta.Dy()-4, 5, colWhite)
-	u.drawInputText(frame, ta.Min.X+10, ta.Min.Y+7, ta.Dx()-20)
+	// The status line replaces the placeholder, so a recording or a finished
+	// transcript is visible without stealing a chat row. Both lines are cut
+	// to the textarea's column count: a fixed character cap would overflow
+	// the border on a narrow window.
+	cols := max(4, (ta.Dx()-20)/cellW)
+	if u.sttNote != "" {
+		drawText(frame, ta.Min.X+10, ta.Min.Y+7, fitCols(u.sttNote, cols), uiFontScale, colMuted)
+	} else {
+		u.drawInputText(frame, ta.Min.X+10, ta.Min.Y+7, ta.Dx()-20)
+	}
+	if u.sttErr != "" {
+		drawText(frame, ta.Min.X+10, ta.Min.Y+ta.Dy()/2, fitCols("mic: "+u.sttErr, cols), uiFontScale, colError)
+	}
+	if u.sttErr != "" {
+		drawText(frame, ta.Min.X+10, ta.Min.Y+ta.Dy()/2, truncate("mic: "+u.sttErr, 42), uiFontScale, colError)
+	}
 
 	u.drawButton(frame)
+	u.drawMic(frame)
+}
+
+// fitCols trims s to at most n columns, marking the cut with an ellipsis, so
+// a status line never spills past the textarea border.
+func fitCols(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n <= 1 {
+		return string(r[:n])
+	}
+	return string(r[:n-1]) + "…"
+}
+
+// drawMic paints the microphone button: a round mic glyph that turns into a
+// stop square while recording, with a pulsing halo so a live take is obvious
+// even when the app is not focused.
+func (u *UI) drawMic(frame *image.NRGBA) {
+	if !u.micEnabled() {
+		return
+	}
+	r := u.micRect()
+	cx, cy := r.Min.X+r.Dx()/2, r.Min.Y+r.Dy()/2
+
+	fill, label, outline := colBtn, colWhite, colPlum
+	switch {
+	case u.Recording():
+		fill, label, outline = colError, colWhite, colPlum
+	case u.sttBusy:
+		fill, label, outline = colBtnOff, colMuted, colInputBorder
+	case u.press == WMic:
+		fill = colTealShade
+	case u.hover == WMic:
+		fill, label = colHairLight, colPlum
+	}
+	if u.Recording() {
+		// A slow breathing halo, one full cycle per second.
+		if phase := int(time.Since(u.sttSince).Milliseconds()/125) % 2; phase == 0 {
+			drawCircle(frame, cx, cy, micW/2+3, colError)
+		}
+	}
+	// Level ring, only while the end-of-speech watcher is deciding: without it
+	// the user is being asked to trust an invisible threshold, and there is no
+	// way to tell "it has not heard me yet" from "the floor is set too high".
+	if u.Recording() && u.STTSess != nil && u.STTSess.vad != nil {
+		drawLevelRing(frame, cx, cy, micW/2+5, u.STTSess.MicLevel())
+	}
+	drawCircle(frame, cx, cy, micW/2, outline)
+	drawCircle(frame, cx, cy, micW/2-2, fill)
+
+	// Glyph: a capsule mic with its stand, or a stop square while recording.
+	if u.Recording() {
+		s := 6
+		drawRoundRect(frame, cx-s/2, cy-s/2, s, s, 2, label)
+	} else {
+		w, h := 8, 13
+		drawRoundRect(frame, cx-w/2, cy-h/2-2, w, h, 4, label)
+		fillRect(frame, cx-1, cy+2, 2, 5, label)  // stand
+		fillRect(frame, cx-5, cy+6, 10, 2, label) // base
+	}
 }
 
 func (u *UI) drawInputText(frame *image.NRGBA, x, y, w int) {

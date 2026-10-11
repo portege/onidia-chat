@@ -1,4 +1,4 @@
-# AGENT-PROTOCOL.md - manifest + wire protocol for chat-app agents
+# AGENT-PROTOCOL.md - manifest + wire protocol for onidia-chat agents
 
 Version: `agent-line-v1`. Two halves: a **manifest** (`agent.json`) that
 makes an agent self-describing for auto-discovery, and a **line protocol**
@@ -29,7 +29,7 @@ Startup scan (and `agentctl list`) validates every folder:
 Anything else is reported as a per-folder problem and skipped - one broken
 download never brings the app down. Hidden folders (`.git`, ...) and
 folders without `agent.json` are ignored silently. Discovery runs at
-startup only: install, then restart chat-app.
+startup only: install, then restart onidia-chat.
 
 ## Manifest - agent.json
 
@@ -63,14 +63,15 @@ startup only: install, then restart chat-app.
 
 ## Wire protocol
 
-One process per run: chat-app starts it, writes one line to stdin, reads
+One process per run: onidia-chat starts it, writes one line to stdin, reads
 stdout lines until a terminal line, then waits up to 2s for exit (kill
 after that). Working directory = the agent's folder.
 
 ```
 brain -> agent   RUN <json-object>\n
 agent -> brain   INFO <text>\n           # optional, repeatable: logged only
-agent -> brain   PET action <name>\n    # optional, before OK: drive the pet
+agent -> brain   PET <command>\n        # optional, before OK: drive the buddy
+agent -> brain   IMG png <base64>\n      # optional, before OK: one chart image
 agent -> brain   OK <message>\n          # terminal: message joins the reply
                | ERR <text>\n            # terminal: shown as the failure
 ```
@@ -82,7 +83,7 @@ agent -> brain   OK <message>\n          # terminal: message joins the reply
 - `OK` message: the user-facing result. Empty `OK` is allowed (side
   effect only). Plain text, no markdown/emoji (bitmap font + TTS).
 - After the terminal line: **exit**. Work longer than the reply? spawn it
-  detached and exit - chat-app must not wait for your daemon.
+  detached and exit - onidia-chat must not wait for your daemon.
 - No `OK`/`ERR` before exit or EOF = failure; stderr (first 8KB) is
   included in the error shown in the reply.
 - Timeout (`timeout_ms`): process killed, reply gets
@@ -90,7 +91,7 @@ agent -> brain   OK <message>\n          # terminal: message joins the reply
 
 ### Control the character (`PET`)
 
-An ability can make the pet **act it out** - the song agent starts a dance, a
+An ability can make the buddy **act it out** - the song agent starts a dance, a
 "look outside" agent could ask for a peek. Emit one optional line **before**
 your `OK`:
 
@@ -103,24 +104,55 @@ Rules:
 
 - at most **one** `PET` line per run, and only before `OK`/`ERR`; a second one
   is a protocol error (a run cannot quietly swap its command);
-- the payload must be `action|event` + **one** name (`[a-z][a-z0-9_]*`) -
-  `PET action dance; rm -rf /` is rejected and the run fails. The line ends up
-  in the pet's command FIFO, so nothing else may ride in it;
-- the name must be one the pet knows, else chat-app logs
-  `ignoring unknown pet command` and drops it - the reply still succeeds;
+- the verb is one of **`action`**, **`event`**, **`expr`** (note: `expr`,
+  not `expression` - that longer word is `pet_control`'s *input* vocabulary,
+  not the wire format), or a **movement** verb: `stand`, `idle`, `jump`,
+  `parachute`, `skateboard` and synonyms used bare, or `walk|go|move` plus
+  `left|right`. `action|event|expr` then take **one** name matching
+  `[a-z][a-z0-9_]*` - `PET action dance; rm -rf /` is rejected and the run
+  fails. The line ends up in the buddy's command FIFO, so nothing else may ride
+  in it;
+- **an unknown verb fails the whole run** (`agent <id>: PET: unknown command
+  "..."`) - the reply is discarded, not softened. **An unknown *name* does not**:
+  the shape is right, the buddy just does not know it, so onidia-chat logs
+  `ignoring unknown buddy command`, drops it, and the reply still succeeds;
 - it is a **fallback**: when the model already used `[ACTION: ...]` /
   `[EVENT: ...]` for that reply, the model's choice wins;
-- with `-pet-pipe off` (pet forwarding disabled) nothing is written;
+- with `-pet-pipe off` (buddy forwarding disabled) nothing is written;
 - a native (in-process) agent does the same by returning
   `agent.Result{PetCmd: "action dance"}`.
 
-Names come from the pet's own tables - the same ones the model may use:
+Names come from the buddy's own tables - the same ones the model may use:
 
 | actions | events |
 |---|---|
-| `skip` `juggle` `dance` `eat` `work` `guitar` `sneeze` `sixseven` `basketball` `drive` `ride` `kitten` `wave` | `love` `idea` `celebration` `sleep` `peace` `halloween` `matrix` `magic` |
+| `skip` `juggle` `dance` `eat` `work` `guitar` `sneeze` `sixseven` `basketball` `drive` `ride` `kitten` `wave` | `love` `idea` `celebration` `sleep` `peace` `halloween` `matrix` `magic` `robot` |
 
-(`disappear`/`appear` are internal pet states - never use them.)
+(`disappear`/`appear` are internal buddy states - never use them.)
+
+### Attach one chart image (IMG)
+
+`agent -> brain   IMG png <base64>` - optional, before `OK`: attach one
+chart (line graph, bar chart, table-as-image) rendered by the app next to
+the text. Shape: the literal kind `png`, one space, then base64 (std
+encoding, single line, no whitespace) of PNG bytes. At most ONE per run,
+only before `OK`/`ERR` - a second `IMG` fails the whole run (`agent <id>:
+duplicate IMG line`), the same rule as `PET`. Caps: the encoded line must
+fit the 1 MB scanner; the decoded PNG must be at most 800x600px (examples
+target 260x200, the buddy bubble box). The decoder checks PNG magic bytes
+and decodes with `image/png`; bad base64, non-PNG bytes, or oversized dims
+fail the run with `agent <id>: IMG: ...` and the reply is discarded, like a
+bad `PET`. On an `ERR` run the image is dropped (same as `PET`). The text
+`OK` message is still required - it is the TTS/fallback caption, because
+the spoken reply has no "chart" concept. Native agents do the same by
+returning `agent.Result{Message: "...", Image: img}` (`image.Image`).
+
+```python
+# agent side (any language): print one IMG line, then the OK caption
+import base64
+print("IMG png " + base64.b64encode(png_bytes).decode(), flush=True)
+print("OK AAPL 333.15 USD, up 4.12% today", flush=True)
+```
 
 ### Minimal agent (any language)
 
@@ -170,14 +202,14 @@ carry several `[AGENT: ...]` tags:
    ends the loop instead of triggering the side effect twice. Tags left over
    after the last round are stripped from the display, not executed.
 
-Every `OK` message still joins the reply text (and the pet's speech); every
+Every `OK` message still joins the reply text (and the buddy's speech); every
 `ERR` is still shown to the user in parentheses - the model just gets to
 explain or retry in its own words first.
 
 ## Native tool calling (Phase 3 - preferred when the provider supports it)
 
 Nothing changes for the agent author: the same manifest drives **two** ways the
-model can ask for an ability, and chat-app picks the better one per reply.
+model can ask for an ability, and onidia-chat picks the better one per reply.
 
 When the active provider has a function/tool-calling API - Gemini
 (`functionDeclarations`), OpenRouter / any OpenAI-compatible endpoint
@@ -205,7 +237,7 @@ advertised, so the model does not mix the two.
 
 **Fallback:** a provider, server or model without tool support answers the first
 tool request with an error (an ollama server older than 0.3, a model that
-rejects `tools`, a quota 4xx). chat-app then runs the `[AGENT: ...]` path for
+rejects `tools`, a quota 4xx). onidia-chat then runs the `[AGENT: ...]` path for
 that reply - catalog included - so the ability still happens; a provider that
 can remember the rejection (ollama, on a 4xx) skips the doomed call from the
 next reply on.
@@ -214,7 +246,7 @@ Both paths share every rule of the loop above: at most 4 abilities at a time,
 one 60 s budget, at most 3 rounds, results sanitized into the same
 `<<<AGENT>>>` data block (native tool results are one-line `OK …` / `ERR …`
 texts), dedupe by ability + arguments, and `OK`/`ERR` still reach the reply and
-the pet.
+the buddy.
 
 ## CLI - agentctl
 
@@ -238,20 +270,20 @@ same convention as `onidia`'s character packs.
 
 ## Environment
 
-Agents inherit chat-app's full environment, plus these extras chat-app
+Agents inherit onidia-chat's full environment, plus these extras onidia-chat
 sets from its configuration:
 
 | variable | set from | purpose |
 |---|---|---|
 | `CHAT_APP_MUSIC_DIR` | `-music-dir` / `music-dir` | music folder for `play_song` (unset = agent uses `~/Music`) |
 | `CHAT_APP_VIDEO_DIR` | `-video-dir` / `video-dir` | video folder for `play_movie` (unset = agent uses `~/Videos`) |
-| `CHAT_APP_STATE_DIR` | derived (`$XDG_STATE_HOME/chat-app`) | where a media agent records the player it started, so the chat window can show a transport strip and `media_control` can pause/stop it. Best-effort: if it cannot be written, playback still works, there is just no strip |
+| `CHAT_APP_STATE_DIR` | derived (`$XDG_STATE_HOME/onidia-chat`) | where a media agent records the player it started, so the chat window can show a transport strip and `media_control` can pause/stop it. Best-effort: if it cannot be written, playback still works, there is just no strip |
 
 Standard convention for your own agents: prefix config-derived variables
 with `CHAT_APP_`. `CHAT_APP_PLAYER` is a built-in override (whole command
 line, shell-split) that forces the media player - used by tests and
 useful for debugging. **Never pass API keys to downloaded agents**; a
-native agent (linked into chat-app, like `read_story`) is the right tool
+native agent (linked into onidia-chat, like `read_story`) is the right tool
 when an ability needs the LLM.
 
 ## Security (v1 trust model)

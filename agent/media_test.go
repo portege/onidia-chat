@@ -104,7 +104,7 @@ func TestShippedMediaAgents(t *testing.T) {
 		t.Errorf("player log = %q, want mpv song flags", got)
 	}
 	// The song agent also asks the character to act it out: this is the
-	// end-to-end proof that an ability reaches the pet's cmd-FIFO.
+	// end-to-end proof that an ability reaches the buddy's cmd-FIFO.
 	if res.PetCmd != "action dance" {
 		t.Errorf("PetCmd = %q, want %q", res.PetCmd, "action dance")
 	}
@@ -117,7 +117,7 @@ func TestShippedMediaAgents(t *testing.T) {
 		t.Errorf("random pick PetCmd = %q, want action dance", res.PetCmd)
 	}
 
-	// No match -> visible error with suggestions, and no pet command: a failed
+	// No match -> visible error with suggestions, and no buddy command: a failed
 	// run must not leave the character dancing.
 	if res, err := Run("play_song", map[string]string{"query": "zzzz-nonexistent"}); err == nil ||
 		!strings.Contains(err.Error(), "no match") {

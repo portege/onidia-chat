@@ -1,4 +1,11 @@
-# 💬 chat-app — a Gemini-powered chatbot window with a desktop-pet voice
+# 💬 onidia-chat — a Gemini-powered chatbot window with a desktop-pet voice
+
+> **Renamed from `chat-app`.** The binary, the applications-menu entry and this
+> folder are now `onidia-chat`. Nothing you already have moves: your config,
+> your API key, your downloaded agents and the whisper helper stay exactly where
+> they were, so an existing install just keeps working. See
+> [Upgrading from chat-app](#upgrading-from-chat-app) below for the few names
+> that intentionally did *not* change.
 
 A tiny desktop chat window written in **pure Go** on raw X11
 ([`github.com/jezek/xgb`](https://github.com/jezek/xgb)) — the same
@@ -30,8 +37,11 @@ reply is shown inside her speech bubble as well.
 - ✅ **Phase 2 — the brain**: `chat.go` calls Gemini asynchronously (the UI
   shows a "..." bubble while waiting, so it never freezes), keeps the last 20
   turns as context, and parses an optional `[mood]` tag out of each answer.
-- ✅ **The buddy bridge**: `pet.go` writes `[mood] [image pic.png] text` to the pet's
+- ✅ **The buddy bridge**: `pet.go` writes `[mood] [image pic.png] text` to the buddy's
   say-FIFO — best-effort and non-blocking; no buddy running? It just skips.
+- ✅ **Speech-to-text**: a mic button in the input bar records a take and drops
+  the transcript into the textarea — Amazon Transcribe streaming by default, or
+  local `faster-whisper` via `stt = whisper`.
 - ✅ **Text-to-speech**: each reply is spoken aloud via the Typecast API
   (`tts.go` → `aplay`/`paplay`/`ffplay`; async + queued). The buddy bubble is
   shown only once the audio is ready to play and closes the moment playback
@@ -53,7 +63,7 @@ message plus a hint). The key is read from `-api-key`, `$GEMINI_API_KEY`, or
 
 ### Other LLM providers
 
-chat-app selects its backend with `-provider`. Gemini is the default; Bedrock and
+onidia-chat selects its backend with `-provider`. Gemini is the default; Bedrock and
 OpenRouter are also built in (documented in `chat-app.ini`):
 
 | backend     | endpoint                                          | key                                | example `-model`               |
@@ -71,13 +81,13 @@ same code path also works against a **vendor's native** `/chat/completions` API
 ```sh
 # OpenRouter (any model they expose, e.g. DeepSeek or Kimi):
 export OPENROUTER_API_KEY="your-key"
-./chat-app -provider openrouter -model deepseek/deepseek-chat-v3-0324
+./onidia-chat -provider openrouter -model deepseek/deepseek-chat-v3-0324
 
 # ...or DeepSeek's native /chat/completions endpoint (no OpenRouter):
-./chat-app -provider openrouter -api-url https://api.deepseek.com -model deepseek-chat
+./onidia-chat -provider openrouter -api-url https://api.deepseek.com -model deepseek-chat
 
 # ...or Kimi/Moonshot native endpoint:
-./chat-app -provider openrouter -api-url https://api.moonshot.cn/v1 -model kimi-k2-0905-preview
+./onidia-chat -provider openrouter -api-url https://api.moonshot.cn/v1 -model kimi-k2-0905-preview
 ```
 
 With `-provider openrouter` replies stream over **SSE** by default: the chat bubble
@@ -104,7 +114,8 @@ confusing API error.
                                no markdown/emoji, optional [mood] tag)
 -system-file /path/system.txt  load system instruction from file (overrides default)
 -config    chat-app.ini        INI file with defaults (flags and env override it;
-                               auto-loads ./chat-app.ini when not given)
+                               auto-loads ./chat-app.ini, then one next to the binary, then
+                               ~/.config/chat-app/chat-app.ini)
 -provider gemini              LLM backend: "gemini" (default), "bedrock", "ollama", or "openrouter"
 -aws-profile default          AWS shared profile for Bedrock
 -aws-region us-east-1         AWS region for Bedrock
@@ -122,20 +133,239 @@ confusing API error.
 -tts on|off                   speak replies aloud via Typecast (default: on)
 -tts-key KEY                  Typecast API key (default: $TYPECAST_API_KEY, config tts-key, or built-in)
 -tts-voice vc_xxx             Typecast voice id (default: config tts-voice, or built-in)
+-stt transcribe|whisper|off   speech input backend for the mic button (default: transcribe)
+-stt-language en-US           spoken language hint passed to the backend
+-stt-device NAME            capture device (default: system default; list them with `preflight -mic`)
+-stt-mic                    (preflight) list the microphones you can point stt-device at
+-stt-mic-test               (preflight) record 2s and report the microphone level
+-stt-test                   headless speech self test: record, transcribe, print every step
+-stt-debug                  log the full speech-input trace (file, level, backend, result)
+-stt-whisper-vad=true       enable faster-whisper VAD (default off: it eats quiet takes)
+-stt-whisper-model base       faster-whisper size: tiny|base|small|medium|large
+-stt-whisper-cmd ./venv/bin/python3   interpreter that has faster-whisper installed
 -w 380 -h 520                window width and expanded height (starts collapsed)
 -preview                      headless PNG previews, no display needed
+-preflight strict|warn|off     startup requirements gate (default: strict - a fatal
+                               check fails the launch before the window opens)
+```
+
+## Speech-to-text (the mic button)
+
+The input bar carries a microphone button. Press it to start a take, press it
+again to stop: the audio is transcribed and the words are typed into the
+textarea for you to edit (or press **Esc** to discard the take). Nothing is
+sent to the model until you press SEND, because a misheard sentence is much
+cheaper to fix in the textarea than to re-record.
+
+### Auto-submit (AUTO SUBMIT, beside DEMO MODE)
+
+That last click is the one thing left to do by hand, so the settings dialog has
+a checkbox to remove it. It is **off by default** — the flow above is the
+default because a misheard sentence should cost a click, not a reply — but with
+it on a whole turn becomes:
+
+1. click the mic, talk
+2. click the mic again to stop
+3. *the transcript appears, waits one second, and sends itself*
+
+The one second is a **grace window, not extra latency**. It is counted from the
+moment the words arrive rather than from the moment you stopped talking, because
+transcription is asynchronous and can take several seconds; starting it at the
+button press would burn it before there was anything to send. The window exists
+so a misheard word can still be caught at a glance. Anything you do in that
+second keeps the prompt where it is: typing, backspace, **Esc**, the SEND
+button, or the mic again. Untick the box and even a send already counting down
+is dropped.
+
+The input bar says `Sending, Esc to stop` while it runs, so the app is never
+about to send something without saying so. (That wording is deliberately short:
+the note is clipped to the width of the input bar, and the tail is what gets
+cut.) A take that transcribed to nothing (silence) never arms the countdown.
+
+Written to `chat-app.ini` as `auto-submit = true|false`.
+
+### Auto-stop (AUTO STOP, hands-free)
+
+The mic still needs *starting*, so a turn is never zero clicks — but with this
+on it stops being two. Tick **AUTO STOP** (the row below AUTO SUBMIT) and:
+
+1. click the mic
+2. talk
+3. *stop talking — the take closes itself, transcribes, and sends*
+
+No second click, no SEND. It works by watching the input level: a take that has
+heard speech and then stays quiet for **1.2s** is closed. That's it — no model
+is asked whether you finished.
+
+Because there is no longer a button to press, a transcript is sent straight
+away. **Enabling AUTO STOP therefore implies AUTO SUBMIT**; the point of ending
+a take for someone is that they don't then have to do the next thing either.
+
+**This is a level threshold, and level thresholds are a heuristic.** The guards
+that make it usable rather than maddening:
+
+- A take that has **never heard anything** is never ended. A noisy room runs to
+  the 120-second cap instead of closing instantly on a hiss.
+- It must fall quiet for a full **sentence pause**, not a gap between words.
+- Level is judged on the **peak** of each 20ms frame, not the RMS —
+  `internal/mic` spells out why: *"a working microphone in a quiet room sits at a
+  very low RMS while still carrying speech, and gating on the RMS declares a
+  perfectly good mic dead."* The floor is also **relative** to the take's own
+  loudest frame, so a quiet headset still counts as speech.
+- The mic button shows a **ring of dots for the input level** while it decides.
+  This is not decoration: without it, a take that never stops and a take that
+  stops instantly look identical, and you cannot tell whether the floor is set
+  too high.
+
+Both failure modes point the safe way. Too noisy → it never stops, and you click
+or wait for the cap. Too quiet → the relative floor covers it.
+
+Tuning, if a take is cut mid-sentence: raise `vadSilence`. If takes never stop,
+the room is too loud for a threshold and this is the wrong tool — the manual
+click still works, and `-stt whisper` with `stt-whisper-vad` is the other lever
+(for filtering quiet takes *after* recording, which is a different job).
+
+Written to `chat-app.ini` as `auto-stop = true|false`.
+
+Backends are pluggable behind the `STT` interface in `stt.go`, chosen by the
+`stt` key:
+
+| `stt` | How it works | Needs |
+|---|---|---|
+| `transcribe` (default) | Amazon Transcribe streaming, over the same AWS credentials and profile/region as Bedrock | the IAM user must be allowed `transcribe:StartStreamTranscription` |
+| `whisper` | local `faster-whisper` (CPU, int8) through a small generated python helper | `pip install faster-whisper` |
+| `off` | no microphone button at all | — |
+
+Recording itself is the same for both: the first available of
+`pw-record`, `parecord`, `arecord`, `ffmpeg` is used to capture **16 kHz mono
+s16 WAV**, which is the native input format of both backends, so nothing ever
+needs resampling. The WAV header is parsed rather than assumed at 44 bytes,
+because recorders pad their chunk lists differently and Transcribe is given
+headerless PCM.
+
+**On a machine with no cloud permission, use whisper:**
+
+```bash
+pip install faster-whisper          # once; the first run also downloads the model
+./onidia-chat -stt whisper
+```
+
+A `tiny` model transcribes a sentence in a few seconds on a Pi; `base` (the
+default) is more accurate, `small` and up are slower still.
+
+### "My mic is not recognised"
+
+Three different problems look identical from the app, so there is a command
+for each:
+
+```bash
+./preflight -mic        # list the microphones, with the one in use marked *
+./preflight -mic-test   # record 2s and report the level in dBFS
+```
+
+`-mic` prints values you can paste straight into `stt-device` in
+`chat-app.ini`. The spelling depends on the recorder: a PipeWire node name for
+`pw-record`/`parecord`, an ALSA device (`plughw:2,0`) for `arecord`/`ffmpeg`.
+Leaving `stt-device` empty uses whatever the system defaults to.
+
+`-mic-test` is the one that actually diagnoses it. A take can be recognised as
+*silence* rather than as a missing device, and the two need opposite fixes:
+
+| Result | Meaning | Fix |
+|---|---|---|
+| no microphones found | nothing is plugged in / no source node | plug one in |
+| `DIGITAL SILENCE` (peak never leaves 0) | the device recorded, but every sample is zero | the mic's own mute switch, then input gain, then a different `stt-device` |
+| `signal present but quiet` | low RMS, but a real peak — it will transcribe | move closer, or raise the gain if recognition suffers |
+| `signal present`, nothing recognised | level is healthy | run the self test below; it shows whether the backend or the audio is at fault |
+
+When the level is healthy but transcription still fails, run the whole chain
+headless and read every step:
+
+```bash
+go run . -stt-test            # record ~4s, transcribe, print each step
+go run . -stt-test -stt-debug # also print the backend's own diagnostics
+```
+
+It reports the backend, the recorder, the resolved device, the captured file
+and its level, and then either the transcript or the exact failure. The same
+trace goes to the app log with `-stt-debug` (or `CHAT_APP_STT_DEBUG=1`).
+
+**VAD is off by default.** faster-whisper's voice-activity filter classifies
+speech against a fixed threshold and on a quiet headset it can discard the
+whole take — `duration_after_vad = 0.00` — which surfaces as "nothing
+recognised" no matter how healthy the level probe was. Enable it only for a
+genuinely noisy room:
+
+```ini
+stt-whisper-vad = true
+```
+
+Mute is judged on the **peak**, not the RMS. A working mic in a quiet room
+sits far below -50 dBFS RMS while still carrying speech, so an RMS-based test
+reports a healthy microphone as dead.
+
+PipeWire's virtual `Dummy-Driver` is filtered out of the listing: it is always
+present, it is never a microphone, and recording it yields pure silence.
+
+## Preflight: requirements check (before launch)
+
+`onidia-chat` verifies its own requirements **before the X window opens**: is the
+selected LLM backend actually usable, and is the environment sane? The checks
+live in `internal/preflight` and run in two places:
+
+1. **the startup gate** (built in, `preflight = strict` by default): a *fatal*
+   failure prints the failed checks with fixes to stderr and exits `2` before
+   any window appears;
+2. **the standalone CLI**: the same checks with the same exit codes, for
+   humans and scripts - `./preflight`, `make preflight`, `go run ./cmd/preflight`.
+
+| Check | Severity | What it probes |
+|---|---|---|
+| `config.provider` | fatal | the `provider` name is one of the four backends |
+| `ollama.server` / `ollama.model` | fatal / warn | `GET <api-url>/api/tags` answers; the configured model tag exists on it |
+| `gemini.key` / `gemini.api` | warn / fatal | key present (missing = the documented stub mode, which still launches); the free `GET /v1beta/models` listing accepts it |
+| `bedrock.credentials` (plus `bedrock.invoke` with `-deep`) | fatal | the AWS SDK chain resolves credentials for profile/region (`-deep` adds a real 1-token Converse call) |
+| `openrouter.key` / `openrouter.api` | fatal / fatal | token present (there is no built-in key for this backend); `GET /models` accepts it |
+| `env.display`, `env.audio-player`, `env.pet-pipe`, `env.agents-dir`, `env.images` | warn | `$DISPLAY`, an audio player on `PATH`, the buddy's say-FIFO, `agents-dir`, the image-source key |
+
+```sh
+./preflight                     # exactly what ./onidia-chat would launch with
+./preflight -all                # ...plus the other backends (informational)
+./preflight -quick              # config + environment only: no network probes
+./preflight -deep               # bedrock: also fire a real 1-token Converse
+./preflight -json               # machine-readable report
+./preflight -provider ollama -model qwen2:1.5b   # test an alternative setup
+make preflight ARGS="-all"      # go run ./cmd/preflight -all
+```
+
+Exit codes (both surfaces): `0` = all good, `1` = warnings only,
+`2` = blocked (a fatal check failed). Warn-level failures - stub mode, a
+missing ollama model tag, no audio player, no buddy pipe - are reported but
+never block.
+
+**Gate modes** - `chat-app.ini`, overridable per run with `-preflight`:
+
+```ini
+preflight = strict   # default: failed fatal check -> report + exit 2, no window
+# preflight = warn   # log the failures and launch anyway (the pre-gate behavior)
+# preflight = off     # no startup checks at all
 ```
 
 ## Configuration file (`chat-app.ini`)
 
 All settings can live in an INI file so you don't need long command lines.
-`./chat-app` (and `make run`) **auto-loads `chat-app.ini`** from the working
-directory or the binary's directory; pass `-config <path>` to use a different
-file, or edit `chat-app.ini` in place and just relaunch.
+`./onidia-chat` (and `make run`) **auto-loads `chat-app.ini`**. It tries three
+places in order: the working directory, the binary's own directory, then
+`~/.config/chat-app/chat-app.ini`. A package install deliberately puts the
+shipped template in `/opt/onidia/share/`, which is none of those three, so
+copying it into `~/.config/chat-app/` is what makes it load. Pass
+`-config <path>` to name a different file, or edit the loaded one in place and
+just relaunch. `onidia` (the buddy) resolves the same three paths, so both
+programs read the same file.
 
 ```sh
-./chat-app               # auto-loads ./chat-app.ini when present
-./chat-app -config chat-app.ini   # explicit (same result)
+./onidia-chat               # auto-loads ./chat-app.ini when present
+./onidia-chat -config chat-app.ini   # explicit (same result)
 ```
 
 Example `chat-app.ini`:
@@ -145,14 +375,22 @@ Example `chat-app.ini`:
 provider = gemini
 
 [gemini]
-api-key = AIzaSyB7YR3ypNW2A-raPItTfLir-B-vKuuzyR8
-model = gemini-3.6-flash
-api-url = https://generativelanguage.googleapis.com
+api-key = <GEMINI_API_KEY>
+gemini-model = gemini-3.6-flash
+gemini-api-url = https://generativelanguage.googleapis.com
+
+# Every provider reads its OWN namespaced model key, and gemini/ollama/
+# openrouter their own api-url key, on purpose. The INI is parsed flat -
+# section headers are ignored and the last occurrence of a key wins - so a
+# value in one section would otherwise leak into another provider's run.
+# Bedrock has no api-url (it goes through the AWS SDK). The shared `model` /
+# `api-url` keys are no longer read by any provider.
 
 [aws]
 # For Bedrock. Empty aws-profile uses the default profile.
 aws-profile = default
 aws-region = us-east-1
+bedrock-model = amazon.nova-lite-v1:0
 
 [ui]
 # Where bot replies are forwarded so the buddy speaks them:
@@ -167,6 +405,14 @@ pet-pipe = auto
 tts = on
 # tts-key = your-typecast-key
 # tts-voice = tc_6359e7f6467f9e240b68292c
+
+# Speech-to-text: the microphone button in the input bar (press to record,
+# press again to stop; the transcript lands in the textarea for you to edit).
+# transcribe = Amazon Transcribe streaming (reuses aws-profile/aws-region);
+# whisper = local faster-whisper; off = no mic button.
+stt = transcribe
+# stt-language = en-US
+# stt-whisper-model = base
 
 # Single-line system instruction:
 # system-prompt = You are a terse Linux expert.
@@ -254,10 +500,10 @@ Wikipedia, or asks Gemini to generate an illustration, depending on
 - The Pixabay source uses a bundled free key; override with `-pixabay-key`,
   `$PIXABAY_API_KEY`, or `pixabay-key` in `chat-app.ini`.
 - The image is best-effort: if the source fails, the reply is text-only.
-- Disable entirely: `./chat-app -image-source off` (or legacy `-images=false`).
-- Force a keyword for testing: `./chat-app -force-image Bali`.
-- Test just the fetch path: `./chat-app -fetch-image Bali`.
-- Test just the generation path: `./chat-app -gen-image "a cute robot in Bali"`.
+- Disable entirely: `./onidia-chat -image-source off` (or legacy `-images=false`).
+- Force a keyword for testing: `./onidia-chat -force-image Bali`.
+- Test just the fetch path: `./onidia-chat -fetch-image Bali`.
+- Test just the generation path: `./onidia-chat -gen-image "a cute robot in Bali"`.
 
 ## Bedrock support
 
@@ -267,13 +513,13 @@ override it with `-model`.
 
 ```sh
 # Use the AWS "default" profile and region from ~/.aws/config.
-./chat-app -provider bedrock -aws-profile default -aws-region us-east-1
+./onidia-chat -provider bedrock -aws-profile default -aws-region us-east-1
 
 # Or in chat-app.ini:
 provider = bedrock
 aws-profile = default
 aws-region = us-east-1
-model = amazon.nova-lite-v1:0
+bedrock-model = amazon.nova-lite-v1:0
 ```
 
 > **Model IDs must match the provider.** Bedrock rejects Gemini IDs (and vice
@@ -304,7 +550,7 @@ who is Marie Curie
 API problems can be isolated from window/render issues:
 
 ```sh
-cd chat-app
+cd onidia-chat
 
 # 1. Which models does this key actually see? (resolves any model-name doubt)
 go run ./cmd/geminitest -models          # or: make test-api ARGS="-models"
@@ -315,7 +561,7 @@ go run ./cmd/geminitest "tell me a joke in five words"
 # 3. Try a specific model / explicit key / see the request body
 go run ./cmd/geminitest -model gemini-2.0-flash -key AIza... -v "hi"
 
-# 4. Test with a custom system instruction (matches the chat-app's persona)
+# 4. Test with a custom system instruction (matches the onidia-chat's persona)
 go run ./cmd/geminitest -system "you are a grumpy robot" "hello"
 go run ./cmd/geminitest -system-file prompt.txt "hello"
 ```
@@ -339,6 +585,7 @@ make preview     # renders chat_ui_*.png sample states and exits
 | `chat_ui_convo.png`    | conversation, typed text + caret, hovered SEND |
 | `chat_ui_sent.png`     | after submit: your bubble + the bot's answer |
 | `chat_ui_thinking.png` | the "..." bubble while the Gemini call is in flight |
+| `chat_ui_cloud.png`     | a `<THINKING>` cloud above the answer bubble (long + one-liner) |
 | `chat_ui_settings.png` | the settings dialog over a conversation |
 | `chat_ui_settings_open.png` | settings dialog with the age dropdown expanded |
 | `chat_ui_settings_sleep.png` | settings dialog with the sleep FROM hour list scrolled open |
@@ -348,12 +595,117 @@ make preview     # renders chat_ui_*.png sample states and exits
 ## Build & run
 
 ```sh
-make build       # produces ./chat-app
+make build       # produces ./onidia-chat
 make run
 ```
 
-Or without make: `go build -trimpath -ldflags="-s -w" -o chat-app .`
+Or without make: `go build -trimpath -ldflags="-s -w" -o onidia-chat .`
 `make` targets: `build`, `run`, `preview`, `clean`.
+
+Building from source is optional. The top-level `make dist` produces a
+versioned tarball with an installer (bundled agent zips included), `make deb`
+a Debian package, and `make apt-repo` an apt repository you can host
+yourself - see [`../DISTRIBUTING.md`](../DISTRIBUTING.md) (packages) and
+[`../RELEASE.md`](../RELEASE.md) (cutting and publishing a release).
+
+### Upgrading from chat-app
+
+The app used to be called `chat-app` and the binary `chat-app`. It is
+`onidia-chat` now. What changed, and what deliberately did not:
+
+| | now | why |
+|---|---|---|
+| binary | `onidia-chat` | the rename itself |
+| menu entry | `Onidia Chat` (`onidia-chat.desktop`) | so the launcher, its icon and `desktop-file-utils` all agree on one name |
+| icon | `onidia-chat.svg` | same reason |
+| source folder | `onidia-chat/` | same reason |
+| Go module | `github.com/portege/onidia-chat` | internal; nothing outside this module imports it |
+| config file | **still `chat-app.ini`** | it is read from three fixed locations; a rename would silently disable everyone's key |
+| config dir | **still `~/.config/chat-app/`** | it holds the key, the agents and the whisper helper |
+| `CHAT_APP_*` env vars | **unchanged** | the public contract with every agent, including third-party ones |
+| `chat-app.lock` | **unchanged** | so old and new binaries still exclude each other (see *One instance only*) |
+| WM_CLASS | **still `chat-app`** | window-manager rules and `wmctrl`/`xdotool` scripts match on it |
+| `chat-app-say-*.png` | **unchanged** | the wire format `pet_control` writes |
+
+Upgrading:
+
+- **`.deb`** — `apt install ./onidia_*.deb`. dpkg drops `/usr/bin/chat-app` and
+  the old `chat-app.desktop`/`chat-app.svg` because they are gone from the new
+  package.
+- **tarball** — unpack the new one over the old and re-run `install.sh`. It
+  removes the stale `bin/chat-app`, `chat-app.desktop` and `chat-app.svg` so you
+  do not end up with two menu entries. Your config is never touched.
+- **source checkout** — the folder is now `onidia-chat/`; `make build` produces
+  `./onidia-chat`.
+
+### One instance only
+
+A second `onidia-chat` refuses to start:
+
+```
+onidia-chat: another onidia-chat is already running (pid 12345); close it first
+```
+
+This is a `flock` on `$XDG_RUNTIME_DIR/chat-app.lock` (falling back to
+`/tmp/chat-app-<uid>.lock`), taken before the window opens. A second window
+would fight the first over the buddy's say-FIFO, and would sit invisibly behind
+it accepting keystrokes nobody can see.
+
+The lock filename still says `chat-app`, and that is deliberate. It is the
+single-instance guard, so the old and the new binary have to contend for the
+*same* lock: upgrade while a `chat-app` is still open and you want the new
+`onidia-chat` to refuse to start, not to open a second window beside it.
+
+The lock is a kernel `flock`, not a PID file, so a crash or `kill -9` cannot
+leave the app permanently unlaunchable — the lock dies with the process and
+the next launch just works. The file itself can survive; only the lock on it
+matters, and you can delete it freely while nothing is running.
+
+The read-only diagnostic modes deliberately do **not** take the lock, because
+they are most useful *while* the app is running:
+
+```sh
+onidia-chat -stt-test     # diagnose the microphone while the app is open
+onidia-chat -preview      # render PNGs
+```
+
+To run a second copy on purpose (two accounts, two chats), give one of them
+its own runtime directory — they will not see each other:
+
+```sh
+XDG_RUNTIME_DIR=/tmp/chat-b onidia-chat
+```
+
+### Thinking clouds (`<THINKING>`)
+
+When the provider returns its reasoning inline, wrapped in
+`<THINKING>...</THINKING>`, it gets its own bubble — a small, muted thought
+cloud drawn **above** the answer, with the answer in the normal speech bubble
+below it. The cloud is deliberately understated: half the font size, a pale
+lilac instead of the buddy's plum-outlined white, and capped at 6 lines with an
+ellipsis, so a long ramble can never crowd out what the character actually
+said. See `chat_ui_cloud.png`.
+
+The reasoning is **never** spoken by the buddy and never enters the reply — only
+the answer is. It is also peeled off **before** any tag parsing, so a `[mood]`,
+`[ACTION:]` or `[AGENT: ...]` tag written while the model is thinking cannot
+reach the buddy, the pager or an ability. A model that muses "I could use
+`play_song` here" has not asked for a song. The cloud shows the model's words,
+not its markup: tag text is hidden there too, so a `[AGENT: ...]` the model was
+only considering is not what you read.
+
+The cloud fills live while the reply streams: an unclosed `<THINKING>` counts
+as open, so mid-stream text lands in the cloud rather than flashing into the
+answer.
+
+**The buddy has one too.** onidia parses the same block out of the say-pipe
+line and draws a smaller cloud above her speech bubble, which is how her
+"thinking" is visible at all - the chat window may be collapsed or behind
+another window while she answers. The **THINKING BUBBLE** setting (the row
+under MUTE SPEECH, `thinking = on|off`) governs *both*: switching it off stops
+the block being forwarded on the say-pipe, so she stops showing it as well as
+the window. Before that was wired up the checkbox only silenced the window and
+left the character still musing, which reads as the setting not working.
 
 ## Controls
 
@@ -361,13 +713,15 @@ Or without make: `go build -trimpath -ldflags="-s -w" -o chat-app .`
 |---|---|
 | typing | insert into the textarea (printable ASCII, ≤ 280 chars) |
 | **Enter** | submit — your bubble appears, Buddy answers via Gemini |
-| **Esc** | clear the textarea |
+| **Esc** | cancel a recording in flight, else clear the textarea |
+| click **mic** (input bar, left of SEND) | start recording; click again to stop and transcribe. The button only appears when `stt` is not `off` and a recorder is installed. A live take pulses red; "Recording…" then "Transcribing…" shows in the textarea, and the transcript replaces it as soon as it arrives |
+| transcript arrives | the words are typed into the textarea for you to edit before sending — a misheard sentence is cheaper to fix than to re-record |
 | click **SEND** | submit (only enabled while the textarea has text) |
 | click textarea | focus it (border turns teal, caret blinks) |
 | click **+ / −** (header, left of ⚙) | show/hide the conversation history (starts collapsed) |
-| click **⚙ gear** (header, left of ✕) | open the settings dialog (character age 7-13, sleep window FROM/TO, busy window, CHARACTER picker — the buttons carry the character names: **ONIDIA** = Haiya! launches the girl, **KAMA** = the boy, MUTE SPEECH and DEMO MODE checkboxes below it; SAVE writes `character-name`, `character-age`, `sleep-time`, `busy-time`, `mute`, `demo-mode` + `character-gender` to `chat-app.ini` and rewrites the stored persona's "your name is …" sentence with the name + age) |
-| in the dialog | type the character's name into NAME, click a dropdown to drop its list (hour lists scroll with the wheel), pick a value, pick **ONIDIA**/**KAMA** in the CHARACTER row for who the Haiya! button launches, tick/untick **MUTE SPEECH** to silence the text-to-speech voice, tick/untick **DEMO MODE** to switch the buddy between roaming+chattering and planted (it walks to its parking spot three character widths in from the right edge and stays there), **SAVE** (or **Enter**); **CANCEL** / **Esc** discards |
-| click **About** (header, left of ✕) | open the About dialog: a teal hero strip with the word-art name (drop shadow, plum outline, sparkles) and the round character badge — her happy face, drawn in code — above the tagline, a live line naming whichever buddy is running, and the engineering credit; **OK**, a backdrop click or **Esc** dismisses it |
+| click **⚙ gear** (header, left of ✕) | open the settings dialog (character age 7-13, sleep window FROM/TO, busy window, CHARACTER picker — the buttons carry the character names: **ONIDIA** = Haiya! launches the girl, **KAMA** = the boy, MUTE SPEECH and DEMO MODE checkboxes below it (AUTO SUBMIT shares the DEMO MODE row, AUTO STOP the row below); SAVE writes `character-name`, `character-age`, `sleep-time`, `busy-time`, `mute`, `thinking`, `demo-mode`, `auto-submit`, `auto-stop` + `character-gender` to `chat-app.ini` and rewrites the stored persona's "your name is …" sentence with the name + age) |
+| in the dialog | type the character's name into NAME, click a dropdown to drop its list (hour lists scroll with the wheel), pick a value, pick **ONIDIA**/**KAMA** in the CHARACTER row for who the Haiya! button launches, tick/untick **MUTE SPEECH** to silence the text-to-speech voice, tick/untick **DEMO MODE** to switch the buddy between roaming+chattering and planted (it walks to its parking spot three character widths in from the right edge and stays there), tick/untick **AUTO SUBMIT** to send a spoken prompt on its own, and **AUTO STOP** to end the take when you stop talking (see below), **SAVE** (or **Enter**); **CANCEL** / **Esc** discards |
+| click **About** (header, left of ✕) | open the About dialog: a teal hero strip with the word-art name (drop shadow, plum outline, sparkles) and the round character badge — the same Onidia mark as the web header's logo, her happy face, drawn in code — above the tagline, a live line naming whichever buddy is running, and the engineering credit; **OK**, a backdrop click or **Esc** dismisses it |
 | **drag** the header | move the window (`_NET_WM_MOVERESIZE`; the frame has no titlebar) |
 | click **✕** (header, far right) | quit the app |
 | **Alt+F4** | quit too (the WM delete protocol stays enabled) |
@@ -398,11 +752,20 @@ you ──▶ textarea ──▶ SEND/Enter ──▶ UI appends your bubble, sh
 ```
 .
 ├── main.go        flags, config, window lifecycle, event loop
+├── preflight_gate.go  startup requirements gate (strict/warn/off, exit 2 pre-window)
+├── singleton.go   the one-instance flock (taken before the window opens)
+├── internal/preflight/ shared checks: provider reachability + environment
+│                  (the startup gate and cmd/preflight run the same registry)
 ├── ui.go          layout, state, hit-testing and software rendering
 ├── font.go        5×7 bitmap font (+true lowercase) and draw primitives
-├── about_art.go   the About modal's hand-drawn character badge + sparkles
+├── about_art.go   the About modal's character badge (the logo mark) + sparkles
 ├── chat.go        the brain: Gemini client, persona, mood-tag handling
 ├── pet.go         desktop-pet say-FIFO bridge (non-blocking writes)
+├── stt.go         speech-to-text: mic take -> transcribe -> textarea
+├── stt_transcribe.go  Amazon Transcribe streaming backend
+├── stt_whisper.go     local faster-whisper backend
+├── internal/mic/     microphone listing + level probe (used by the app and preflight)
+├── stt_selftest.go   -stt-test: the whole speech chain, headless and verbose
 ├── tts.go         Typecast text-to-speech (async fetch + aplay/paplay/ffplay)
 ├── preview.go     -preview PNG renderer (like the buddy's -debug mode)
 ├── agentbridge.go [AGENT: ...] bridge + the multi-round agent loop
@@ -419,6 +782,8 @@ you ──▶ textarea ──▶ SEND/Enter ──▶ UI appends your bubble, sh
 ├── x11draw.go     frame upload (chunked PutImage)
 ├── x11events.go   event pump + keycode→keysym decoding
 ├── cmd/geminitest standalone Gemini API probe (see debugging section)
+├── cmd/preflight/ the standalone requirements check (same checks + exit
+│                  codes as the startup gate; see the Preflight section)
 ├── Makefile
 └── go.mod
 ```
@@ -429,10 +794,13 @@ The model can invoke **agents**: small programs discovered at startup from
 the agents directory (`~/.config/chat-app/agents`, override with
 `-agents-dir` / `agents-dir`). Each registered agent is advertised in the
 system prompt catalog, so the reply can lead with
-`[AGENT: play_song title="Havana"]` - chat-app strips the tag, validates
+`[AGENT: play_song title="Havana"]` - onidia-chat strips the tag, validates
 the parameters against the agent's declared `params` (the model can only
 send what the manifest declares), runs the agent, and folds its `OK`
-message into the reply (spoken by the pet too).
+message into the reply (spoken by the buddy too). The tag never reaches the
+bubble: if the model writes one the grammar cannot match whole (a bracket
+inside a value, a tag cut off by its token limit, a tag in another case) the
+leftover markup is hidden as well, so you read the reply, not the plumbing.
 
 One reply may ask for **several** abilities: they run in parallel (4 at a
 time, 60s shared budget) and their results are handed back to the model as
@@ -450,17 +818,55 @@ make pack                                 # zip shippable agents -> dist/agents/
 ```
 
 Drop-in, no rebuild: write `agent.json` + any executable speaking the
-3-line protocol, zip it, `agentctl install` - restart chat-app and the
+3-line protocol, zip it, `agentctl install` - restart onidia-chat and the
 model can use it. Full guide: [`agents/README.md`](agents/README.md),
 wire protocol: [`docs/AGENT-PROTOCOL.md`](docs/AGENT-PROTOCOL.md).
 Disable with `-agents-off` / `agents-off = true`.
 
 An agent can also **act the work out on the character**: one optional
-`PET action <name>` / `PET event <name>` line before its `OK` (the bundled
-`play_song` asks the pet to dance) reaches the pet's cmd-FIFO when the model
-didn't choose an `[ACTION: ...]`/`[EVENT: ...]` itself. Names are validated
-against the pet's own tables, so an agent can only pick a pose the pet
+`PET <command>` line before its `OK` reaches the buddy when the model didn't
+choose an `[ACTION: ...]`/`[EVENT: ...]` itself. Four kinds, and they do not
+all travel the same pipe:
+
+| line | channel | example |
+|------|---------|---------|
+| `action <name>` | cmd-FIFO | `PET action dance` |
+| `event <name>` | cmd-FIFO | `PET event love` |
+| movement (**no prefix**) | cmd-FIFO | `PET walk left`, `PET jump`, `PET stand` |
+| `expr <mood>` | **say-FIFO**, as a bare `[mood]` tag | `PET expr happy` |
+
+`expr` is the odd one out: the buddy has no cmd-FIFO verb for expressions at
+all - its face is set by a bare `[mood]` tag with no text, which holds the
+expression without opening a speech bubble. The agent still writes `PET
+expr <mood>`; onidia-chat is what routes it to the other pipe. Names are
+validated twice (shape in the agent package, name against the buddy's tables
+in the brain), so an agent can only pick a pose, face or step the buddy
 really has ([details](docs/AGENT-PROTOCOL.md#control-the-character-pet)).
+
+The bundled **`pet_control`** agent wraps all four behind one call - `kind`
+(`expression` / `event` / `action` / `move`) plus a `name`, with the buddy's
+own informal words folded in ("cheer" -> a happy face, "hearts" -> the
+love effect, "rope" -> skipping):
+
+```sh
+./agentctl -dir agents run pet_control kind=action name=rope
+#   INFO action -> skip
+#   She is skipping rope.
+#   (buddy command: action skip)
+```
+
+- **Why it might ignore you**: the system prompt is the *only* place the
+  catalog lives, and the model reads it alongside the whole conversation. If
+  it once answers "I can't show that, it is outside of my capabilities" for
+  something an ability actually does, that refusal goes into the chat
+  history like any other reply and the next turn inherits it — few-shot
+  learning on its own prior output, and it compounds until the ability is
+  never offered again. Two guards against that: a turn that ran an ability
+  is marked in the model-facing history (`(I used an ability from the list
+  above to do this - it worked.)`, never shown on screen), and the catalog
+  itself says an ability's effect is real and must not be apologised for.
+- Bundled: `pet_control` (animates the buddy), `play_song`, `play_movie`,
+  `media_control`, `hello_world`, plus the native `read_story`.
 
 ### Transport strip (play / pause / stop)
 
@@ -491,7 +897,7 @@ rephrase exactly like on the tag path (same 4-at-a-time concurrency, 60 s
 budget, 3-round limit and dedupe).
 
 The `[AGENT: ...]` tag path is **kept as the fallback**: a provider, server or
-model without tool support makes the first tool request fail, and chat-app
+model without tool support makes the first tool request fail, and onidia-chat
 answers through the tags instead - so one agent works everywhere. See
 [`docs/AGENT-PROTOCOL.md`](docs/AGENT-PROTOCOL.md#native-tool-calling-phase-3---preferred-when-the-provider-supports-it).
 
@@ -506,8 +912,11 @@ mpv/cvlc/vlc/ffplay fallback). Install the latter two with
 | Symptom | Fix |
 |---|---|
 | Window still has a titlebar/border | WM ignores `_MOTIF_WM_HINTS` (rare); use Alt+F4 or the header ✕ |
+| Exits with `preflight: BLOCKED` before the window opens | run `make preflight` for the full report + fix hints; launch anyway with `-preflight warn` (or `preflight = warn` in chat-app.ini) |
+| Want to know if the backend works before launching | `make preflight` (or `./preflight -quick` for config/env only) |
 | Replies say "set GEMINI_API_KEY..." | export the key (or pass `-api-key`) and restart |
 | "gemini call failed: ..." bubbles | check network, key validity, or pick another `-model` |
 | Buddy doesn't speak | start the desktop-pet first (it creates the FIFO); check `-pet-pipe` |
 | Want silence from the buddy | run with `-pet-pipe off` |
+| `/tmp` filling up with `onidia-chat-stt-*.wav`, and a `pw-record` that never ends | an orphaned take from a build before the recorder-lifecycle fix: those recorders outlive the app. `pkill pw-record; rm -f /tmp/onidia-chat-stt-*.wav`, then rebuild. Current builds kill every take on exit, so this cannot recur |
 | `context deadline exceeded` on every call, while other sites work | your network filters `generativelanguage.googleapis.com`. Options: run behind a proxy (`export HTTPS_PROXY=...`, Go honors it), a VPN, or point `-api-url` at a relay you control that forwards to Gemini (any service that proxies `POST <base>/v1beta/models/*:generateContent` transparently). Debug with `go run ./cmd/geminitest -models`. |

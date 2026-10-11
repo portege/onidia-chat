@@ -10,17 +10,20 @@ import (
 func TestLoadConfig(t *testing.T) {
 	cfg := `[gemini]
 api-key = test-key
-model = gemini-test
-api-url = https://example.com
+gemini-model = gemini-test
+gemini-api-url = https://example.com
 system-prompt = hello world
 image-source = gemini
 pixabay-key = test-px-key
+
+[bedrock]
+bedrock-model = amazon.nova-lite-v1:0
 
 [ui]
 pet-pipe = off
 images = false
 `
-	tmp, err := os.CreateTemp("", "chat-app-config-*.ini")
+	tmp, err := os.CreateTemp("", "onidia-chat-config-*.ini")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,11 +40,14 @@ images = false
 	if c.APIKey != "test-key" {
 		t.Errorf("api-key: got %q want %q", c.APIKey, "test-key")
 	}
-	if c.Model != "gemini-test" {
-		t.Errorf("model: got %q want %q", c.Model, "gemini-test")
+	if c.GeminiModel != "gemini-test" {
+		t.Errorf("gemini-model: got %q want %q", c.GeminiModel, "gemini-test")
 	}
-	if c.APIURL != "https://example.com" {
-		t.Errorf("api-url: got %q want %q", c.APIURL, "https://example.com")
+	if c.GeminiAPIURL != "https://example.com" {
+		t.Errorf("gemini-api-url: got %q want %q", c.GeminiAPIURL, "https://example.com")
+	}
+	if c.BedrockModel != "amazon.nova-lite-v1:0" {
+		t.Errorf("bedrock-model: got %q want %q", c.BedrockModel, "amazon.nova-lite-v1:0")
 	}
 	if c.SystemPrompt != "hello world" {
 		t.Errorf("system-prompt: got %q want %q", c.SystemPrompt, "hello world")
@@ -67,7 +73,7 @@ func TestLoadConfigMultiLine(t *testing.T) {
 		"Keep replies short.\n" +
 		"```\n"
 
-	tmp, err := os.CreateTemp("", "chat-app-config-*.ini")
+	tmp, err := os.CreateTemp("", "onidia-chat-config-*.ini")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +111,34 @@ func TestDefaultConfigPath(t *testing.T) {
 	}
 	if c.APIKey == "" {
 		t.Error("auto-loaded config has no api-key; expect the shipped key")
+	}
+}
+
+// TestDefaultConfigPathUserConfig covers the third fallback: a packaged
+// install puts the binary in /opt/onidia/bin and the config in the user's
+// XDG config dir, so neither ./chat-app.ini nor the exedir copy exists and the
+// user copy is the only thing that can be found.
+func TestDefaultConfigPathUserConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "cfg"))
+	// The checkout directory has its own chat-app.ini, which the first lookup
+	// would find and return; move somewhere empty so only the XDG copy can win.
+	t.Chdir(t.TempDir())
+
+	dir := filepath.Join(home, "cfg", "chat-app")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "chat-app.ini")
+	if err := os.WriteFile(want, []byte("provider = ollama\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The test binary sits in a temp dir with no chat-app.ini beside it, so the
+	// first two lookups cannot fire and the XDG path must win.
+	if got := defaultConfigPath(); got != want {
+		t.Fatalf("defaultConfigPath() = %q, want %q", got, want)
 	}
 }
 
@@ -201,6 +235,28 @@ func writeTempINI(t *testing.T, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// TestConfigThinkingKey covers the thinking-bubble setting: it is stored as
+// on/off rather than true/false (the "tts" convention) because the cloud is on
+// by default, so an INI that predates the setting must not read back as off.
+func TestConfigThinkingKey(t *testing.T) {
+	cfg, err := LoadConfig(writeTempINI(t, "[character]\nthinking = off\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(cfg.Thinking), "off") {
+		t.Errorf("thinking = off loaded as %q", cfg.Thinking)
+	}
+
+	// No key at all: the zero value is "", which the app reads as on.
+	cfg, err = LoadConfig(writeTempINI(t, "[character]\nmute = true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Thinking), "off") {
+		t.Errorf("a file without the key must keep the cloud on, got %q", cfg.Thinking)
+	}
 }
 
 // TestLoadConfigCharacterAge covers the character-age key.
@@ -627,7 +683,7 @@ func TestSetConfigValueOnShippedINI(t *testing.T) {
 func TestLoadConfigStreamKey(t *testing.T) {
 	load := func(body string) *Config {
 		t.Helper()
-		tmp, err := os.CreateTemp("", "chat-app-config-*.ini")
+		tmp, err := os.CreateTemp("", "onidia-chat-config-*.ini")
 		if err != nil {
 			t.Fatal(err)
 		}
