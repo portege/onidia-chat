@@ -121,7 +121,7 @@ func TestSanitizeBotToken(t *testing.T) {
 
 func TestLooksLikeBotToken(t *testing.T) {
 	valid := []string{
-		"1234567890:AAElYOvXM-WElWghRVKNOlAFmjjimrUlmTw",
+		"1234567890:AAElYOvXM-xxx",
 		"1:abc-DEF_123",
 	}
 	for _, tok := range valid {
