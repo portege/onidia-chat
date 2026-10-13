@@ -72,10 +72,10 @@ func (t *telegramChannel) Start(submit func(Incoming)) error {
 	defer cancel()
 
 	if err := t.deleteWebhook(ctx); err != nil {
-		log.Printf("telegram: deleteWebhook: %v", err)
+		log.Printf("telegram: %v", err) // apiCall errors carry the method name
 	}
 	if me, err := t.getMe(ctx); err != nil {
-		log.Printf("telegram: getMe: %v (continuing)", err)
+		log.Printf("telegram: %v (continuing)", err)
 	} else {
 		log.Printf("telegram: polling as @%s", me)
 	}
@@ -92,7 +92,7 @@ func (t *telegramChannel) Start(submit func(Incoming)) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			log.Printf("telegram: poll: %v (retry in %s)", err, backoff)
+			log.Printf("telegram: %v (retry in %s)", err, backoff) // err carries "getUpdates:"
 			select {
 			case <-ctx.Done():
 				return nil

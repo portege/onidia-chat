@@ -236,7 +236,10 @@ func applyConfigField(cfg *Config, key, val string) {
 	case "thinking":
 		cfg.Thinking = val
 	case "bot-token":
-		cfg.TelegramToken = val
+		// Cut at the first whitespace/'#'/';': LoadConfig keeps trailing
+		// comments, and a "# ..." pasted after the token would travel into
+		// the Bot API URL where '#' truncates the path (404 on every call).
+		cfg.TelegramToken = sanitizeBotToken(val)
 	case "allow-from":
 		cfg.TelegramAllow = val
 	case "send-images":
@@ -307,8 +310,22 @@ func applyConfigField(cfg *Config, key, val string) {
 }
 
 // parseIntVal parses a plain integer config value; junk parses as 0.
+// stripInlineComment drops a trailing "# ..." / "; ..." comment from a
+// single-line INI value. Only the scalar parsers (bool/int) call it - text
+// values keep '#' verbatim because a prompt or key may legitimately contain
+// one. Whole-line comments are already dropped by LoadConfig.
+func stripInlineComment(s string) string {
+	s = strings.TrimSpace(s)
+	for _, sep := range []string{"#", ";"} {
+		if i := strings.Index(s, sep); i >= 0 {
+			s = strings.TrimSpace(s[:i])
+		}
+	}
+	return s
+}
+
 func parseIntVal(s string) int {
-	n, _ := strconv.Atoi(strings.TrimSpace(s))
+	n, _ := strconv.Atoi(stripInlineComment(s))
 	return n
 }
 
@@ -367,7 +384,7 @@ func parseHour(s string) (int, bool) {
 }
 
 func parseBool(s string) bool {
-	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ToLower(stripInlineComment(s))
 	return s == "true" || s == "yes" || s == "1" || s == "on"
 }
 

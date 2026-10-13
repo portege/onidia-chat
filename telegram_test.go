@@ -103,3 +103,52 @@ func TestShortTelegramErr(t *testing.T) {
 		t.Fatalf("must truncate hostile bodies (%d chars)", len(got))
 	}
 }
+
+func TestSanitizeBotToken(t *testing.T) {
+	cases := map[string]string{
+		"1234567890:AABb_cdef-123":           "1234567890:AABb_cdef-123",
+		"1234567890:AABb        # chmod 600": "1234567890:AABb",
+		"  1234567890:AABb\n":                "1234567890:AABb",
+		"# chmod 600 this file":              "",
+		"":                                   "",
+	}
+	for in, want := range cases {
+		if got := sanitizeBotToken(in); got != want {
+			t.Errorf("sanitizeBotToken(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestLooksLikeBotToken(t *testing.T) {
+	valid := []string{
+		"1234567890:AAElYOvXM-WElWghRVKNOlAFmjjimrUlmTw",
+		"1:abc-DEF_123",
+	}
+	for _, tok := range valid {
+		if !looksLikeBotToken(tok) {
+			t.Errorf("looksLikeBotToken(%q) = false, want true", tok)
+		}
+	}
+	invalid := []string{
+		"", "flag-token", "env-token", "ini-token", "123", ":abc", "123:",
+		"12:34:56", "123:abc def", "123:abc#comment", "# chmod 600", "123:abc; def",
+	}
+	for _, tok := range invalid {
+		if looksLikeBotToken(tok) {
+			t.Errorf("looksLikeBotToken(%q) = true, want false", tok)
+		}
+	}
+}
+
+// TestBuildChannelMalformedToken locks the fail-closed factory behaviour: a
+// broken token must never construct a poller (it could only 404-retry
+// forever), a well-formed one must.
+func TestBuildChannelMalformedToken(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "")
+	if _, ok := buildChannel("telegram", &Config{TelegramToken: "no-colon-here"}); ok {
+		t.Fatal("malformed token must not build a channel")
+	}
+	if _, ok := buildChannel("telegram", &Config{TelegramToken: "1234567890:AAbcdef"}); !ok {
+		t.Fatal("well-formed token must build a channel")
+	}
+}

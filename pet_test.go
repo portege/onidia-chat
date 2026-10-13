@@ -536,4 +536,3 @@ func TestOnidiaPathFallsBackToPATH(t *testing.T) {
 		t.Fatalf("onidiaPath() = %q, want the PATH hit %q", got, filepath.Join(bin, "onidia"))
 	}
 }
-

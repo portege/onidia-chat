@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -104,11 +105,57 @@ func maskTelegramToken(t string) string {
 	return t[:4] + "..." + t[len(t)-4:] + fmt.Sprintf(" (len %d)", len(t))
 }
 
+// sanitizeBotToken trims a bot-token INI value down to the token itself.
+// LoadConfig only drops whole-line comments, so a token pasted before a
+// trailing "# ..." comment used to travel into the Bot API URL, where '#'
+// starts a fragment and the method name vanishes - Telegram answered
+// 404 Not Found for every call. A real token is <digits>:<secret> with no
+// whitespace, '#' or ';', so cutting at the first such character recovers the
+// token and cannot damage a valid one.
+func sanitizeBotToken(v string) string {
+	v = strings.TrimSpace(v)
+	if i := strings.IndexAny(v, " \t\r\n#;"); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v)
+}
+
+// looksLikeBotToken reports whether tok has the Bot API token shape
+// <digits>:<secret>. Used at startup to refuse a broken token with one
+// actionable log line instead of looping on HTTP 404 forever.
+func looksLikeBotToken(tok string) bool {
+	tok = strings.TrimSpace(tok)
+	i := strings.IndexByte(tok, ':')
+	if i <= 0 || i == len(tok)-1 { // no colon, empty id, or empty secret
+		return false
+	}
+	for _, c := range tok[:i] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	for _, c := range tok[i+1:] {
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c == '_', c == '-':
+		default: // includes a second ':', spaces and '#'
+			return false
+		}
+	}
+	return true
+}
+
 // init registers the telegram channel factory.
 func init() {
 	RegisterChannel("telegram", func(cfg *Config) (Channel, bool) {
 		tc, _ := resolveTelegramConfig(cfg, "", "")
 		if !tc.enabled() {
+			return nil, false
+		}
+		// Fail closed on an unrecognisable token: it can only produce an
+		// endless 404 retry loop, and main.go logs the actionable message.
+		if !looksLikeBotToken(tc.Token) {
+			log.Printf("telegram: bot-token malformed (len %d, want <digits>:<secret>) - channel not started",
+				len(tc.Token))
 			return nil, false
 		}
 		return newTelegramChannel(tc), true

@@ -708,3 +708,30 @@ func TestLoadConfigStreamKey(t *testing.T) {
 		t.Error("stream = on: Stream should be true")
 	}
 }
+
+// TestLoadConfigInlineComments covers single-line values that carry a
+// trailing "# ..." comment: bool/int keys must still parse, and a bot-token
+// must be cut at the comment - otherwise '#' truncates the Bot API URL path
+// and every Telegram call answers 404 Not Found (the exact field failure
+// this test guards against).
+func TestLoadConfigInlineComments(t *testing.T) {
+	c, err := LoadConfig(writeTempINI(t, "[telegram]\n"+
+		"bot-token = 1234567890:AABb_cdef-123        # chmod 600\n"+
+		"send-images = true   # send reply photo\n"+
+		"poll-timeout = 45    # long-poll window\n"))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if c.TelegramToken != "1234567890:AABb_cdef-123" {
+		t.Errorf("bot-token = %q, want the token without the comment", c.TelegramToken)
+	}
+	if !c.TelegramImages {
+		t.Error("send-images = true with an inline comment must parse true")
+	}
+	if !c.TelegramImagesSet {
+		t.Error("send-images must be marked present")
+	}
+	if c.TelegramPoll != 45 {
+		t.Errorf("poll-timeout = %d, want 45", c.TelegramPoll)
+	}
+}

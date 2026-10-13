@@ -730,6 +730,15 @@ func main() {
 	telegramOn := telegramCfg.enabled() && !*telegramOffFlag
 	if *telegramOffFlag && telegramCfg.enabled() {
 		log.Printf("telegram: disabled by -telegram-off")
+	} else if telegramOn && !looksLikeBotToken(telegramCfg.Token) {
+		// A token with stray junk (e.g. an inline comment pasted on the same
+		// INI line) makes every Bot API call answer 404 because '#' truncates
+		// the URL path. Refuse it here with the fix instead of letting the
+		// poller retry forever.
+		log.Printf("telegram: bot-token is malformed (%s, want <digits>:<secret>) - channel stays off; "+
+			"remove any inline comment from the bot-token line in chat-app.ini",
+			maskTelegramToken(telegramCfg.Token))
+		telegramOn = false
 	} else if telegramOn {
 		if telegramTokenSrc == "ini" && configPath != "" {
 			warnTelegramTokenPerms(configPath)
@@ -995,10 +1004,13 @@ func main() {
 	var channels []Channel
 	if telegramOn {
 		if ch, ok := buildChannel("telegram", &Config{
-			TelegramToken:  telegramCfg.Token,
-			TelegramAllow:  strings.Join(telegramCfg.Allow, ","),
-			TelegramImages: telegramCfg.SendImages,
-			TelegramPoll:   telegramCfg.PollSec,
+			TelegramToken: telegramCfg.Token,
+			TelegramAllow: strings.Join(telegramCfg.Allow, ","),
+			// SendImages is already resolved; the presence field passes a
+			// deliberate false through (default-on would swallow it).
+			TelegramImages:    telegramCfg.SendImages,
+			TelegramImagesSet: true,
+			TelegramPoll:      telegramCfg.PollSec,
 		}); ok {
 			tg := ch.(*telegramChannel)
 			channels = append(channels, ch)

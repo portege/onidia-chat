@@ -31,10 +31,16 @@ send-images = true
 poll-timeout = 30
 ```
 
+- **Comments go on their own line.** Never append `# ...` after a value: an
+  inline comment after `bot-token` corrupts the Bot API URL (the `#` truncates
+  the path, so every call answers *404 Not Found*). Values are now cut at the
+  comment on load, and a token that still does not look like `<digits>:<secret>`
+  is refused at startup with an actionable log line instead of looping on 404.
 - **allow-from is fail-closed.** Empty (or missing) means *every* sender is
   refused, silently - the stranger's message is dropped with only a server-side
   log line, so the bot never reveals its presence. Numeric chat-ids and
-  `@usernames` both work; find your own id with **@userinfobot**.
+  `@usernames` both work; find your own id with **@userinfobot** (or read the
+  `telegram: dropped message ... (chat <id>)` line from your own server log).
 - **send-images** defaults **on**: a reply that carries an image is sent to
   Telegram as a photo (caption ≤ 1024 chars, remainder as a follow-up message).
   Set `send-images = false` to get text-only replies on Telegram.
