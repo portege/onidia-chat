@@ -13,6 +13,7 @@ package main
 // -system-file, and -config INI file.
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -38,6 +39,20 @@ import (
 // the same answer and its hand-written copy had already drifted into checking
 // only the first path - which is never there on a package install.
 func defaultConfigPath() string { return confpath.Default() }
+
+// warnTelegramTokenPerms warns when the INI file holding the Telegram bot
+// token is readable beyond the owner (the token is a secret equivalent to an
+// API key). Best-effort: stat failures are ignored.
+func warnTelegramTokenPerms(path string) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	if st.Mode().Perm()&0o077 != 0 {
+		log.Printf("telegram: config %s holds bot-token and is readable beyond owner (mode %04o) - consider chmod 600 %s",
+			path, st.Mode().Perm(), path)
+	}
+}
 
 // firstNonEmpty returns the first non-blank argument (flag > config).
 func firstNonEmpty(vals ...string) string {
@@ -179,6 +194,12 @@ func main() {
 			"log the full speech-input trace: wav file, level, backend command, diagnostics and result")
 		sttTestFlag = flag.Bool("stt-test", false,
 			"headless speech-input self test: record a take, transcribe it, print every step and exit")
+		telegramTokenFlag = flag.String("telegram-token", "",
+			"Telegram bot token: enables the Telegram remote-control channel (or $TELEGRAM_BOT_TOKEN / chat-app.ini bot-token)")
+		telegramAllowFlag = flag.String("telegram-allow", "",
+			"Telegram allowlist: comma/space chat-ids or @usernames (or chat-app.ini allow-from; empty = refuse all)")
+		telegramOffFlag = flag.Bool("telegram-off", false,
+			"disable the Telegram channel even when a token is configured")
 	)
 	flag.Parse()
 
@@ -701,6 +722,26 @@ func main() {
 		log.Printf("gemini: model=%s", modelVal)
 	}
 
+	// External channels: Telegram remote control (see channel.go /
+	// telegram*.go). Token precedence flag > $TELEGRAM_BOT_TOKEN > INI
+	// bot-token; -telegram-off forces it off. The token is never logged
+	// (maskTelegramToken); an INI-supplied token warns about file perms.
+	telegramCfg, telegramTokenSrc := resolveTelegramConfig(cfg, *telegramTokenFlag, *telegramAllowFlag)
+	telegramOn := telegramCfg.enabled() && !*telegramOffFlag
+	if *telegramOffFlag && telegramCfg.enabled() {
+		log.Printf("telegram: disabled by -telegram-off")
+	} else if telegramOn {
+		if telegramTokenSrc == "ini" && configPath != "" {
+			warnTelegramTokenPerms(configPath)
+		}
+		if len(telegramCfg.Allow) == 0 {
+			log.Printf("telegram: enabled (%s) but allow-from is empty - every message will be dropped until allowlisted",
+				maskTelegramToken(telegramCfg.Token))
+		} else {
+			log.Printf("telegram: enabled (%s, allow %d)", maskTelegramToken(telegramCfg.Token), len(telegramCfg.Allow))
+		}
+	}
+
 	// Requirements gate: verify the resolved brain and environment BEFORE the
 	// X window opens. preflight = strict (default) prints the failed checks
 	// and exits 2; warn logs them and continues; off skips the gate. The same
@@ -947,6 +988,49 @@ func main() {
 
 	log.Printf("ui ready - type in the textarea, press enter or SEND")
 
+	// External channels (Telegram remote control): the poller posts Incoming
+	// prompts to ui.externalIncoming; the main loop drains it and injects
+	// each into the window's own conversation (SubmitExternal), so the
+	// desktop shows exactly what a remote user sent. Stopped on exit.
+	var channels []Channel
+	if telegramOn {
+		if ch, ok := buildChannel("telegram", &Config{
+			TelegramToken:  telegramCfg.Token,
+			TelegramAllow:  strings.Join(telegramCfg.Allow, ","),
+			TelegramImages: telegramCfg.SendImages,
+			TelegramPoll:   telegramCfg.PollSec,
+		}); ok {
+			tg := ch.(*telegramChannel)
+			channels = append(channels, ch)
+			go func() {
+				if err := tg.Start(func(in Incoming) {
+					select {
+					case ui.externalIncoming <- in:
+					default:
+						log.Printf("telegram: incoming queue full, dropping prompt from %s", in.User)
+					}
+				}); err != nil {
+					log.Printf("telegram: poller exited: %v", err)
+				}
+			}()
+			// Reply fork + typing indicator live on the main-loop side (see
+			// the ui.Replies case below); track in-flight typing here.
+			_ = tg
+		}
+	}
+	defer func() {
+		for _, ch := range channels {
+			_ = ch.Stop()
+		}
+	}()
+
+	// Held external turns (see the externalIncoming drain): prompts that
+	// arrived while a turn was in flight wait here FIFO; greetingHeld means
+	// the startup hello is still owed. Both fire from the reply handler once
+	// the current turn completes, keeping one-turn-at-a-time ordering.
+	var heldIncoming []Incoming
+	var greetingHeld bool
+
 	// Startup greeting: once the buddy's entrance animation (skate / parachute /
 	// poof-in, a few seconds) has finished, have the LLM open the day with a
 	// warm hello plus one short did-you-know fact. The result arrives on the
@@ -958,6 +1042,11 @@ func main() {
 	// firing: a fixed timer can fire before the desktop-pet has even created
 	// its pipe (or before its reader is ready), which would silently drop the
 	// greeting's bubble. The grace period then covers the entrance animation.
+	//
+	// The waiter posts a marker to externalIncoming instead of firing
+	// directly: the main loop fires the greeting only when idle (!Thinking)
+	// and queues its nil origin at fire time, so the Replies/origin FIFO
+	// stays exact (see the ui.Replies case).
 	go func() {
 		const (
 			entranceGrace = 7 * time.Second // leave the entrance room to play
@@ -971,11 +1060,11 @@ func main() {
 			}
 		}
 		time.Sleep(entranceGrace)
-		ui.Thinking = true
-		go func() {
-			result := ui.Bot.Greeting()
-			ui.Replies <- result
-		}()
+		select {
+		case ui.externalIncoming <- Incoming{Channel: channelGreeting}:
+		default:
+			log.Printf("greeting: incoming queue full, skipping hello")
+		}
 	}()
 
 	// Every exit path below returns from main, including the ones a user
@@ -1100,11 +1189,36 @@ func main() {
 			ui.SetStreamText(accumulated)
 			dirty = true
 		case reply := <-ui.Replies:
+			// Origin matching is exact: every Replies producer queues
+			// exactly one origin on the UI goroutine before firing (local
+			// Submit queues nil, SubmitExternal its origin, the greeting
+			// its nil at fire time), and remote/greeting turns never
+			// overlap (held while Thinking), so the head of the queue
+			// belongs to this reply. Local double-submit can overlap but
+			// those entries are all nil - indistinguishable and harmless.
+			origin := ui.takeExternalOrigin()
 			ui.Thinking = false
 			ui.streamText = ""                            // drop the preview; AddMsg shows the final text
 			if reply.Text != "" || reply.Thinking != "" { // empty = skipped greeting (quiet hours)
 				ui.AddThinking(ui.Bot.Name, reply.Text, reply.Thinking,
 					reply.Image, reply.UsedAbility)
+			}
+			// Remote turn: fork the RENDERED text to the originating
+			// channel. Local rendering/TTS/pet below is unchanged; the
+			// reply text here is what the model actually said (mood/agent
+			// tags already stripped by finishReply).
+			if origin != nil && (reply.Text != "" || reply.Image != nil) {
+				forkReplyToChannel(channels, *origin, reply)
+			}
+			// The turn completed: fire the next held external (greeting
+			// first - it is the oldest debt - else the head prompt FIFO).
+			if greetingHeld {
+				greetingHeld = false
+				fireGreeting(ui)
+			} else if len(heldIncoming) > 0 {
+				next := heldIncoming[0]
+				heldIncoming = heldIncoming[1:]
+				submitIncoming(ui, next, channels)
 			}
 			// Pet bubble + TTS, kept in sync: the bubble appears only once the
 			// audio is ready to play and closes as soon as playback ends. With
@@ -1165,6 +1279,31 @@ func main() {
 				}
 				dirty = true
 			}
+		case in := <-ui.externalIncoming:
+			// External prompts + the greeting marker, serialized on the UI
+			// goroutine. A turn already in flight (Thinking) means the
+			// newcomer waits: heldIncoming keeps FIFO order and the reply
+			// handler fires the head when the current turn completes (see
+			// fireHeldExternal below). /new resets the shared conversation.
+			if in.Channel == channelGreeting {
+				if ui.Thinking {
+					greetingHeld = true
+				} else {
+					fireGreeting(ui)
+				}
+			} else if in.Text == "/new" {
+				resetConversation(ui)
+				if tg := telegramByName(channels, in.Channel); tg != nil {
+					ctx, cancel := context.WithTimeout(context.Background(), telegramHTTPTimeout)
+					_ = tg.sendText(ctx, in.ChatID, "fresh conversation - history cleared.")
+					cancel()
+				}
+			} else if ui.Thinking {
+				heldIncoming = append(heldIncoming, in)
+			} else {
+				submitIncoming(ui, in, channels)
+			}
+			dirty = true
 		case petGone := <-petGoneCh:
 			// The graceful quit was confirmed (or escalated): drop the
 			// running state so the button turns teal for the next launch.

@@ -393,6 +393,15 @@ type UI struct {
 	mediaPaused bool
 	mediaTitle  string
 	wantMedia   string // one-shot transport command a button click queued ("" = none)
+
+	// External channels (see channel.go / telegram*.go). externalIncoming is
+	// the thread-safe queue channel pollers post Incoming prompts to; the
+	// main loop drains it and calls SubmitExternal on the UI goroutine, so
+	// all UI mutation stays single-threaded. externalPending queues one
+	// origin per submitted turn (nil for locally typed turns) so the reply
+	// handler can fork rendered replies to the originating channel.
+	externalIncoming chan Incoming
+	externalPending  []*externalOrigin
 }
 
 // NewUI creates a UI sized w x h with a welcome message from the bot.
@@ -413,6 +422,9 @@ func NewUI(w, h int) *UI {
 		sleepTo:   -1,
 		pagerMsg:  -1, // no pager under the pointer yet
 		copyMsg:   -1, // no COPY pill under the pointer yet
+		// externalIncoming is buffered so a burst of channel prompts never
+		// blocks a poller: the main loop drains it every tick.
+		externalIncoming: make(chan Incoming, 16),
 	}
 	u.AddMsg(u.Bot.Name,
 		"hi! i am buddy. ask me anything - my answers come from google gemini, and onidia the desktop-pet says them out loud!")
@@ -2118,6 +2130,9 @@ func (u *UI) Submit() {
 	if text == "" {
 		return
 	}
+	// Local turn: queue a nil origin so externalPending stays 1:1 with the
+	// Replies results (see SubmitExternal for the remote half).
+	u.externalPending = append(u.externalPending, nil)
 	u.AddMsg("you", text)
 	u.input = nil
 
