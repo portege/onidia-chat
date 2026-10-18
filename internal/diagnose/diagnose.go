@@ -612,15 +612,27 @@ func findFirst(cands []string) string {
 
 func probeHost(ctx context.Context, rawURL string) bool {
 	u, err := url.Parse(rawURL)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	port := u.Port()
+	if port == "" {
+		switch u.Scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return false
+		}
+	}
+	d := net.Dialer{Timeout: probeTimeout}
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(u.Hostname(), port))
 	if err != nil {
 		return false
 	}
-	host := u.Host
-	if host == "" {
-		host = rawURL
-	}
-	_, err = net.DialTimeout("tcp", host, probeTimeout)
-	return err == nil
+	defer conn.Close()
+	return true
 }
 
 // probeHTTPS tries each URL with a bounded GET and reports the first reachable
