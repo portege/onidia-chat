@@ -1120,7 +1120,7 @@ func (u *UI) Resize(w, h int) {
 		u.expandedH = u.H // remember the size to restore after collapsing
 	}
 	u.scroll = clamp(u.scroll, 0, u.maxScroll())
-	if u.diagnoseOpen {
+	if u.diagnoseOpen || u.aboutDiagnose {
 		u.wrapDiagnoseLines() // window shape changed: re-wrap the report
 	}
 }
