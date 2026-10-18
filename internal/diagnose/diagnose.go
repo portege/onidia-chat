@@ -648,6 +648,8 @@ func probeHTTPS(ctx context.Context, urls []string) (bool, string) {
 }
 
 func httpGet(ctx context.Context, rawURL string, header map[string]string) (int, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return 0, nil, err
