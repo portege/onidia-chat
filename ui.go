@@ -1869,7 +1869,9 @@ func (u *UI) openMailReport() {
 	cmd := exec.Command("xdg-open", link)
 	if err := cmd.Start(); err != nil {
 		u.diagnoseErr = "could not open the mail client: " + err.Error()
+		return
 	}
+	go func() { _ = cmd.Wait() }()
 }
 
 // minuteIndex maps a committed minute (0/15/30/45) to its row index 0..3;
