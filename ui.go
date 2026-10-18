@@ -948,7 +948,9 @@ func (u *UI) HitTest(x, y int) Widget {
 			if inRect(x, y, send) {
 				return WDiagnoseSend
 			}
-			return WModal
+			// Clicks on the report viewport or elsewhere in the diagnose
+			// panel must not close the modal - only CLOSE does that.
+			return WNone
 		}
 		if inRect(x, y, u.aboutDiagnoseRect()) {
 			return WDiagnose
@@ -2636,9 +2638,9 @@ func (u *UI) drawHeader(frame *image.NRGBA) {
 // the report overflows the viewport.
 // drawDiagnoseButton paints one dialog action button at scale 1 (four buttons
 // share a 460px panel, so scale 2 would not fit). RUN is teal like SAVE; the
-// rest are muted like CANCEL.
+// rest use a white fill with plum text so they read as enabled, not disabled.
 func (u *UI) drawDiagnoseButton(frame *image.NRGBA, r image.Rectangle, w Widget, lbl string, primary bool) {
-	fill, label, outline := colBtnOff, colMuted, colInputBorder
+	fill, label, outline := colBubbleFill, colPlum, colPlum
 	if primary {
 		fill, label, outline = colBtn, colWhite, colPlum
 	}

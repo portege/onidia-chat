@@ -41,6 +41,7 @@ var secretKeys = map[string]bool{
 	"api-key":     true,
 	"bot-token":   true,
 	"tts-key":     true,
+	"tts-voice":   true,
 	"pixabay-key": true,
 }
 
