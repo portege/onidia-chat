@@ -71,6 +71,9 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		return 0
 	}
-	_, _ = out.Write(b.Bytes())
+	if _, err := out.Write(b.Bytes()); err != nil {
+		fmt.Fprintf(errOut, "diagnose: write report: %v\n", err)
+		return 2
+	}
 	return 0
 }
