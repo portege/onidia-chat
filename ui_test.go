@@ -333,7 +333,7 @@ func TestAboutModal(t *testing.T) {
 	}
 	// While open the modal owns the window: OK hits, header spots fall to
 	// the backdrop (dismiss, never the header's own actions).
-	if got := u.HitTest(u.aboutOKRect().Min.X+2, u.aboutOKRect().Min.Y+2); got != WAboutOK {
+	if got := u.HitTest(u.aboutDiagnoseOKRect().Min.X+2, u.aboutDiagnoseOKRect().Min.Y+2); got != WAboutOK {
 		t.Errorf("About OK: got %v want WAboutOK", got)
 	}
 	if got := u.HitTest(10, headerH/2); got != WModal {

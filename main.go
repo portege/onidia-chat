@@ -1130,6 +1130,11 @@ func main() {
 						// window to match the new UI size.
 						win.Resize(ui.W, ui.H)
 					}
+					// A diagnose/settings/About open or close can grow or
+					// restore the window: sync it after every click.
+					if cw, ch := win.windowSize(); cw != ui.W || ch != ui.H {
+						win.Resize(ui.W, ui.H)
+					}
 					if ui.WantClose() { // header close button clicked
 						signOffApp("header close")
 						return
@@ -1150,6 +1155,11 @@ func main() {
 					}
 					if ui.WantCopy() { // a message's COPY pill was clicked
 						if err := win.SetClipboard(ui.TakeCopiedText()); err != nil {
+							log.Printf("clipboard: %v", err)
+						}
+					}
+					if ui.WantCopyReport() { // dialog COPY button clicked
+						if err := win.SetClipboard(ui.TakeReportText()); err != nil {
 							log.Printf("clipboard: %v", err)
 						}
 					}
@@ -1174,8 +1184,9 @@ func main() {
 					switch wd {
 					case WInput, WName:
 						win.SetCursor(win.cursorText)
-					case WButton, WHeader, WClose, WHaiya, WSettings, WAbout, WToggle,
+					case WButton, WHeader, WClose, WHaiya, WDiagnose, WSettings, WAbout, WToggle,
 						WAboutOK, WCopy, WMediaPlay, WMediaStop,
+						WDiagnoseRun, WDiagnoseCopy, WDiagnoseSend, WDiagnoseOK,
 						WDrop, WDropFrom, WDropTo, WMute, WOption, WSave, WCancel:
 						win.SetCursor(win.cursorHand)
 					default:
@@ -1184,7 +1195,7 @@ func main() {
 					dirty = true
 				}
 			case EvScroll:
-				if !ui.ScrollHourList(ev.N) && !ui.ScrollMinuteList(ev.N) {
+				if !ui.ScrollHourList(ev.N) && !ui.ScrollMinuteList(ev.N) && !ui.ScrollDiagnose(ev.N) {
 					ui.ScrollBy(ev.N * 40)
 				}
 				dirty = true
