@@ -3,9 +3,18 @@ package main
 
 import (
 	"context"
+	"errors"
+	"image"
+	"net/http"
 	"strings"
 	"testing"
 )
+
+type telegramRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f telegramRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestResolveTelegramPrecedence(t *testing.T) {
 	cfg := &Config{TelegramToken: "ini-token", TelegramAllow: "1,@a"}
@@ -101,6 +110,23 @@ func TestShortTelegramErr(t *testing.T) {
 	long := strings.Repeat("z", 500)
 	if got := shortTelegramErr([]byte(long)); len(got) > 210 {
 		t.Fatalf("must truncate hostile bodies (%d chars)", len(got))
+	}
+}
+
+func TestTelegramRequestErrorsRedactToken(t *testing.T) {
+	const token = "1234567890:secret_token"
+	ch := newTelegramChannel(telegramConfig{
+		Token: token, Allow: parseAllowlist("100"), SendImages: true, PollSec: 30,
+	})
+	ch.http = &http.Client{Transport: telegramRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("connection refused")
+	})}
+
+	if err := ch.apiCall(context.Background(), "getMe", nil, nil); err == nil || strings.Contains(err.Error(), token) {
+		t.Fatalf("apiCall error must redact the token: %v", err)
+	}
+	if err := ch.sendPhoto(context.Background(), "100", image.NewRGBA(image.Rect(0, 0, 1, 1)), ""); err == nil || strings.Contains(err.Error(), token) {
+		t.Fatalf("sendPhoto error must redact the token: %v", err)
 	}
 }
 
