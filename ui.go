@@ -2628,10 +2628,6 @@ func (u *UI) drawHeader(frame *image.NRGBA) {
 	}
 	drawText(frame, tr.Min.X+(hdrBtn-textWidth(icon, 1))/2,
 		tr.Min.Y+(hdrBtn-glyphH)/2, icon, 1, glyphCol)
-
-	sub := "AI HELPER"
-	drawText(frame, tr.Min.X-padX-textWidth(sub, 1), (headerH-glyphH)/2, sub, 1,
-		color.RGBA{255, 255, 255, 190})
 }
 
 // drawDiagnose renders the troubleshooting dialog (see openDiagnose): a dim

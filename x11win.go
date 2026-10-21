@@ -160,8 +160,8 @@ func (w *Win) setupHints() {
 	w.atomDeleteWindow = mustInternAtom(w.conn, "WM_DELETE_WINDOW")
 	w.atomMoveResize = mustInternAtom(w.conn, "_NET_WM_MOVERESIZE")
 	w.initClipAtoms()
-	w.setStrProp(mustInternAtom(w.conn, "WM_NAME"), utf8, "chat - ai-helper")
-	w.setStrProp(mustInternAtom(w.conn, "_NET_WM_NAME"), utf8, "chat - ai-helper")
+	w.setStrProp(mustInternAtom(w.conn, "WM_NAME"), utf8, "onidia-chat")
+	w.setStrProp(mustInternAtom(w.conn, "_NET_WM_NAME"), utf8, "onidia-chat")
 	// WM_CLASS is frozen at the app's old name, chat-app, even though the binary
 	// and the menu entry are now "onidia-chat". It is the handle window managers
 	// and scripts match on - an openbox/blackbox rule, a `wmctrl -c`, an
