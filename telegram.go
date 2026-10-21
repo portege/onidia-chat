@@ -33,7 +33,8 @@ import (
 const (
 	telegramAPI            = "https://api.telegram.org"
 	telegramPollTimeoutSec = 30
-	telegramHTTPTimeout    = 45 * time.Second
+	telegramHTTPMargin     = 15 * time.Second
+	telegramHTTPTimeout    = (telegramPollTimeoutSec + 15) * time.Second
 	telegramRetryMin       = 2 * time.Second
 	telegramRetryMax       = 60 * time.Second
 	telegramTypingEvery    = 5 * time.Second
@@ -165,19 +166,28 @@ func init() {
 // telegramChannel is the Channel implementation. All network I/O uses plain
 // net/http; state (offset) is guarded by mu because Start/Stop race on exit.
 type telegramChannel struct {
-	cfg    telegramConfig
-	http   *http.Client
-	mu     sync.Mutex
-	offset int64
-	cancel context.CancelFunc
-	done   chan struct{}
+	cfg       telegramConfig
+	http      *http.Client
+	mu        sync.Mutex
+	offset    int64
+	cancel    context.CancelFunc
+	done      chan struct{}
+	sendMu    sync.Mutex
+	sendQueue []func(context.Context)
+	sendWake  chan struct{}
 }
 
 func newTelegramChannel(tc telegramConfig) *telegramChannel {
+	pollSec := tc.PollSec
+	if pollSec <= 0 || pollSec > 120 {
+		pollSec = telegramPollTimeoutSec
+	}
+	tc.PollSec = pollSec
 	return &telegramChannel{
-		cfg:  tc,
-		http: &http.Client{Timeout: telegramHTTPTimeout},
-		done: make(chan struct{}),
+		cfg:      tc,
+		http:     &http.Client{Timeout: time.Duration(pollSec)*time.Second + telegramHTTPMargin},
+		done:     make(chan struct{}),
+		sendWake: make(chan struct{}, 1),
 	}
 }
 

@@ -304,10 +304,11 @@ const (
 type UI struct {
 	W, H int
 
-	Bot      *Bot             // the Gemini-powered brain (see chat.go)
-	Replies  chan ReplyResult // bot answers + optional image land here
-	Stream   chan string      // accumulated partial bot text while SSE streams in
-	Thinking bool             // true while a Gemini call is in flight
+	Bot            *Bot                // the Gemini-powered brain (see chat.go)
+	Replies        chan replyEnvelope  // bot answers + optional image land here
+	Stream         chan streamEnvelope // accumulated partial bot text while SSE streams in
+	Thinking       bool                // true while a Gemini call is in flight
+	turnGeneration uint64
 
 	msgs        []Msg
 	streamText  string // preview shown in the synthetic bubble ("" = "...")
@@ -347,22 +348,25 @@ type UI struct {
 
 	// About modal state (see drawAbout): a small informational panel with an
 	// OK button, opened from the header's About button.
-	aboutOpen   bool
-	aboutPrevH  int // window height before the About panel forced minAboutH
-	aboutDiagnose bool // About panel is showing the in-About diagnose view
+	aboutOpen     bool
+	aboutPrevH    int       // window height before the About panel forced minAboutH
+	aboutDiagnose bool      // About panel is showing the in-About diagnose view
 	diagnoseStart time.Time // when the current diagnosis started (spinner animation)
 
 	// Diagnose dialog state (see drawDiagnose): the troubleshooting panel.
-	diagnoseOpen   bool     // dialog is open
-	diagnosePrevH  int      // window height before the panel forced minDiagnoseH
-	diagnoseReport string   // the collected report text (rendered once the check finishes)
-	diagnoseLines  []string // wrapped report lines for the scrollable viewport
-	diagnoseScroll int      // scroll offset in lines within the report text
-	diagnosing     bool     // a diagnosis is running
-	diagnoseErr    string   // last error, shown inside the dialog
-	wantCopyReport bool     // (unused: COPY path retained for tests; clipboard push is direct)
-	copyReportText string   // staged report text for the clipboard handoff
-	wantMailReport bool     // (unused: EMAIL opens xdg-open directly in openMailReport)
+	diagnoseOpen    bool     // dialog is open
+	diagnosePrevH   int      // window height before the panel forced minDiagnoseH
+	diagnoseReport  string   // the collected report text (rendered once the check finishes)
+	diagnoseLines   []string // wrapped report lines for the scrollable viewport
+	diagnoseScroll  int      // scroll offset in lines within the report text
+	diagnosing      bool     // a diagnosis is running
+	diagnoseErr     string   // last error, shown inside the dialog
+	diagnoseDone    chan diagnoseResult
+	diagnoseRun     uint64
+	diagnoseOptions diagnose.Options
+	wantCopyReport  bool   // (unused: COPY path retained for tests; clipboard push is direct)
+	copyReportText  string // staged report text for the clipboard handoff
+	wantMailReport  bool   // (unused: EMAIL opens xdg-open directly in openMailReport)
 
 	// Settings modal state (see drawSettings). name / age / sleepFrom /
 	// sleepTo / mute are the committed values: unset until the first save,
@@ -442,8 +446,8 @@ func NewUI(w, h int) *UI {
 	u := &UI{
 		W: w, H: h,
 		Bot:       NewBot(),
-		Replies:   make(chan ReplyResult, 4),
-		Stream:    make(chan string, 16),
+		Replies:   make(chan replyEnvelope, 4),
+		Stream:    make(chan streamEnvelope, 16),
 		focused:   true,
 		caret:     true,
 		collapsed: true,
@@ -457,6 +461,7 @@ func NewUI(w, h int) *UI {
 		// externalIncoming is buffered so a burst of channel prompts never
 		// blocks a poller: the main loop drains it every tick.
 		externalIncoming: make(chan Incoming, 16),
+		diagnoseDone:     make(chan diagnoseResult, 1),
 	}
 	u.AddMsg(u.Bot.Name,
 		"hi! i am buddy. ask me anything - my answers come from google gemini, and onidia the desktop-pet says them out loud!")
@@ -930,7 +935,7 @@ func (u *UI) HitTest(x, y int) Widget {
 	}
 	if u.aboutOpen {
 		// The About modal owns the whole window while it is open.
-		if inRect(x, y, u.aboutDiagnoseOKRect()) {
+		if !u.aboutDiagnose && inRect(x, y, u.aboutDiagnoseOKRect()) {
 			return WAboutOK
 		}
 		if u.aboutDiagnose {
@@ -1350,6 +1355,7 @@ func (u *UI) Release(w Widget) bool {
 			// panel to the in-About troubleshooting view. The report starts
 			// empty; the user presses RUN to collect it.
 			u.aboutDiagnose = true
+			u.diagnoseRun++
 			u.diagnosing = false
 			u.diagnoseErr = ""
 			u.diagnoseReport = ""
@@ -1377,6 +1383,8 @@ func (u *UI) Release(w Widget) bool {
 		case WDiagnoseOK:
 			u.press = WNone
 			if u.aboutDiagnose {
+				u.diagnoseRun++
+				u.diagnosing = false
 				u.aboutDiagnose = false // back to regular About view
 			} else {
 				return u.closeDiagnose()
@@ -1710,6 +1718,7 @@ func (u *UI) openAbout() bool {
 	u.diagnoseLines = nil
 	u.diagnoseScroll = 0
 	u.diagnosing = false
+	u.diagnoseRun++
 	u.diagnoseErr = ""
 	changed := false
 	if u.H < minAboutH {
@@ -1725,6 +1734,8 @@ func (u *UI) openAbout() bool {
 func (u *UI) closeAbout() bool {
 	u.aboutOpen = false
 	u.aboutDiagnose = false
+	u.diagnoseRun++
+	u.diagnosing = false
 	u.hover, u.press = WNone, WNone
 	resized := false
 	if u.aboutPrevH > 0 && u.H != u.aboutPrevH {
@@ -1739,9 +1750,8 @@ func (u *UI) closeAbout() bool {
 // modal it keeps its full designed size: the window grows in height when the
 // panel does not fit (diagnosePrevH remembers the old height), while
 // collapsed is left alone so the conversation history is never expanded.
-// The checks run synchronously - each probe is bounded by the diagnose
-// package's own timeout, so COPY/EMAIL always have report text to hand to
-// main(). Returns true when the window must be resized.
+// The checks run in a worker; completion is applied by the main loop so the
+// window remains responsive. Returns true when the window must be resized.
 func (u *UI) openDiagnose() bool {
 	u.diagnoseOpen = true
 	u.hover, u.press = WNone, WNone
@@ -1759,6 +1769,8 @@ func (u *UI) openDiagnose() bool {
 // before it opened. Returns true when the window must be resized.
 func (u *UI) closeDiagnose() bool {
 	u.diagnoseOpen = false
+	u.diagnoseRun++
+	u.diagnosing = false
 	u.hover, u.press = WNone, WNone
 	resized := false
 	if u.diagnosePrevH > 0 && u.H != u.diagnosePrevH {
@@ -1769,27 +1781,48 @@ func (u *UI) closeDiagnose() bool {
 	return resized
 }
 
-// runDiagnosis collects the troubleshooting report synchronously and wraps it
-// to the viewport width. Network probes are bounded by the diagnose
-// package's own timeout so a slow host can never hang the UI for long.
+type diagnoseResult struct {
+	run  uint64
+	text string
+	err  string
+}
+
+// runDiagnosis collects the troubleshooting report off the UI goroutine.
 func (u *UI) runDiagnosis() {
 	u.diagnosing = true
 	u.diagnoseStart = time.Now()
 	u.diagnoseErr = ""
 	u.diagnoseScroll = 0
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	rep := diagnose.Collect(ctx)
-	var b strings.Builder
-	if err := rep.Text(&b); err != nil {
-		u.diagnoseErr = err.Error()
+	u.diagnoseRun++
+	run := u.diagnoseRun
+	options := u.diagnoseOptions
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		rep := diagnose.CollectWithOptions(ctx, options)
+		var b strings.Builder
+		err := rep.Text(&b)
+		result := diagnoseResult{run: run, text: b.String()}
+		if err != nil {
+			result.err = err.Error()
+		}
+		u.diagnoseDone <- result
+	}()
+}
+
+func (u *UI) finishDiagnosis(result diagnoseResult) {
+	if result.run != u.diagnoseRun {
+		return
+	}
+	u.diagnosing = false
+	if result.err != "" {
+		u.diagnoseErr = result.err
 		u.diagnoseReport = ""
 		u.diagnoseLines = nil
 	} else {
-		u.diagnoseReport = b.String()
+		u.diagnoseReport = result.text
 		u.wrapDiagnoseLines()
 	}
-	u.diagnosing = false
 }
 
 // wrapDiagnoseLines re-wraps the report to the viewport width at scale 1.
@@ -1811,7 +1844,7 @@ func (u *UI) wrapDiagnoseLines() {
 // diagnoseVisibleRows is how many report lines fit the viewport.
 func (u *UI) diagnoseVisibleRows() int {
 	r := u.diagnoseReportRect()
-	return max(1, r.Dy()/((glyphH+2)*1))
+	return max(1, (r.Dy()-8-glyphH)/((glyphH+2)*1)+1)
 }
 
 // maxDiagnoseScroll is the last scroll offset that still shows a full page.
@@ -2453,6 +2486,9 @@ func (u *UI) Busy() bool { return u.sttBusy }
 // "..." bubble meanwhile and the reply arrives on u.Replies). Empty input is
 // a no-op.
 func (u *UI) Submit() {
+	if u.Thinking {
+		return
+	}
 	// Every send is final, including an automatic one, so a countdown that is
 	// somehow still live must not fire a second time behind it.
 	u.cancelAutoSubmit()
@@ -2472,11 +2508,7 @@ func (u *UI) Submit() {
 	u.Thinking = true
 	u.streamText = ""        // no stale preview from the previous reply
 	u.scroll = u.maxScroll() // re-pin: the "..." bubble must be visible
-	bot := u.Bot
-	go func() {
-		result := bot.Reply(hist, text)
-		u.Replies <- result
-	}()
+	u.startTurn(func(bot *Bot) ReplyResult { return bot.Reply(hist, text) })
 }
 
 // Rendering ----------------------------------------------------------------
@@ -2862,7 +2894,7 @@ func (u *UI) drawDiagnoseView(frame *image.NRGBA, p image.Rectangle) {
 		// vis counts complete lines whose text (glyphH tall) fits inside the
 		// viewport, starting at offset 8, so the last line's descenders never
 		// spill past the bottom border.
-		vis := max(1, (r.Dy()-8-glyphH)/lineH1 + 1)
+		vis := max(1, (r.Dy()-8-glyphH)/lineH1+1)
 		maxScroll := max(0, len(u.diagnoseLines)-vis)
 		u.diagnoseScroll = clamp(u.diagnoseScroll, 0, maxScroll)
 		for i := 0; i < vis && u.diagnoseScroll+i < len(u.diagnoseLines); i++ {

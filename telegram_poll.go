@@ -70,6 +70,7 @@ func (t *telegramChannel) Start(submit func(Incoming)) error {
 	t.mu.Unlock()
 	defer close(t.done)
 	defer cancel()
+	go t.sendLoop(ctx)
 
 	if err := t.deleteWebhook(ctx); err != nil {
 		log.Printf("telegram: %v", err) // apiCall errors carry the method name

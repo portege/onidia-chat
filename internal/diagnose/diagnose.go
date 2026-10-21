@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -57,6 +56,12 @@ type Report struct {
 	Findings  []Finding `json:"findings"`
 }
 
+type Options struct {
+	ConfigPath  string
+	Settings    map[string]string
+	SkipNetwork bool
+}
+
 // finding appends one checked item to the report.
 func (r *Report) finding(cat, id string, ok bool, detail, hint string) {
 	r.Findings = append(r.Findings, Finding{Category: cat, ID: id, OK: ok, Detail: detail, Hint: hint})
@@ -65,17 +70,33 @@ func (r *Report) finding(cat, id string, ok bool, detail, hint string) {
 // Collect runs every check and returns the report. A cancelled ctx stops
 // in-flight probes early; checks that cannot run still appear as findings.
 func Collect(ctx context.Context) *Report {
+	return CollectWithOptions(ctx, Options{})
+}
+
+func CollectWithOptions(ctx context.Context, options Options) *Report {
 	r := &Report{Generated: time.Now().UTC().Format(time.RFC3339)}
+	configPath := options.ConfigPath
+	if configPath == "" {
+		configPath = confpath.Default()
+	}
+	kv := map[string]string{}
+	var configErr error
+	if configPath != "" {
+		kv, configErr = preflight.ReadINI(configPath)
+	}
+	for key, value := range options.Settings {
+		kv[strings.ToLower(key)] = value
+	}
 
 	r.system()
 	r.hardware()
-	r.install()
-	r.settings()
-	r.network(ctx)
+	r.install(configPath)
+	r.settings(configPath, kv, configErr)
+	r.network(ctx, options.SkipNetwork)
 	r.proxy()
-	r.providers(ctx)
+	r.providers(ctx, kv, options.SkipNetwork)
 	r.audio()
-	r.tts()
+	r.tts(ctx, kv, options.SkipNetwork)
 	r.deps()
 
 	return r
@@ -195,7 +216,7 @@ func (r *Report) hardware() {
 // install
 // ---------------------------------------------------------------------------
 
-func (r *Report) install() {
+func (r *Report) install(configPath string) {
 	exe, err := os.Executable()
 	binDir := ""
 	if err == nil {
@@ -205,7 +226,7 @@ func (r *Report) install() {
 		r.finding("install", "onidia-chat-binary", false, "could not locate executable", "")
 	}
 
-	cfg := confpath.Default()
+	cfg := configPath
 	if cfg == "" {
 		r.finding("install", "config-file", false, "no chat-app.ini found - built-in defaults only", "copy chat-app.ini.template to chat-app.ini")
 	} else {
@@ -222,18 +243,15 @@ func (r *Report) install() {
 // settings
 // ---------------------------------------------------------------------------
 
-func (r *Report) settings() {
-	cfgPath := confpath.Default()
+func (r *Report) settings(cfgPath string, kv map[string]string, configErr error) {
 	if cfgPath == "" {
 		r.finding("settings", "config-file", false, "no chat-app.ini found (built-in defaults only)", "copy chat-app.ini.template to chat-app.ini and edit it")
+	} else if configErr != nil {
+		r.finding("settings", "config-file", false, fmt.Sprintf("could not read %s: %v", cfgPath, configErr), "")
 		return
+	} else {
+		r.finding("settings", "config-file", true, fmt.Sprintf("%s (%d keys)", cfgPath, len(kv)), "")
 	}
-	kv, err := preflight.ReadINI(cfgPath)
-	if err != nil {
-		r.finding("settings", "config-file", false, fmt.Sprintf("could not read %s: %v", cfgPath, err), "")
-		return
-	}
-	r.finding("settings", "config-file", true, fmt.Sprintf("%s (%d keys)", cfgPath, len(kv)), "")
 
 	for k, v := range kv {
 		display, ok := safeSettingValue(k, v)
@@ -268,7 +286,11 @@ func safeSettingValue(key, value string) (string, bool) {
 // network
 // ---------------------------------------------------------------------------
 
-func (r *Report) network(ctx context.Context) {
+func (r *Report) network(ctx context.Context, skip bool) {
+	if skip {
+		r.finding("network", "internet", false, "skipped in quick mode", "")
+		return
+	}
 	ok, detail := probeHTTPS(ctx, []string{
 		"https://www.google.com",
 		"https://example.com",
@@ -317,11 +339,7 @@ func (r *Report) proxy() {
 // model providers
 // ---------------------------------------------------------------------------
 
-func (r *Report) providers(ctx context.Context) {
-	kv := map[string]string{}
-	if cfgPath := confpath.Default(); cfgPath != "" {
-		kv, _ = preflight.ReadINI(cfgPath)
-	}
+func (r *Report) providers(ctx context.Context, kv map[string]string, skipNetwork bool) {
 	provider := strings.TrimSpace(preflight.Get(kv, "provider"))
 	selected := "not configured"
 	if safe, ok := safeSettingValue("provider", provider); ok {
@@ -330,6 +348,17 @@ func (r *Report) providers(ctx context.Context) {
 		selected = "unrecognized value omitted"
 	}
 	r.finding("providers", "selected", provider != "", selected, "provider = gemini|bedrock|ollama|openrouter in chat-app.ini")
+	if skipNetwork {
+		for _, p := range []struct{ id, name string }{
+			{"providers.gemini", "Gemini"},
+			{"providers.bedrock", "Bedrock"},
+			{"providers.ollama", "Ollama"},
+			{"providers.openrouter", "OpenRouter"},
+		} {
+			r.finding(p.id, p.name, false, "skipped in quick mode", "")
+		}
+		return
+	}
 
 	type probe struct {
 		id   string
@@ -363,20 +392,27 @@ func providerHint(id string) string {
 }
 
 func probeGemini(ctx context.Context, kv map[string]string) (bool, string) {
-	key := strings.TrimSpace(preflight.Get(kv, "api-key"))
+	key := strings.TrimSpace(preflight.Get(kv, "gemini-api-key"))
+	if key == "" {
+		key = strings.TrimSpace(preflight.Get(kv, "api-key"))
+	}
 	apiURL := strings.TrimSpace(preflight.Get(kv, "gemini-api-url"))
 	if apiURL == "" {
 		apiURL = "https://generativelanguage.googleapis.com"
 	}
 	configured := key != ""
-	reachable := probeHost(ctx, apiURL)
+	status, reachable := probeEndpoint(ctx, apiURL)
 	switch {
 	case !configured:
 		return false, "no api-key configured (provider not usable)"
 	case !reachable:
 		return false, "api-key present (" + preflight.MaskKey(key) + "), but " + hostOf(apiURL) + " is unreachable"
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return false, fmt.Sprintf("api-key present (%s), endpoint reachable but rejected credentials (HTTP %d)", preflight.MaskKey(key), status)
+	case status >= http.StatusInternalServerError:
+		return false, fmt.Sprintf("api-key present (%s), endpoint reachable but returned HTTP %d", preflight.MaskKey(key), status)
 	default:
-		return true, "api-key present (" + preflight.MaskKey(key) + "), " + hostOf(apiURL) + " reachable"
+		return true, fmt.Sprintf("api-key present (%s), endpoint reachable (HTTP %d)", preflight.MaskKey(key), status)
 	}
 }
 
@@ -409,20 +445,27 @@ func probeOllama(ctx context.Context, kv map[string]string) (bool, string) {
 }
 
 func probeOpenRouter(ctx context.Context, kv map[string]string) (bool, string) {
-	key := strings.TrimSpace(preflight.Get(kv, "api-key"))
+	key := strings.TrimSpace(preflight.Get(kv, "openrouter-api-key"))
+	if key == "" {
+		key = strings.TrimSpace(preflight.Get(kv, "api-key"))
+	}
 	apiURL := strings.TrimSpace(preflight.Get(kv, "openrouter-api-url"))
 	if apiURL == "" {
 		apiURL = "https://openrouter.ai/api/v1"
 	}
 	configured := key != ""
-	reachable := probeHost(ctx, apiURL)
+	status, reachable := probeEndpoint(ctx, apiURL)
 	switch {
 	case !configured:
 		return false, "no api-key configured (provider not usable)"
 	case !reachable:
 		return false, "api-key present (" + preflight.MaskKey(key) + "), but " + hostOf(apiURL) + " is unreachable"
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return false, fmt.Sprintf("api-key present (%s), endpoint reachable but rejected credentials (HTTP %d)", preflight.MaskKey(key), status)
+	case status >= http.StatusInternalServerError:
+		return false, fmt.Sprintf("api-key present (%s), endpoint reachable but returned HTTP %d", preflight.MaskKey(key), status)
 	default:
-		return true, "api-key present (" + preflight.MaskKey(key) + "), " + hostOf(apiURL) + " reachable"
+		return true, fmt.Sprintf("api-key present (%s), endpoint reachable (HTTP %d)", preflight.MaskKey(key), status)
 	}
 }
 
@@ -441,8 +484,9 @@ func (r *Report) audio() {
 	} else {
 		r.finding("audio", "default-device", false, "no default PCM device found", "set an ALSA default or configure a sound card")
 	}
-	player := findFirst(ttsPlayers())
-	r.finding("audio", "players", true, strings.Join(ttsPlayers(), ", "), "install alsa-utils (aplay), pulseaudio-utils (paplay) or ffmpeg (ffplay) for TTS playback")
+	playerCandidates := ttsPlayers()
+	player := findFirst(playerCandidates)
+	r.finding("audio", "players", true, strings.Join(playerCandidates, ", "), "install alsa-utils (aplay), pulseaudio-utils (paplay) or ffmpeg (ffplay) for TTS playback")
 	r.finding("audio", "player-selected", player != "", player, "no playable audio device - replies will not be spoken")
 	recorders := sttRecorders()
 	rec := findFirst(recorders)
@@ -454,12 +498,7 @@ func (r *Report) audio() {
 // text-to-speech
 // ---------------------------------------------------------------------------
 
-func (r *Report) tts() {
-	cfgPath := confpath.Default()
-	kv := map[string]string{}
-	if cfgPath != "" {
-		kv, _ = preflight.ReadINI(cfgPath)
-	}
+func (r *Report) tts(ctx context.Context, kv map[string]string, skipNetwork bool) {
 	tts := strings.ToLower(strings.TrimSpace(preflight.Get(kv, "tts")))
 	ttsOn := tts != "off"
 	ttsDetail := "enabled (default on)"
@@ -476,8 +515,20 @@ func (r *Report) tts() {
 	player := findFirst(ttsPlayers())
 	r.finding("tts", "player", player != "", player, "install alsa-utils/pulseaudio-utils/ffmpeg so TTS audio can play")
 
-	reachable := probeHost(context.Background(), "https://api.typecast.ai")
-	r.finding("tts", "endpoint", reachable, "typecast.ai "+boolStr(reachable, "reachable", "unreachable"), "check internet and proxy settings if TTS synthesis fails")
+	if skipNetwork {
+		r.finding("tts", "endpoint", false, "skipped in quick mode", "")
+		return
+	}
+	status, reachable := probeEndpoint(ctx, "https://api.typecast.ai")
+	detail := "typecast.ai unreachable"
+	ok := reachable && status < http.StatusInternalServerError
+	if reachable {
+		detail = fmt.Sprintf("typecast.ai reachable (HTTP %d)", status)
+		if !ok {
+			detail = fmt.Sprintf("typecast.ai reachable but returned HTTP %d", status)
+		}
+	}
+	r.finding("tts", "endpoint", ok, detail, "check internet and proxy settings if TTS synthesis fails")
 }
 
 // ---------------------------------------------------------------------------
@@ -493,9 +544,10 @@ func (r *Report) deps() {
 	r.finding("deps", "x11-display", disp != "", displayDetail, "run inside an X/Wayland session or export DISPLAY=:0")
 	r.finding("deps", "x11-library", true, "raw X11 (github.com/jezek/xgb) - built into the binary", "")
 
-	recorders := sttRecorders()
-	r.finding("deps", "speech2text-recorder", len(recorders) > 0, strings.Join(recorders, ", "), "install pipewire-utils (pw-record), alsa-utils (arecord) or ffmpeg for speech input")
-	r.finding("deps", "tts-player", len(ttsPlayers()) > 0, strings.Join(ttsPlayers(), ", "), "install alsa-utils (aplay), pulseaudio-utils (paplay) or ffplay for speech output")
+	recorder := findFirst(sttRecorders())
+	r.finding("deps", "speech2text-recorder", recorder != "", recorder, "install pipewire-utils (pw-record), alsa-utils (arecord) or ffmpeg for speech input")
+	player := findFirst(ttsPlayers())
+	r.finding("deps", "tts-player", player != "", player, "install alsa-utils (aplay), pulseaudio-utils (paplay) or ffplay for speech output")
 
 	if _, err := exec.LookPath("ffmpeg"); err == nil {
 		r.finding("deps", "ffmpeg", true, "ffmpeg available", "")
@@ -642,29 +694,9 @@ func findFirst(cands []string) string {
 	return ""
 }
 
-func probeHost(ctx context.Context, rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Hostname() == "" {
-		return false
-	}
-	port := u.Port()
-	if port == "" {
-		switch u.Scheme {
-		case "http":
-			port = "80"
-		case "https":
-			port = "443"
-		default:
-			return false
-		}
-	}
-	d := net.Dialer{Timeout: probeTimeout}
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(u.Hostname(), port))
-	if err != nil {
-		return false
-	}
-	defer conn.Close()
-	return true
+func probeEndpoint(ctx context.Context, rawURL string) (int, bool) {
+	status, _, err := httpGet(ctx, rawURL, nil)
+	return status, err == nil
 }
 
 // probeHTTPS tries each URL with a bounded GET and reports the first reachable

@@ -27,6 +27,7 @@ import (
 
 	"github.com/portege/onidia-chat/agent"
 	"github.com/portege/onidia-chat/internal/confpath"
+	"github.com/portege/onidia-chat/internal/diagnose"
 	"github.com/portege/onidia-chat/internal/mic"
 	"github.com/portege/onidia-chat/internal/preflight"
 )
@@ -759,6 +760,23 @@ func main() {
 	if providerVal == "openrouter" {
 		brainKey = openrouterKey // no built-in token for this backend
 	}
+	diagnoseSettings := map[string]string{
+		"provider":    providerVal,
+		"aws-profile": awsProfileVal,
+		"aws-region":  awsRegionVal,
+		"tts":         ttsVal,
+		"tts-key":     ttsKeyVal,
+	}
+	switch providerVal {
+	case "gemini":
+		diagnoseSettings["gemini-api-key"] = brainKey
+		diagnoseSettings["gemini-api-url"] = urlVal
+	case "openrouter":
+		diagnoseSettings["openrouter-api-key"] = brainKey
+		diagnoseSettings["openrouter-api-url"] = urlVal
+	case "ollama":
+		diagnoseSettings["ollama-api-url"] = urlVal
+	}
 	runStartupPreflight(preflight.Spec{
 		Provider:   providerVal,
 		APIURL:     urlVal,
@@ -788,6 +806,7 @@ func main() {
 	defer win.Close()
 
 	ui := NewUI(win.windowSize())
+	ui.diagnoseOptions = diagnose.Options{ConfigPath: configPath, Settings: diagnoseSettings}
 	ui.expandedH = expandedH // restore this height when the conversation expands
 	// Speech input: nil backend means no mic button, and the input bar keeps
 	// its original width (see micSpace).
@@ -894,9 +913,7 @@ func main() {
 	}
 	ui.Bot.Provider = botProvider
 	story.bot = ui.Bot // wire the native read_story agent to this provider
-	// SSE deltas fire on the reply goroutine; hand them to the main loop over
-	// a channel so only the main loop ever touches UI state (mirrors Replies).
-	ui.Bot.OnDelta = func(accumulated string) { ui.Stream <- accumulated }
+	// Each turn installs a generation-tagged SSE callback on its Bot snapshot.
 
 	demoState := "off (planted)"
 	if ui.PetDemo() {
@@ -1003,32 +1020,19 @@ func main() {
 	// desktop shows exactly what a remote user sent. Stopped on exit.
 	var channels []Channel
 	if telegramOn {
-		if ch, ok := buildChannel("telegram", &Config{
-			TelegramToken: telegramCfg.Token,
-			TelegramAllow: strings.Join(telegramCfg.Allow, ","),
-			// SendImages is already resolved; the presence field passes a
-			// deliberate false through (default-on would swallow it).
-			TelegramImages:    telegramCfg.SendImages,
-			TelegramImagesSet: true,
-			TelegramPoll:      telegramCfg.PollSec,
-		}); ok {
-			tg := ch.(*telegramChannel)
-			channels = append(channels, ch)
-			go func() {
-				if err := tg.Start(func(in Incoming) {
-					select {
-					case ui.externalIncoming <- in:
-					default:
-						log.Printf("telegram: incoming queue full, dropping prompt from %s", in.User)
-					}
-				}); err != nil {
-					log.Printf("telegram: poller exited: %v", err)
+		tg := newTelegramChannel(telegramCfg)
+		channels = append(channels, tg)
+		go func() {
+			if err := tg.Start(func(in Incoming) {
+				select {
+				case ui.externalIncoming <- in:
+				default:
+					log.Printf("telegram: incoming queue full, dropping prompt from %s", in.User)
 				}
-			}()
-			// Reply fork + typing indicator live on the main-loop side (see
-			// the ui.Replies case below); track in-flight typing here.
-			_ = tg
-		}
+			}); err != nil {
+				log.Printf("telegram: poller exited: %v", err)
+			}
+		}()
 	}
 	defer func() {
 		for _, ch := range channels {
@@ -1208,17 +1212,22 @@ func main() {
 			case EvExpose:
 				dirty = true
 			}
-		case accumulated := <-ui.Stream:
-			ui.SetStreamText(accumulated)
+		case update := <-ui.Stream:
+			if update.generation == ui.turnGeneration && ui.Thinking {
+				ui.SetStreamText(update.text)
+				dirty = true
+			}
+		case result := <-ui.diagnoseDone:
+			ui.finishDiagnosis(result)
 			dirty = true
-		case reply := <-ui.Replies:
-			// Origin matching is exact: every Replies producer queues
-			// exactly one origin on the UI goroutine before firing (local
-			// Submit queues nil, SubmitExternal its origin, the greeting
-			// its nil at fire time), and remote/greeting turns never
-			// overlap (held while Thinking), so the head of the queue
-			// belongs to this reply. Local double-submit can overlap but
-			// those entries are all nil - indistinguishable and harmless.
+		case envelope := <-ui.Replies:
+			if envelope.generation != ui.turnGeneration {
+				break
+			}
+			reply := envelope.result
+			// Stale replies are discarded above before touching the FIFO.
+			// Each current turn queues one origin on the UI goroutine, and
+			// local/remote turns are serialized, so this head belongs here.
 			origin := ui.takeExternalOrigin()
 			ui.Thinking = false
 			ui.streamText = ""                            // drop the preview; AddMsg shows the final text
@@ -1316,10 +1325,16 @@ func main() {
 				}
 			} else if in.Text == "/new" {
 				resetConversation(ui)
+				heldIncoming = nil
+				greetingHeld = false
 				if tg := telegramByName(channels, in.Channel); tg != nil {
-					ctx, cancel := context.WithTimeout(context.Background(), telegramHTTPTimeout)
-					_ = tg.sendText(ctx, in.ChatID, "fresh conversation - history cleared.")
-					cancel()
+					tg.enqueueSend(func(parent context.Context) {
+						ctx, cancel := context.WithTimeout(parent, telegramHTTPTimeout)
+						defer cancel()
+						if err := tg.sendText(ctx, in.ChatID, "fresh conversation - history cleared."); err != nil {
+							log.Printf("telegram: sendMessage to %s: %v", in.ChatID, err)
+						}
+					})
 				}
 			} else if ui.Thinking {
 				heldIncoming = append(heldIncoming, in)

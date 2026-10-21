@@ -75,6 +75,36 @@ func (t *telegramChannel) sendPhoto(ctx context.Context, chatID string, img imag
 	return nil
 }
 
+func (t *telegramChannel) enqueueSend(send func(context.Context)) {
+	t.sendMu.Lock()
+	t.sendQueue = append(t.sendQueue, send)
+	t.sendMu.Unlock()
+	select {
+	case t.sendWake <- struct{}{}:
+	default:
+	}
+}
+
+func (t *telegramChannel) sendLoop(ctx context.Context) {
+	for {
+		t.sendMu.Lock()
+		if len(t.sendQueue) > 0 {
+			send := t.sendQueue[0]
+			t.sendQueue[0] = nil
+			t.sendQueue = t.sendQueue[1:]
+			t.sendMu.Unlock()
+			send(ctx)
+			continue
+		}
+		t.sendMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.sendWake:
+		}
+	}
+}
+
 // deliverReply sends a finished reply to a chat: photo first (caption holds
 // the lead text), then one message per page/chunk. A failed chunk is logged
 // and skipped so one bad part cannot wedge the rest.

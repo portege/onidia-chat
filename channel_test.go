@@ -42,6 +42,15 @@ func TestAllowMatch(t *testing.T) {
 	}
 }
 
+func TestAllowMatchNegativeChatID(t *testing.T) {
+	if !allowMatch(parseAllowlist("-1001234567890"), "-1001234567890", "") {
+		t.Fatal("negative numeric chat ID should match")
+	}
+	if allowMatch(parseAllowlist("-1001234567890"), "1001234567890", "") {
+		t.Fatal("negative chat ID must not match its unsigned form")
+	}
+}
+
 func TestSplitOutgoingPages(t *testing.T) {
 	parts := splitOutgoing("page one\fpage two")
 	if len(parts) != 2 || parts[0] != "page one" || parts[1] != "page two" {
