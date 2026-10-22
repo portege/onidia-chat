@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/portege/onidia-chat/internal/diagnose"
 )
 
 // frameHasString reports whether the frame contains s rendered in the bitmap
@@ -185,6 +188,79 @@ func TestHitTestHeader(t *testing.T) {
 	}
 }
 
+func TestSubmitKeepsInputWhileTurnIsActive(t *testing.T) {
+	u := NewUI(380, 520)
+	u.input = []rune("second prompt")
+	u.Thinking = true
+	u.Submit()
+	if got := string(u.input); got != "second prompt" {
+		t.Fatalf("input after submit during active turn = %q, want it preserved", got)
+	}
+	if len(u.externalPending) != 0 {
+		t.Fatalf("active turn queued another origin: %+v", u.externalPending)
+	}
+}
+
+func TestResetInvalidatesActiveReply(t *testing.T) {
+	u := NewUI(380, 520)
+	release := make(chan struct{})
+	u.Thinking = true
+	u.externalPending = append(u.externalPending, &externalOrigin{Channel: "telegram", ChatID: "123"})
+	u.startTurn(func(*Bot) ReplyResult {
+		<-release
+		return ReplyResult{Text: "stale response"}
+	})
+	staleGeneration := u.turnGeneration
+	resetConversation(u)
+	if u.Thinking || len(u.externalPending) != 0 {
+		t.Fatal("reset must clear active-turn state and pending origins")
+	}
+	close(release)
+	stale := <-u.Replies
+	if stale.generation != staleGeneration || stale.generation == u.turnGeneration {
+		t.Fatalf("stale result generation = %d, current = %d", stale.generation, u.turnGeneration)
+	}
+}
+
+func TestDiagnoseAboutTargetsDoNotOverlap(t *testing.T) {
+	u := NewUI(500, 700)
+	u.aboutOpen = true
+	u.aboutDiagnose = true
+	_, _, send, _ := u.diagnoseActionRects()
+	if got := u.HitTest(send.Min.X+1, send.Min.Y+1); got != WDiagnoseSend {
+		t.Fatalf("EMAIL target hit = %v, want WDiagnoseSend", got)
+	}
+}
+
+func TestDiagnoseRowsMatchRendererAndRunsOffThread(t *testing.T) {
+	u := NewUI(500, 700)
+	u.aboutDiagnose = true
+	r := u.diagnoseReportRect()
+	wantRows := max(1, (r.Dy()-8-glyphH)/((glyphH+2)*1)+1)
+	if got := u.diagnoseVisibleRows(); got != wantRows {
+		t.Fatalf("visible rows = %d, renderer fits %d", got, wantRows)
+	}
+
+	path := filepath.Join(t.TempDir(), "chat-app.ini")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	u.diagnoseOptions = diagnose.Options{ConfigPath: path, SkipNetwork: true}
+	u.runDiagnosis()
+	if !u.diagnosing {
+		t.Fatal("diagnosis should remain active until worker completion")
+	}
+	select {
+	case result := <-u.diagnoseDone:
+		u.finishDiagnosis(result)
+	case <-time.After(5 * time.Second):
+		t.Fatal("diagnosis worker did not complete")
+	}
+	if u.diagnosing || !strings.Contains(u.diagnoseReport, "skipped in quick mode") {
+		t.Fatal("diagnosis result was not applied on the UI goroutine")
+	}
+}
+
 // TestCloseButton verifies the header's close button: the far-right square
 // hit-tests as WClose (not the collapse toggle), clicking it sets the close
 // request, and clicks elsewhere in the header keep toggling.
@@ -333,7 +409,7 @@ func TestAboutModal(t *testing.T) {
 	}
 	// While open the modal owns the window: OK hits, header spots fall to
 	// the backdrop (dismiss, never the header's own actions).
-	if got := u.HitTest(u.aboutOKRect().Min.X+2, u.aboutOKRect().Min.Y+2); got != WAboutOK {
+	if got := u.HitTest(u.aboutDiagnoseOKRect().Min.X+2, u.aboutDiagnoseOKRect().Min.Y+2); got != WAboutOK {
 		t.Errorf("About OK: got %v want WAboutOK", got)
 	}
 	if got := u.HitTest(10, headerH/2); got != WModal {

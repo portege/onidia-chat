@@ -9,6 +9,7 @@ package main
 // like one family.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -16,12 +17,16 @@ import (
 	"image/draw"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"net/url"
+
 	"github.com/portege/onidia-chat/internal/confpath"
+	"github.com/portege/onidia-chat/internal/diagnose"
 )
 
 // Widget identifies which UI region a pointer event landed on.
@@ -69,6 +74,14 @@ const (
 
 	// About modal (see drawAbout): a small informational panel.
 	WAboutOK // the About modal's OK button
+
+	// Diagnose dialog (see drawDiagnose): the troubleshooting panel opened
+	// from the header's "Diagnose" button.
+	WDiagnose     // header "Diagnose" button: opens the diagnose dialog
+	WDiagnoseRun  // "RUN diagnosis" button inside the dialog
+	WDiagnoseCopy // "COPY report" button inside the dialog
+	WDiagnoseSend // "Send via email" button inside the dialog
+	WDiagnoseOK   // "CLOSE" button inside the dialog
 
 	// Transport strip under the messages (see drawMediaBar): the play/pause
 	// toggle and the stop button of whatever a media agent is playing.
@@ -247,6 +260,11 @@ const (
 	minAboutH   = 320 // window height forced while the About modal is open
 	aboutBtnW   = 90  // OK button width
 
+	// Diagnose dialog layout (drawDiagnose): a tall scrollable report panel.
+	diagnosePanelW = 460 // panel width (report lines are long)
+	diagnosePanelH = 560 // panel height (title + report + action buttons)
+	minDiagnoseH   = 600 // window height forced while the dialog is open
+
 	maxNameChars = 16 // character-name field rune cap
 
 	minCharAge          = 7  // youngest character age in the dropdown
@@ -286,10 +304,11 @@ const (
 type UI struct {
 	W, H int
 
-	Bot      *Bot             // the Gemini-powered brain (see chat.go)
-	Replies  chan ReplyResult // bot answers + optional image land here
-	Stream   chan string      // accumulated partial bot text while SSE streams in
-	Thinking bool             // true while a Gemini call is in flight
+	Bot            *Bot                // the Gemini-powered brain (see chat.go)
+	Replies        chan replyEnvelope  // bot answers + optional image land here
+	Stream         chan streamEnvelope // accumulated partial bot text while SSE streams in
+	Thinking       bool                // true while a Gemini call is in flight
+	turnGeneration uint64
 
 	msgs        []Msg
 	streamText  string // preview shown in the synthetic bubble ("" = "...")
@@ -329,8 +348,25 @@ type UI struct {
 
 	// About modal state (see drawAbout): a small informational panel with an
 	// OK button, opened from the header's About button.
-	aboutOpen  bool
-	aboutPrevH int // window height before the About panel forced minAboutH
+	aboutOpen     bool
+	aboutPrevH    int       // window height before the About panel forced minAboutH
+	aboutDiagnose bool      // About panel is showing the in-About diagnose view
+	diagnoseStart time.Time // when the current diagnosis started (spinner animation)
+
+	// Diagnose dialog state (see drawDiagnose): the troubleshooting panel.
+	diagnoseOpen    bool     // dialog is open
+	diagnosePrevH   int      // window height before the panel forced minDiagnoseH
+	diagnoseReport  string   // the collected report text (rendered once the check finishes)
+	diagnoseLines   []string // wrapped report lines for the scrollable viewport
+	diagnoseScroll  int      // scroll offset in lines within the report text
+	diagnosing      bool     // a diagnosis is running
+	diagnoseErr     string   // last error, shown inside the dialog
+	diagnoseDone    chan diagnoseResult
+	diagnoseRun     uint64
+	diagnoseOptions diagnose.Options
+	wantCopyReport  bool   // (unused: COPY path retained for tests; clipboard push is direct)
+	copyReportText  string // staged report text for the clipboard handoff
+	wantMailReport  bool   // (unused: EMAIL opens xdg-open directly in openMailReport)
 
 	// Settings modal state (see drawSettings). name / age / sleepFrom /
 	// sleepTo / mute are the committed values: unset until the first save,
@@ -393,6 +429,15 @@ type UI struct {
 	mediaPaused bool
 	mediaTitle  string
 	wantMedia   string // one-shot transport command a button click queued ("" = none)
+
+	// External channels (see channel.go / telegram*.go). externalIncoming is
+	// the thread-safe queue channel pollers post Incoming prompts to; the
+	// main loop drains it and calls SubmitExternal on the UI goroutine, so
+	// all UI mutation stays single-threaded. externalPending queues one
+	// origin per submitted turn (nil for locally typed turns) so the reply
+	// handler can fork rendered replies to the originating channel.
+	externalIncoming chan Incoming
+	externalPending  []*externalOrigin
 }
 
 // NewUI creates a UI sized w x h with a welcome message from the bot.
@@ -401,8 +446,8 @@ func NewUI(w, h int) *UI {
 	u := &UI{
 		W: w, H: h,
 		Bot:       NewBot(),
-		Replies:   make(chan ReplyResult, 4),
-		Stream:    make(chan string, 16),
+		Replies:   make(chan replyEnvelope, 4),
+		Stream:    make(chan streamEnvelope, 16),
 		focused:   true,
 		caret:     true,
 		collapsed: true,
@@ -413,6 +458,10 @@ func NewUI(w, h int) *UI {
 		sleepTo:   -1,
 		pagerMsg:  -1, // no pager under the pointer yet
 		copyMsg:   -1, // no COPY pill under the pointer yet
+		// externalIncoming is buffered so a burst of channel prompts never
+		// blocks a poller: the main loop drains it every tick.
+		externalIncoming: make(chan Incoming, 16),
+		diagnoseDone:     make(chan diagnoseResult, 1),
 	}
 	u.AddMsg(u.Bot.Name,
 		"hi! i am buddy. ask me anything - my answers come from google gemini, and onidia the desktop-pet says them out loud!")
@@ -555,6 +604,55 @@ func (u *UI) haiyaRect() image.Rectangle {
 	return image.Rect(x1, y, x1+w, y+h)
 }
 
+// aboutDiagnoseRect is the "Diagnose" button inside the About modal,
+// placed beside the OK button at the panel foot. It opens the in-About
+// troubleshooting view: empty report until the user presses RUN.
+func (u *UI) aboutDiagnoseRect() image.Rectangle {
+	p := u.aboutPanel()
+	// Two buttons side by side at the foot: Diagnose (left) and OK (right).
+	total := 2*aboutBtnW + btnGap
+	sx := p.Min.X + (p.Dx()-total)/2
+	by := p.Max.Y - 14 - btnH
+	return image.Rect(sx, by, sx+aboutBtnW, by+btnH)
+}
+
+// aboutDiagnoseOKRect is the About modal's OK button, centred-right at the
+// panel foot next to the Diagnose button.
+func (u *UI) aboutDiagnoseOKRect() image.Rectangle {
+	p := u.aboutPanel()
+	total := 2*aboutBtnW + btnGap
+	sx := p.Min.X + (p.Dx()-total)/2
+	by := p.Max.Y - 14 - btnH
+	return image.Rect(sx+aboutBtnW+btnGap, by, sx+total, by+btnH)
+}
+
+// diagnoseBtnW is the width of the small action buttons inside the
+// in-About diagnose view. Kept small so four buttons fit the panel foot.
+const diagnoseBtnW = 70
+
+// diagnoseActionRects are the in-About diagnose view's buttons in one row:
+// RUN on the left, COPY and EMAIL in the middle, CLOSE on the right.
+func (u *UI) diagnoseActionRects() (run, copy, send, closeB image.Rectangle) {
+	p := u.aboutPanel()
+	by := p.Max.Y - 14 - btnH
+	total := 4*diagnoseBtnW + 3*btnGap
+	sx := p.Min.X + (p.Dx()-total)/2
+	run = image.Rect(sx, by, sx+diagnoseBtnW, by+btnH)
+	copy = image.Rect(sx+diagnoseBtnW+btnGap, by, sx+2*diagnoseBtnW+btnGap, by+btnH)
+	send = image.Rect(sx+2*(diagnoseBtnW+btnGap), by, sx+3*diagnoseBtnW+2*btnGap, by+btnH)
+	closeB = image.Rect(sx+3*(diagnoseBtnW+btnGap), by, sx+total, by+btnH)
+	return run, copy, send, closeB
+}
+
+// diagnoseReportRect is the scrollable report viewport inside the About
+// panel: full panel width between the title/error line and the action buttons.
+func (u *UI) diagnoseReportRect() image.Rectangle {
+	p := u.aboutPanel()
+	_, _, _, closeR := u.diagnoseActionRects()
+	return image.Rect(p.Min.X+modalPad, p.Min.Y+64,
+		p.Max.X-modalPad, closeR.Min.Y-btnGap)
+}
+
 // modalPanel is the centred settings dialog rectangle, clamped to the current
 // window. Opening the modal grows the window to minSettingsH (see
 // openSettings) so the full panelH fits; the clamp only comes into play if the
@@ -565,10 +663,16 @@ func (u *UI) modalPanel() image.Rectangle {
 	return image.Rect((u.W-pw)/2, (u.H-ph)/2, (u.W+pw)/2, (u.H+ph)/2)
 }
 
-// aboutPanel is the centred About dialog rectangle, likewise clamped.
+// aboutPanel is the centred About dialog rectangle, likewise clamped. When
+// showing the in-About diagnose view it uses the larger diagnose dims so the
+// report viewport and action buttons fit.
 func (u *UI) aboutPanel() image.Rectangle {
-	ph := min(aboutPanelH, u.H-modalPad)
-	pw := min(aboutPanelW, u.W-2*modalPad)
+	ph, pw := aboutPanelH, aboutPanelW
+	if u.aboutDiagnose {
+		ph, pw = diagnosePanelH, diagnosePanelW
+	}
+	ph = min(ph, u.H-modalPad)
+	pw = min(pw, u.W-2*modalPad)
 	return image.Rect((u.W-pw)/2, (u.H-ph)/2, (u.W+pw)/2, (u.H+ph)/2)
 }
 
@@ -831,8 +935,47 @@ func (u *UI) HitTest(x, y int) Widget {
 	}
 	if u.aboutOpen {
 		// The About modal owns the whole window while it is open.
-		if inRect(x, y, u.aboutOKRect()) {
+		if !u.aboutDiagnose && inRect(x, y, u.aboutDiagnoseOKRect()) {
 			return WAboutOK
+		}
+		if u.aboutDiagnose {
+			// In diagnose view within About: action buttons.
+			run, copy, send, closeB := u.diagnoseActionRects()
+			if inRect(x, y, closeB) {
+				return WDiagnoseOK
+			}
+			if inRect(x, y, run) {
+				return WDiagnoseRun
+			}
+			if inRect(x, y, copy) {
+				return WDiagnoseCopy
+			}
+			if inRect(x, y, send) {
+				return WDiagnoseSend
+			}
+			// Clicks on the report viewport or elsewhere in the diagnose
+			// panel must not close the modal - only CLOSE does that.
+			return WNone
+		}
+		if inRect(x, y, u.aboutDiagnoseRect()) {
+			return WDiagnose
+		}
+		return WModal
+	}
+	if u.diagnoseOpen {
+		// The diagnose dialog owns the whole window while it is open.
+		run, copy, send, closeB := u.diagnoseActionRects()
+		if inRect(x, y, closeB) {
+			return WDiagnoseOK
+		}
+		if inRect(x, y, run) {
+			return WDiagnoseRun
+		}
+		if inRect(x, y, copy) {
+			return WDiagnoseCopy
+		}
+		if inRect(x, y, send) {
+			return WDiagnoseSend
 		}
 		return WModal
 	}
@@ -929,6 +1072,7 @@ func (u *UI) HitTest(x, y int) Widget {
 		if inRect(x, y, u.haiyaRect()) {
 			return WHaiya
 		}
+
 		return WHeader
 	}
 	if b := u.mediaBar(); !b.Empty() && inRect(x, y, b) {
@@ -981,6 +1125,9 @@ func (u *UI) Resize(w, h int) {
 		u.expandedH = u.H // remember the size to restore after collapsing
 	}
 	u.scroll = clamp(u.scroll, 0, u.maxScroll())
+	if u.diagnoseOpen || u.aboutDiagnose {
+		u.wrapDiagnoseLines() // window shape changed: re-wrap the report
+	}
 }
 
 // AddMsg appends a text message and sticks the view to the newest entry.
@@ -1203,6 +1350,46 @@ func (u *UI) Release(w Widget) bool {
 		case WAboutOK:
 			u.press = WNone
 			return u.closeAbout()
+		case WDiagnose:
+			// "Diagnose" button inside the About modal: switch the About
+			// panel to the in-About troubleshooting view. The report starts
+			// empty; the user presses RUN to collect it.
+			u.aboutDiagnose = true
+			u.diagnoseRun++
+			u.diagnosing = false
+			u.diagnoseErr = ""
+			u.diagnoseReport = ""
+			u.diagnoseLines = nil
+			u.diagnoseScroll = 0
+
+		case WDiagnoseRun:
+			// RUN re-runs the checks and redraws the report in place.
+			u.press = WNone
+			u.runDiagnosis()
+		case WDiagnoseCopy:
+			// COPY stages the report text; main() pushes it to the
+			// clipboard via WantCopyReport (one-shot, like WantCopy).
+			u.press = WNone
+			if u.diagnoseReport != "" {
+				u.copyReportText = u.diagnoseReport
+				u.wantCopyReport = true
+			} else {
+				u.diagnoseErr = "nothing to copy yet - press RUN first"
+			}
+		case WDiagnoseSend:
+			// EMAIL opens the mail client with the report in the body.
+			u.press = WNone
+			u.openMailReport()
+		case WDiagnoseOK:
+			u.press = WNone
+			if u.aboutDiagnose {
+				u.diagnoseRun++
+				u.diagnosing = false
+				u.aboutDiagnose = false // back to regular About view
+			} else {
+				return u.closeDiagnose()
+			}
+
 		case WName:
 			// Focus already moved above; typing now edits the name draft.
 		case WDrop:
@@ -1302,6 +1489,11 @@ func (u *UI) Release(w Widget) bool {
 				u.press = WNone
 				return u.closeAbout() // a backdrop click dismisses About
 			}
+			if u.diagnoseOpen {
+				u.press = WNone
+				return u.closeDiagnose() // a backdrop click dismisses Diagnose
+			}
+
 			u.openDrop = dropNone // a click outside the widgets closes the list
 		case WMediaPlay:
 			// Play/pause toggle. The queued command is consumed by main(),
@@ -1519,7 +1711,15 @@ func (u *UI) closeSettings() bool {
 // whatever was shown before it. Returns true when the window must be resized.
 func (u *UI) openAbout() bool {
 	u.aboutOpen = true
+	u.aboutDiagnose = false // regular About view, not the diagnose view
 	u.hover, u.press = WNone, WNone
+	// Start with a clean report: the user presses "Diagnose" to collect.
+	u.diagnoseReport = ""
+	u.diagnoseLines = nil
+	u.diagnoseScroll = 0
+	u.diagnosing = false
+	u.diagnoseRun++
+	u.diagnoseErr = ""
 	changed := false
 	if u.H < minAboutH {
 		u.aboutPrevH = u.H
@@ -1533,6 +1733,9 @@ func (u *UI) openAbout() bool {
 // it opened. Returns true when the window must be resized.
 func (u *UI) closeAbout() bool {
 	u.aboutOpen = false
+	u.aboutDiagnose = false
+	u.diagnoseRun++
+	u.diagnosing = false
 	u.hover, u.press = WNone, WNone
 	resized := false
 	if u.aboutPrevH > 0 && u.H != u.aboutPrevH {
@@ -1541,6 +1744,167 @@ func (u *UI) closeAbout() bool {
 	}
 	u.aboutPrevH = 0
 	return resized
+}
+
+// openDiagnose shows the diagnose dialog (see drawDiagnose). Like the About
+// modal it keeps its full designed size: the window grows in height when the
+// panel does not fit (diagnosePrevH remembers the old height), while
+// collapsed is left alone so the conversation history is never expanded.
+// The checks run in a worker; completion is applied by the main loop so the
+// window remains responsive. Returns true when the window must be resized.
+func (u *UI) openDiagnose() bool {
+	u.diagnoseOpen = true
+	u.hover, u.press = WNone, WNone
+	u.runDiagnosis()
+	changed := false
+	if u.H < minDiagnoseH {
+		u.diagnosePrevH = u.H
+		u.H = minDiagnoseH
+		changed = true
+	}
+	return changed
+}
+
+// closeDiagnose hides the diagnose dialog and restores the window height from
+// before it opened. Returns true when the window must be resized.
+func (u *UI) closeDiagnose() bool {
+	u.diagnoseOpen = false
+	u.diagnoseRun++
+	u.diagnosing = false
+	u.hover, u.press = WNone, WNone
+	resized := false
+	if u.diagnosePrevH > 0 && u.H != u.diagnosePrevH {
+		u.H = u.diagnosePrevH
+		resized = true
+	}
+	u.diagnosePrevH = 0
+	return resized
+}
+
+type diagnoseResult struct {
+	run  uint64
+	text string
+	err  string
+}
+
+// runDiagnosis collects the troubleshooting report off the UI goroutine.
+func (u *UI) runDiagnosis() {
+	u.diagnosing = true
+	u.diagnoseStart = time.Now()
+	u.diagnoseErr = ""
+	u.diagnoseScroll = 0
+	u.diagnoseRun++
+	run := u.diagnoseRun
+	options := u.diagnoseOptions
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		rep := diagnose.CollectWithOptions(ctx, options)
+		var b strings.Builder
+		err := rep.Text(&b)
+		result := diagnoseResult{run: run, text: b.String()}
+		if err != nil {
+			result.err = err.Error()
+		}
+		u.diagnoseDone <- result
+	}()
+}
+
+func (u *UI) finishDiagnosis(result diagnoseResult) {
+	if result.run != u.diagnoseRun {
+		return
+	}
+	u.diagnosing = false
+	if result.err != "" {
+		u.diagnoseErr = result.err
+		u.diagnoseReport = ""
+		u.diagnoseLines = nil
+	} else {
+		u.diagnoseReport = result.text
+		u.wrapDiagnoseLines()
+	}
+}
+
+// wrapDiagnoseLines re-wraps the report to the viewport width at scale 1.
+// Called after each run and on resize so the scroll math always matches.
+func (u *UI) wrapDiagnoseLines() {
+	r := u.diagnoseReportRect()
+	cols := max(8, r.Dx()/(advW*1))
+	u.diagnoseLines = nil
+	for _, para := range strings.Split(u.diagnoseReport, "\n") {
+		if strings.TrimSpace(para) == "" {
+			u.diagnoseLines = append(u.diagnoseLines, "")
+			continue
+		}
+		u.diagnoseLines = append(u.diagnoseLines, wrapText(para, cols)...)
+	}
+	u.diagnoseScroll = clamp(u.diagnoseScroll, 0, u.maxDiagnoseScroll())
+}
+
+// diagnoseVisibleRows is how many report lines fit the viewport.
+func (u *UI) diagnoseVisibleRows() int {
+	r := u.diagnoseReportRect()
+	return max(1, (r.Dy()-8-glyphH)/((glyphH+2)*1)+1)
+}
+
+// maxDiagnoseScroll is the last scroll offset that still shows a full page.
+func (u *UI) maxDiagnoseScroll() int {
+	return max(0, len(u.diagnoseLines)-u.diagnoseVisibleRows())
+}
+
+// ScrollDiagnose scrolls the report viewport by dy lines; returns false when
+// the dialog is closed, so the caller scrolls the message history instead.
+func (u *UI) ScrollDiagnose(dy int) bool {
+	if !u.diagnoseOpen && !u.aboutDiagnose {
+		return false
+	}
+	u.diagnoseScroll = clamp(u.diagnoseScroll+dy, 0, u.maxDiagnoseScroll())
+	return true
+}
+
+// WantCopyReport reports whether the dialog's COPY button was clicked; main()
+// then pushes the staged report text onto the X11 clipboard.
+func (u *UI) WantCopyReport() bool { return u.wantCopyReport }
+
+// TakeReportText returns the staged report text and clears the want flag so
+// the same click is not copied twice.
+func (u *UI) TakeReportText() string {
+	u.wantCopyReport = false
+	return u.copyReportText
+}
+
+// WantMailReport reports whether the dialog's EMAIL button was clicked;
+// main() then opens the mailto: link via xdg-open.
+func (u *UI) WantMailReport() bool { return u.wantMailReport }
+
+// TakeMailReport clears the want flag so the same click is not sent twice.
+func (u *UI) TakeMailReport() { u.wantMailReport = false }
+
+// mailReportLink builds the mailto: URL carrying the report in the body.
+// Kept in ui.go (next to the button) so main.go only runs xdg-open on it.
+func (u *UI) mailReportLink() string {
+	v := url.Values{}
+	v.Set("subject", "onidia-chat troubleshooting report")
+	v.Set("body", u.diagnoseReport)
+	return "mailto:?subject=" + url.QueryEscape(v.Get("subject")) +
+		"&body=" + url.QueryEscape(v.Get("body"))
+}
+
+// openMailReport launches the mailto: link via xdg-open in the background -
+// a click must not block the window if no mail client is installed.
+func (u *UI) openMailReport() {
+	link := u.mailReportLink()
+	if link == "" || u.diagnoseReport == "" {
+		u.diagnoseErr = "nothing to send yet - press RUN first"
+		return
+	}
+	u.diagnoseErr = ""
+	cmd := exec.Command("xdg-open", link)
+	if err := cmd.Start(); err != nil {
+		u.diagnoseErr = "could not open the mail client: " + err.Error()
+		return
+	}
+	go func() { _ = cmd.Wait() }()
 }
 
 // minuteIndex maps a committed minute (0/15/30/45) to its row index 0..3;
@@ -1785,6 +2149,17 @@ const (
 
 // Key applies one key event; returns true when the UI changed.
 func (u *UI) Key(r rune, sym uint32) bool {
+	if u.diagnoseOpen {
+		// While the diagnose dialog is up the textarea is dormant: Escape or
+		// Enter closes it (as do CLOSE and a backdrop click). The report is
+		// scrollable with the wheel, not the keyboard.
+		switch sym {
+		case ksEscape, ksReturn, ksKPEnter:
+			u.closeDiagnose()
+			return true
+		}
+		return false
+	}
 	if u.aboutOpen {
 		// While the About modal is up the textarea is dormant: Enter and
 		// Escape both dismiss it (as does a click on OK or the backdrop).
@@ -2111,6 +2486,9 @@ func (u *UI) Busy() bool { return u.sttBusy }
 // "..." bubble meanwhile and the reply arrives on u.Replies). Empty input is
 // a no-op.
 func (u *UI) Submit() {
+	if u.Thinking {
+		return
+	}
 	// Every send is final, including an automatic one, so a countdown that is
 	// somehow still live must not fire a second time behind it.
 	u.cancelAutoSubmit()
@@ -2118,6 +2496,12 @@ func (u *UI) Submit() {
 	if text == "" {
 		return
 	}
+	// Local turn: queue a nil origin so externalPending stays 1:1 with the
+	// Replies results (see SubmitExternal for the remote half).
+	if u.Thinking {
+		return
+	}
+	u.externalPending = append(u.externalPending, nil)
 	u.AddMsg("you", text)
 	u.input = nil
 
@@ -2127,11 +2511,7 @@ func (u *UI) Submit() {
 	u.Thinking = true
 	u.streamText = ""        // no stale preview from the previous reply
 	u.scroll = u.maxScroll() // re-pin: the "..." bubble must be visible
-	bot := u.Bot
-	go func() {
-		result := bot.Reply(hist, text)
-		u.Replies <- result
-	}()
+	u.startTurn(func(bot *Bot) ReplyResult { return bot.Reply(hist, text) })
 }
 
 // Rendering ----------------------------------------------------------------
@@ -2151,6 +2531,7 @@ func (u *UI) Render() *image.NRGBA {
 	if u.settingsOpen {
 		u.drawSettings(frame)
 	}
+
 	if u.aboutOpen {
 		u.drawAbout(frame)
 	}
@@ -2288,6 +2669,31 @@ func (u *UI) drawHeader(frame *image.NRGBA) {
 		color.RGBA{255, 255, 255, 190})
 }
 
+// drawDiagnose renders the troubleshooting dialog (see openDiagnose): a dim
+// backdrop with the title + report viewport + action buttons, and the wrapped
+// report lines (wheel-scrolled, see ScrollDiagnose) with a mini scrollbar when
+// the report overflows the viewport.
+// drawDiagnoseButton paints one dialog action button at scale 1 (four buttons
+// share a 460px panel, so scale 2 would not fit). RUN is teal like SAVE; the
+// rest use a white fill with plum text so they read as enabled, not disabled.
+func (u *UI) drawDiagnoseButton(frame *image.NRGBA, r image.Rectangle, w Widget, lbl string, primary bool) {
+	fill, label, outline := colBubbleFill, colPlum, colPlum
+	if primary {
+		fill, label, outline = colBtn, colWhite, colPlum
+	}
+	switch {
+	case u.press == w:
+		fill = colTealShade
+	case u.hover == w:
+		fill, label = colHairLight, colPlum
+	}
+	drawRoundRect(frame, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), 9, outline)
+	drawRoundRect(frame, r.Min.X+2, r.Min.Y+2, r.Dx()-4, r.Dy()-4, 7, fill)
+	lw := textWidth(lbl, 1)
+	drawText(frame, r.Min.X+(r.Dx()-lw)/2,
+		r.Min.Y+(r.Dy()-glyphH)/2, lbl, 1, label)
+}
+
 // About modal ---------------------------------------------------------------
 
 // drawAbout renders the About modal: a dim backdrop and a centred card with a
@@ -2301,6 +2707,11 @@ func (u *UI) drawAbout(frame *image.NRGBA) {
 	p := u.aboutPanel()
 	drawRoundRect(frame, p.Min.X, p.Min.Y, p.Dx(), p.Dy(), winRadius, colPlum)
 	drawRoundRect(frame, p.Min.X+2, p.Min.Y+2, p.Dx()-4, p.Dy()-4, winRadius-2, colBubbleFill)
+
+	if u.aboutDiagnose {
+		u.drawDiagnoseView(frame, p)
+		return
+	}
 
 	// Hero strip in the app header's teal, so the card reads as part of the app
 	// rather than a floating box.
@@ -2439,7 +2850,105 @@ func (u *UI) drawAbout(frame *image.NRGBA) {
 		drawText(frame, cx+textWidth(label, 1), lineY+100, link, 1, colHeader)
 	}
 
-	u.drawModalButton(frame, u.aboutOKRect(), WAboutOK, "OK")
+	// Foot: Diagnose button (left) and OK button (right).
+	u.drawDiagnoseAboutButtons(frame)
+}
+
+// drawDiagnoseView renders the in-About troubleshooting view: title, status
+// line (running / error / summary), scrollable report viewport with wrapped
+// lines and mini scrollbar, and the RUN / COPY / EMAIL / CLOSE action row.
+func (u *UI) drawDiagnoseView(frame *image.NRGBA, p image.Rectangle) {
+	drawText(frame, p.Min.X+modalPad, p.Min.Y+14, "DIAGNOSE", uiFontScale, colPlum)
+
+	// Status line under the title: running note, error, or report summary.
+	statusY := p.Min.Y + 40
+	switch {
+	case u.diagnosing:
+		// Spinner: a rotating sequence so the user sees something happening.
+		spin := "|/-\\"
+		idx := int(time.Since(u.diagnoseStart)/time.Millisecond) % len(spin)
+		drawText(frame, p.Min.X+modalPad, statusY,
+			"Running checks... "+string(spin[idx]), 1, colMuted)
+	case u.diagnoseErr != "":
+		msg := u.diagnoseErr
+		if cols := (p.Dx() - 2*modalPad) / (advW * 1); len([]rune(msg)) > cols {
+			rs := []rune(msg)
+			msg = string(rs[:max(0, cols-3)]) + "..."
+		}
+		drawText(frame, p.Min.X+modalPad, statusY, msg, 1, colError)
+	default:
+		n := len(u.diagnoseLines)
+		summary := "no report yet - press Diagnose"
+		if n > 0 {
+			summary = fmt.Sprintf("%d lines - wheel to scroll", n)
+		}
+		drawText(frame, p.Min.X+modalPad, statusY, summary, 1, colMuted)
+	}
+
+	// Report viewport: white card with the wrapped lines, clipped to the
+	// viewport rect, plus a mini scrollbar when lines overflow.
+	r := u.diagnoseReportRect()
+	drawRoundRect(frame, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), 8, colPlum)
+	drawRoundRect(frame, r.Min.X+2, r.Min.Y+2, r.Dx()-4, r.Dy()-4, 6, colWhite)
+	lineH1 := glyphH + 2 // scale-1 line pitch
+	if u.diagnosing {
+		drawText(frame, r.Min.X+8, r.Min.Y+8, "Running...", 1, colMuted)
+	} else {
+		// vis counts complete lines whose text (glyphH tall) fits inside the
+		// viewport, starting at offset 8, so the last line's descenders never
+		// spill past the bottom border.
+		vis := max(1, (r.Dy()-8-glyphH)/lineH1+1)
+		maxScroll := max(0, len(u.diagnoseLines)-vis)
+		u.diagnoseScroll = clamp(u.diagnoseScroll, 0, maxScroll)
+		for i := 0; i < vis && u.diagnoseScroll+i < len(u.diagnoseLines); i++ {
+			drawText(frame, r.Min.X+8, r.Min.Y+8+i*lineH1,
+				u.diagnoseLines[u.diagnoseScroll+i], 1, colText)
+		}
+		if maxScroll > 0 {
+			trackY0, trackY1 := r.Min.Y+4, r.Max.Y-4
+			trackH := trackY1 - trackY0
+			thumbH := max(trackH*vis/len(u.diagnoseLines), 10)
+			thumbY := trackY0 + (trackH-thumbH)*u.diagnoseScroll/maxScroll
+			fillRect(frame, r.Max.X-8, trackY0, 4, trackH, colInputBorder)
+			fillRect(frame, r.Max.X-8, thumbY, 4, thumbH, colTealShade)
+		}
+	}
+
+	// Action row: RUN (teal) / COPY / EMAIL / CLOSE (muted). Smaller buttons
+	// so all four fit the panel foot.
+	run, copy, send, closeB := u.diagnoseActionRects()
+	u.drawDiagnoseButton(frame, run, WDiagnoseRun, "RUN", true)
+	u.drawDiagnoseButton(frame, copy, WDiagnoseCopy, "COPY", false)
+	u.drawDiagnoseButton(frame, send, WDiagnoseSend, "EMAIL", false)
+	u.drawDiagnoseButton(frame, closeB, WDiagnoseOK, "CLOSE", false)
+}
+
+// drawDiagnoseAboutButtons paints the foot of the regular About view: the
+// "Diagnose" button (teal, primary) on the left and "OK" (muted) on the right.
+func (u *UI) drawDiagnoseAboutButtons(frame *image.NRGBA) {
+	p := u.aboutPanel()
+	total := 2*aboutBtnW + btnGap
+	sx := p.Min.X + (p.Dx()-total)/2
+	by := p.Max.Y - 14 - btnH
+
+	// Diagnose button (teal, primary)
+	dr := image.Rect(sx, by, sx+aboutBtnW, by+btnH)
+	fill, label := colBtn, colWhite
+	switch {
+	case u.press == WDiagnose:
+		fill = colTealShade
+	case u.hover == WDiagnose:
+		fill, label = colHairLight, colPlum
+	}
+	drawRoundRect(frame, dr.Min.X, dr.Min.Y, dr.Dx(), dr.Dy(), 9, colPlum)
+	drawRoundRect(frame, dr.Min.X+2, dr.Min.Y+2, dr.Dx()-4, dr.Dy()-4, 7, fill)
+	lw := textWidth("Diagnose", 1)
+	drawText(frame, dr.Min.X+(dr.Dx()-lw)/2,
+		dr.Min.Y+(dr.Dy()-glyphH)/2, "Diagnose", 1, label)
+
+	// OK button (muted, like CANCEL)
+	okR := image.Rect(sx+aboutBtnW+btnGap, by, sx+total, by+btnH)
+	u.drawModalButton(frame, okR, WAboutOK, "OK")
 }
 
 // configPathForDisplay answers "which config is the character actually reading?"

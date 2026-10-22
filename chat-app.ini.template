@@ -281,3 +281,28 @@ auto-submit = false
 # room is too loud for a level threshold and the manual click still works.
 auto-stop = false
 
+# Telegram remote-control channel ([telegram] section). The channel is OFF
+# unless a token is configured - there is no default token.
+#
+# Setup (see docs/TELEGRAM.md for the full walkthrough):
+#   1. Talk to @BotFather on Telegram, /newbot, copy the token.
+#   2. Put the token below (or pass -telegram-token / set $TELEGRAM_BOT_TOKEN -
+#      precedence: flag > env > this file; the token is never logged).
+#   3. Put your own chat-id or @username in allow-from.
+#   4. Keep every comment on its OWN line - never append "# ..." after a
+#      value. An inline comment after bot-token used to corrupt the Bot API
+#      URL (every call answered 404 Not Found); a token that still does not
+#      look like <digits>:<secret> is refused at startup with a clear log
+#      line instead of retrying forever. chmod 600 chat-app.ini once a token
+#      lives here.
+#
+# allow-from is FAIL CLOSED: empty means every sender is refused (silently -
+# the bot does not even acknowledge strangers). Comma/space separated numeric
+# chat-ids and @usernames; get your chat-id from @userinfobot.
+# send-images (default on) sends the reply image as a Telegram photo;
+# poll-timeout (default 30, clamped 1..120) is the getUpdates long-poll window.
+[telegram]
+# bot-token = 1234567890:AA...
+# allow-from = 123456789
+# send-images = true
+# poll-timeout = 30

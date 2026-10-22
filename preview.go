@@ -56,7 +56,7 @@ func dumpPreviews() {
 	seedConvo(u3)
 	u3.input = []rune("tell me a joke")
 	u3.Submit()
-	res := <-u3.Replies
+	res := (<-u3.Replies).result
 	u3.AddMsg(u3.Bot.Name, res.Text)
 	u3.Thinking = false
 	writePNG("chat_ui_sent.png", u3.Render())

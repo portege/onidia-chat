@@ -20,9 +20,9 @@ import (
 // Config holds settings loaded from an INI file. All fields are optional;
 // the app falls back to flag defaults / built-in constants for any missing key.
 type Config struct {
-	APIKey           string `ini:"api-key"`
-	Model            string `ini:"model"`
-	APIURL           string `ini:"api-url"`
+	APIKey string `ini:"api-key"`
+	Model  string `ini:"model"`
+	APIURL string `ini:"api-url"`
 	// Gemini-only model / endpoint. The INI is parsed flat (sections ignored,
 	// last occurrence wins), so the generic `model` and `api-url` keys are
 	// shared by ollama/openrouter/bedrock and a later [ollama] model would
@@ -40,57 +40,62 @@ type Config struct {
 	// the per-provider namespacing: with these in place no provider reads the
 	// shared `model` / `api-url` any more, so nothing can leak between sections
 	// in the flat INI. Same no-fallback rule as the gemini/bedrock keys above.
-	OllamaModel      string `ini:"ollama-model"`
-	OllamaAPIURL     string `ini:"ollama-api-url"`
-	OpenRouterModel  string `ini:"openrouter-model"`
-	OpenRouterAPIURL string `ini:"openrouter-api-url"`
-	PetPipe          string `ini:"pet-pipe"`
-	SystemPrompt     string `ini:"system-prompt"`
-	SystemFile       string `ini:"system-file"`
-	SystemPromptFull string `ini:"system-prompt-multi"` // multi-line alias
-	Images           bool   `ini:"images"`              // enable image replies (legacy: use image-source)
-	ImageSource      string `ini:"image-source"`        // "pixabay" | "wiki" | "gemini" | "off"
-	PixabayKey       string `ini:"pixabay-key"`         // Pixabay API key (empty = env/built-in default)
-	ForceImage       string `ini:"force-image"`         // always fetch image for this keyword
-	TTS              string `ini:"tts"`                 // "on" (default) | "off"
-	TTSKey           string `ini:"tts-key"`             // Typecast API key
-	TTSVoice         string `ini:"tts-voice"`           // Typecast voice id
-	Mute             bool   `ini:"mute"`                // true = never speak replies (settings dialog checkbox)
-	Thinking         string `ini:"thinking"`            // "on" (default) | "off": draw the reasoning cloud (settings dialog checkbox)
-	DemoMode         bool   `ini:"demo-mode"`           // true = buddy roams & chatters on its own (settings dialog checkbox; default off = planted)
-	AutoSubmit       bool   `ini:"auto-submit"`         // true = send a spoken transcript automatically (settings dialog checkbox; default off = the user sends it)
-	AutoStop         bool   `ini:"auto-stop"`           // true = end a take on silence, with no second click (settings dialog checkbox; default off)
-	Provider         string `ini:"provider"`            // "gemini" (default) | "bedrock" | "ollama" | "openrouter"
-	Preflight        string `ini:"preflight"`           // startup check: "strict" (default; block before the window opens) | "warn" | "off"
-	Stream           bool   `ini:"stream"`              // openrouter: SSE streaming reply (default on)
-	StreamSet        bool   // stream key was present in the config (absent = default on)
-	AWSProfile       string `ini:"aws-profile"`      // AWS shared profile name
-	AWSRegion        string `ini:"aws-region"`       // AWS region for Bedrock
-	CharacterAge     int    `ini:"character-age"`    // chat character's age (settings dialog, 7-13)
-	CharacterName    string `ini:"character-name"`   // chat character's name (settings dialog)
-	Gender           string `ini:"character-gender"` // buddy gender: "girl" launches Onidia, "boy" launches Kama (settings dialog)
-	SleepSet         bool   // sleep-time was present in the config
-	SleepFromH       int    // sleep-window start hour (0-23), from sleep-time
-	SleepFromM       int    // sleep-window start minute (0/15/30/45), from sleep-time
-	SleepToH         int    // sleep-window end hour (0-23), from sleep-time
-	SleepToM         int    // sleep-window end minute (0/15/30/45), from sleep-time
-	BusySet          bool   // busy-time was present in the config
-	BusyFromH        int    // busy-window start hour (0-23), from busy-time
-	BusyFromM        int    // busy-window start minute (0/15/30/45), from busy-time
-	BusyToH          int    // busy-window end hour (0-23), from busy-time
-	BusyToM          int    // busy-window end minute (0/15/30/45), from busy-time
-	BusyFrom         int    // legacy whole-hour alias kept for existing callers (set from H fields)
-	BusyTo           int    // legacy whole-hour alias kept for existing callers (set from H fields)
-	SleepFrom        int    // legacy whole-hour aliases kept for existing callers (set from H fields)
-	SleepTo          int    // legacy whole-hour aliases kept for existing callers (set from H fields)
-	AgentsDir        string `ini:"agents-dir"`         // directory of downloadable agents ("" = default)
-	AgentsOff        bool   `ini:"agents-off"`         // true = never discover agents / advertise them
-	AgentsDisabled   string `ini:"agents-disabled"`    // comma-separated ids to switch off ("")
-	MusicDir         string `ini:"music-dir"`          // play_song agent's music folder ("" = agent default)
-	VideoDir         string `ini:"video-dir"`          // play_movie agent's video folder ("" = agent default)
-	AgentsKey        string `ini:"agents-key"`         // trusted Ed25519 public key hex for agent signatures ("" = unverified)
-	AgentsRequireSig bool   `ini:"agents-require-sig"` // reject unsigned agents if true
-	AgentsRegistry   string `ini:"agents-registry"`    // registry index URL or path ("" = default/none)
+	OllamaModel       string `ini:"ollama-model"`
+	OllamaAPIURL      string `ini:"ollama-api-url"`
+	OpenRouterModel   string `ini:"openrouter-model"`
+	OpenRouterAPIURL  string `ini:"openrouter-api-url"`
+	PetPipe           string `ini:"pet-pipe"`
+	SystemPrompt      string `ini:"system-prompt"`
+	SystemFile        string `ini:"system-file"`
+	SystemPromptFull  string `ini:"system-prompt-multi"` // multi-line alias
+	Images            bool   `ini:"images"`              // enable image replies (legacy: use image-source)
+	ImageSource       string `ini:"image-source"`        // "pixabay" | "wiki" | "gemini" | "off"
+	PixabayKey        string `ini:"pixabay-key"`         // Pixabay API key (empty = env/built-in default)
+	ForceImage        string `ini:"force-image"`         // always fetch image for this keyword
+	TTS               string `ini:"tts"`                 // "on" (default) | "off"
+	TTSKey            string `ini:"tts-key"`             // Typecast API key
+	TTSVoice          string `ini:"tts-voice"`           // Typecast voice id
+	Mute              bool   `ini:"mute"`                // true = never speak replies (settings dialog checkbox)
+	Thinking          string `ini:"thinking"`            // "on" (default) | "off": draw the reasoning cloud (settings dialog checkbox)
+	TelegramToken     string `ini:"bot-token"`           // Telegram bot token (flag -telegram-token > $TELEGRAM_BOT_TOKEN > this; empty = channel off)
+	TelegramAllow     string `ini:"allow-from"`          // Telegram allowlist: comma/space chat-ids or @usernames; empty = refuse ALL (fail closed)
+	TelegramImages    bool   `ini:"send-images"`         // send ReplyResult.Image as Telegram photo (default on)
+	TelegramImagesSet bool   // send-images key was present in the config (absent = default on), like StreamSet
+	TelegramPoll      int    `ini:"poll-timeout"` // getUpdates timeout seconds (default 30, clamped 1..120)
+	DemoMode          bool   `ini:"demo-mode"`    // true = buddy roams & chatters on its own (settings dialog checkbox; default off = planted)
+	AutoSubmit        bool   `ini:"auto-submit"`  // true = send a spoken transcript automatically (settings dialog checkbox; default off = the user sends it)
+	AutoStop          bool   `ini:"auto-stop"`    // true = end a take on silence, with no second click (settings dialog checkbox; default off)
+	Provider          string `ini:"provider"`     // "gemini" (default) | "bedrock" | "ollama" | "openrouter"
+	Preflight         string `ini:"preflight"`    // startup check: "strict" (default; block before the window opens) | "warn" | "off"
+	Stream            bool   `ini:"stream"`       // openrouter: SSE streaming reply (default on)
+	StreamSet         bool   // stream key was present in the config (absent = default on)
+	AWSProfile        string `ini:"aws-profile"`      // AWS shared profile name
+	AWSRegion         string `ini:"aws-region"`       // AWS region for Bedrock
+	CharacterAge      int    `ini:"character-age"`    // chat character's age (settings dialog, 7-13)
+	CharacterName     string `ini:"character-name"`   // chat character's name (settings dialog)
+	Gender            string `ini:"character-gender"` // buddy gender: "girl" launches Onidia, "boy" launches Kama (settings dialog)
+	SleepSet          bool   // sleep-time was present in the config
+	SleepFromH        int    // sleep-window start hour (0-23), from sleep-time
+	SleepFromM        int    // sleep-window start minute (0/15/30/45), from sleep-time
+	SleepToH          int    // sleep-window end hour (0-23), from sleep-time
+	SleepToM          int    // sleep-window end minute (0/15/30/45), from sleep-time
+	BusySet           bool   // busy-time was present in the config
+	BusyFromH         int    // busy-window start hour (0-23), from busy-time
+	BusyFromM         int    // busy-window start minute (0/15/30/45), from busy-time
+	BusyToH           int    // busy-window end hour (0-23), from busy-time
+	BusyToM           int    // busy-window end minute (0/15/30/45), from busy-time
+	BusyFrom          int    // legacy whole-hour alias kept for existing callers (set from H fields)
+	BusyTo            int    // legacy whole-hour alias kept for existing callers (set from H fields)
+	SleepFrom         int    // legacy whole-hour aliases kept for existing callers (set from H fields)
+	SleepTo           int    // legacy whole-hour aliases kept for existing callers (set from H fields)
+	AgentsDir         string `ini:"agents-dir"`         // directory of downloadable agents ("" = default)
+	AgentsOff         bool   `ini:"agents-off"`         // true = never discover agents / advertise them
+	AgentsDisabled    string `ini:"agents-disabled"`    // comma-separated ids to switch off ("")
+	MusicDir          string `ini:"music-dir"`          // play_song agent's music folder ("" = agent default)
+	VideoDir          string `ini:"video-dir"`          // play_movie agent's video folder ("" = agent default)
+	AgentsKey         string `ini:"agents-key"`         // trusted Ed25519 public key hex for agent signatures ("" = unverified)
+	AgentsRequireSig  bool   `ini:"agents-require-sig"` // reject unsigned agents if true
+	AgentsRegistry    string `ini:"agents-registry"`    // registry index URL or path ("" = default/none)
 
 	// Speech-to-text (the microphone button in the input bar).
 	STT             string `ini:"stt"`               // backend: "transcribe" (default) | "whisper" | "off"
@@ -230,6 +235,24 @@ func applyConfigField(cfg *Config, key, val string) {
 		cfg.Mute = parseBool(val)
 	case "thinking":
 		cfg.Thinking = val
+	case "bot-token":
+		// Cut at the first whitespace/'#'/';': LoadConfig keeps trailing
+		// comments, and a "# ..." pasted after the token would travel into
+		// the Bot API URL where '#' truncates the path (404 on every call).
+		cfg.TelegramToken = sanitizeBotToken(val)
+	case "allow-from":
+		cfg.TelegramAllow = val
+	case "send-images":
+		cfg.TelegramImages = parseBool(val)
+		cfg.TelegramImagesSet = true
+	case "telegram-images":
+		cfg.TelegramImages = parseBool(val)
+		cfg.TelegramImagesSet = true
+	case "telegram-send-images":
+		cfg.TelegramImages = parseBool(val)
+		cfg.TelegramImagesSet = true
+	case "poll-timeout":
+		cfg.TelegramPoll = parseIntVal(val)
 	case "demo-mode":
 		cfg.DemoMode = parseBool(val)
 	case "auto-submit":
@@ -287,8 +310,22 @@ func applyConfigField(cfg *Config, key, val string) {
 }
 
 // parseIntVal parses a plain integer config value; junk parses as 0.
+// stripInlineComment drops a trailing "# ..." / "; ..." comment from a
+// single-line INI value. Only the scalar parsers (bool/int) call it - text
+// values keep '#' verbatim because a prompt or key may legitimately contain
+// one. Whole-line comments are already dropped by LoadConfig.
+func stripInlineComment(s string) string {
+	s = strings.TrimSpace(s)
+	for _, sep := range []string{"#", ";"} {
+		if i := strings.Index(s, sep); i >= 0 {
+			s = strings.TrimSpace(s[:i])
+		}
+	}
+	return s
+}
+
 func parseIntVal(s string) int {
-	n, _ := strconv.Atoi(strings.TrimSpace(s))
+	n, _ := strconv.Atoi(stripInlineComment(s))
 	return n
 }
 
@@ -347,7 +384,7 @@ func parseHour(s string) (int, bool) {
 }
 
 func parseBool(s string) bool {
-	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ToLower(stripInlineComment(s))
 	return s == "true" || s == "yes" || s == "1" || s == "on"
 }
 

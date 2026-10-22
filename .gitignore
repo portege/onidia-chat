@@ -16,8 +16,10 @@ pet_*.png
 # Other
 .env
 go.work
-go.work.sumgeminitest
+go.work.sum
+geminitest
 chat-app.ini
+*.mkv
 
 # Packaged agent zips (make pack)
 dist/
