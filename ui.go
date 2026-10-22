@@ -2498,6 +2498,9 @@ func (u *UI) Submit() {
 	}
 	// Local turn: queue a nil origin so externalPending stays 1:1 with the
 	// Replies results (see SubmitExternal for the remote half).
+	if u.Thinking {
+		return
+	}
 	u.externalPending = append(u.externalPending, nil)
 	u.AddMsg("you", text)
 	u.input = nil
