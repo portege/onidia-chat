@@ -55,7 +55,7 @@ func (t *telegramChannel) sendPhoto(ctx context.Context, chatID string, img imag
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	resp, err := t.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("sendPhoto: %v", err)
+		return telegramRequestError("sendPhoto", err, t.cfg.Token)
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
@@ -73,6 +73,36 @@ func (t *telegramChannel) sendPhoto(ctx context.Context, chatID string, img imag
 		return fmt.Errorf("sendPhoto: %s", out.Description)
 	}
 	return nil
+}
+
+func (t *telegramChannel) enqueueSend(send func(context.Context)) {
+	t.sendMu.Lock()
+	t.sendQueue = append(t.sendQueue, send)
+	t.sendMu.Unlock()
+	select {
+	case t.sendWake <- struct{}{}:
+	default:
+	}
+}
+
+func (t *telegramChannel) sendLoop(ctx context.Context) {
+	for {
+		t.sendMu.Lock()
+		if len(t.sendQueue) > 0 {
+			send := t.sendQueue[0]
+			t.sendQueue[0] = nil
+			t.sendQueue = t.sendQueue[1:]
+			t.sendMu.Unlock()
+			send(ctx)
+			continue
+		}
+		t.sendMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.sendWake:
+		}
+	}
 }
 
 // deliverReply sends a finished reply to a chat: photo first (caption holds

@@ -56,6 +56,7 @@ func allowMatch(list []string, id, username string) bool {
 }
 
 func isDigits(s string) bool {
+	s = strings.TrimPrefix(s, "-")
 	if s == "" {
 		return false
 	}

@@ -17,12 +17,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -36,14 +36,10 @@ import (
 // probeTimeout bounds each individual network/hardware probe.
 const probeTimeout = 8 * time.Second
 
-// secretKeys are INI keys whose values are credentials and must be masked.
-var secretKeys = map[string]bool{
-	"api-key":     true,
-	"bot-token":   true,
-	"tts-key":     true,
-	"tts-voice":   true,
-	"pixabay-key": true,
-}
+var (
+	diagnosticURLPattern  = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s"'<>]+`)
+	diagnosticPathPattern = regexp.MustCompile(`(^|[\s("'=])(?:/[^\s,;)"']+|[A-Za-z]:[\\/][^\s,;)"']+|\\\\[^\s,;)"']+)`)
+)
 
 // Finding is one checked item.
 type Finding struct {
@@ -60,6 +56,12 @@ type Report struct {
 	Findings  []Finding `json:"findings"`
 }
 
+type Options struct {
+	ConfigPath  string
+	Settings    map[string]string
+	SkipNetwork bool
+}
+
 // finding appends one checked item to the report.
 func (r *Report) finding(cat, id string, ok bool, detail, hint string) {
 	r.Findings = append(r.Findings, Finding{Category: cat, ID: id, OK: ok, Detail: detail, Hint: hint})
@@ -68,17 +70,33 @@ func (r *Report) finding(cat, id string, ok bool, detail, hint string) {
 // Collect runs every check and returns the report. A cancelled ctx stops
 // in-flight probes early; checks that cannot run still appear as findings.
 func Collect(ctx context.Context) *Report {
+	return CollectWithOptions(ctx, Options{})
+}
+
+func CollectWithOptions(ctx context.Context, options Options) *Report {
 	r := &Report{Generated: time.Now().UTC().Format(time.RFC3339)}
+	configPath := options.ConfigPath
+	if configPath == "" {
+		configPath = confpath.Default()
+	}
+	kv := map[string]string{}
+	var configErr error
+	if configPath != "" {
+		kv, configErr = preflight.ReadINI(configPath)
+	}
+	for key, value := range options.Settings {
+		kv[strings.ToLower(key)] = value
+	}
 
 	r.system()
 	r.hardware()
-	r.install()
-	r.settings()
-	r.network(ctx)
+	r.install(configPath)
+	r.settings(configPath, kv, configErr)
+	r.network(ctx, options.SkipNetwork)
 	r.proxy()
-	r.providers(ctx)
+	r.providers(ctx, kv, options.SkipNetwork)
 	r.audio()
-	r.tts()
+	r.tts(ctx, kv, options.SkipNetwork)
 	r.deps()
 
 	return r
@@ -86,13 +104,14 @@ func Collect(ctx context.Context) *Report {
 
 // Text renders the report grouped by category for humans.
 func (r *Report) Text(w io.Writer) error {
+	report := r.sanitized()
 	var b strings.Builder
 	fmt.Fprintf(&b, "onidia-chat troubleshooting report\n")
-	fmt.Fprintf(&b, "generated: %s\n\n", r.Generated)
+	fmt.Fprintf(&b, "generated: %s\n\n", report.Generated)
 
 	cur := ""
 	counts := map[string]struct{ ok, fail int }{}
-	for _, f := range r.Findings {
+	for _, f := range report.Findings {
 		c := counts[f.Category]
 		if f.OK {
 			c.ok++
@@ -129,7 +148,25 @@ func (r *Report) Text(w io.Writer) error {
 func (r *Report) JSON(w io.Writer) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(r)
+	return enc.Encode(r.sanitized())
+}
+
+func (r *Report) sanitized() Report {
+	report := *r
+	report.Generated = sanitizeDiagnosticText(report.Generated)
+	report.Findings = append([]Finding(nil), r.Findings...)
+	for i := range report.Findings {
+		report.Findings[i].Category = sanitizeDiagnosticText(report.Findings[i].Category)
+		report.Findings[i].ID = sanitizeDiagnosticText(report.Findings[i].ID)
+		report.Findings[i].Detail = sanitizeDiagnosticText(report.Findings[i].Detail)
+		report.Findings[i].Hint = sanitizeDiagnosticText(report.Findings[i].Hint)
+	}
+	return report
+}
+
+func sanitizeDiagnosticText(s string) string {
+	s = diagnosticURLPattern.ReplaceAllString(s, "<url>")
+	return diagnosticPathPattern.ReplaceAllString(s, "$1<path>")
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +216,7 @@ func (r *Report) hardware() {
 // install
 // ---------------------------------------------------------------------------
 
-func (r *Report) install() {
+func (r *Report) install(configPath string) {
 	exe, err := os.Executable()
 	binDir := ""
 	if err == nil {
@@ -189,7 +226,7 @@ func (r *Report) install() {
 		r.finding("install", "onidia-chat-binary", false, "could not locate executable", "")
 	}
 
-	cfg := confpath.Default()
+	cfg := configPath
 	if cfg == "" {
 		r.finding("install", "config-file", false, "no chat-app.ini found - built-in defaults only", "copy chat-app.ini.template to chat-app.ini")
 	} else {
@@ -206,37 +243,54 @@ func (r *Report) install() {
 // settings
 // ---------------------------------------------------------------------------
 
-func (r *Report) settings() {
-	cfgPath := confpath.Default()
+func (r *Report) settings(cfgPath string, kv map[string]string, configErr error) {
 	if cfgPath == "" {
 		r.finding("settings", "config-file", false, "no chat-app.ini found (built-in defaults only)", "copy chat-app.ini.template to chat-app.ini and edit it")
+	} else if configErr != nil {
+		r.finding("settings", "config-file", false, fmt.Sprintf("could not read %s: %v", cfgPath, configErr), "")
 		return
+	} else {
+		r.finding("settings", "config-file", true, fmt.Sprintf("%s (%d keys)", cfgPath, len(kv)), "")
 	}
-	kv, err := preflight.ReadINI(cfgPath)
-	if err != nil {
-		r.finding("settings", "config-file", false, fmt.Sprintf("could not read %s: %v", cfgPath, err), "")
-		return
-	}
-	r.finding("settings", "config-file", true, fmt.Sprintf("%s (%d keys)", cfgPath, len(kv)), "")
 
 	for k, v := range kv {
-		if isSecretKey(k) {
-			r.finding("settings", "key:"+k, true, preflight.MaskKey(v), "")
-			continue
+		display, ok := safeSettingValue(k, v)
+		if ok {
+			r.finding("settings", "key:"+k, true, display, "")
 		}
-		display := v
-		if len(display) > 120 {
-			display = display[:120] + "…"
-		}
-		r.finding("settings", "key:"+k, true, display, "")
 	}
+}
+
+func safeSettingValue(key, value string) (string, bool) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch strings.ToLower(key) {
+	case "provider":
+		switch value {
+		case "gemini", "bedrock", "ollama", "openrouter":
+			return value, true
+		}
+	case "tts":
+		switch value {
+		case "":
+			return "on (default)", true
+		case "on":
+			return value, true
+		case "off":
+			return value, true
+		}
+	}
+	return "", false
 }
 
 // ---------------------------------------------------------------------------
 // network
 // ---------------------------------------------------------------------------
 
-func (r *Report) network(ctx context.Context) {
+func (r *Report) network(ctx context.Context, skip bool) {
+	if skip {
+		r.finding("network", "internet", false, "skipped in quick mode", "")
+		return
+	}
 	ok, detail := probeHTTPS(ctx, []string{
 		"https://www.google.com",
 		"https://example.com",
@@ -273,7 +327,7 @@ func (r *Report) proxy() {
 	}
 	proxyURL, err := http.ProxyFromEnvironment(&http.Request{URL: u})
 	if err != nil {
-		r.finding("proxy", "effective", false, "proxy resolution error: "+err.Error(), "")
+		r.finding("proxy", "effective", false, "proxy resolution error", "")
 	} else if proxyURL == nil {
 		r.finding("proxy", "effective", true, "direct connection (no proxy)", "")
 	} else {
@@ -285,13 +339,26 @@ func (r *Report) proxy() {
 // model providers
 // ---------------------------------------------------------------------------
 
-func (r *Report) providers(ctx context.Context) {
-	kv := map[string]string{}
-	if cfgPath := confpath.Default(); cfgPath != "" {
-		kv, _ = preflight.ReadINI(cfgPath)
-	}
+func (r *Report) providers(ctx context.Context, kv map[string]string, skipNetwork bool) {
 	provider := strings.TrimSpace(preflight.Get(kv, "provider"))
-	r.finding("providers", "selected", provider != "", provider, "provider = gemini|bedrock|ollama|openrouter in chat-app.ini")
+	selected := "not configured"
+	if safe, ok := safeSettingValue("provider", provider); ok {
+		selected = safe
+	} else if provider != "" {
+		selected = "unrecognized value omitted"
+	}
+	r.finding("providers", "selected", provider != "", selected, "provider = gemini|bedrock|ollama|openrouter in chat-app.ini")
+	if skipNetwork {
+		for _, p := range []struct{ id, name string }{
+			{"providers.gemini", "Gemini"},
+			{"providers.bedrock", "Bedrock"},
+			{"providers.ollama", "Ollama"},
+			{"providers.openrouter", "OpenRouter"},
+		} {
+			r.finding(p.id, p.name, false, "skipped in quick mode", "")
+		}
+		return
+	}
 
 	type probe struct {
 		id   string
@@ -325,42 +392,41 @@ func providerHint(id string) string {
 }
 
 func probeGemini(ctx context.Context, kv map[string]string) (bool, string) {
-	key := strings.TrimSpace(preflight.Get(kv, "api-key"))
+	key := strings.TrimSpace(preflight.Get(kv, "gemini-api-key"))
+	if key == "" {
+		key = strings.TrimSpace(preflight.Get(kv, "api-key"))
+	}
 	apiURL := strings.TrimSpace(preflight.Get(kv, "gemini-api-url"))
 	if apiURL == "" {
 		apiURL = "https://generativelanguage.googleapis.com"
 	}
 	configured := key != ""
-	reachable := probeHost(ctx, apiURL)
+	status, reachable := probeEndpoint(ctx, apiURL)
 	switch {
 	case !configured:
 		return false, "no api-key configured (provider not usable)"
 	case !reachable:
 		return false, "api-key present (" + preflight.MaskKey(key) + "), but " + hostOf(apiURL) + " is unreachable"
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return false, fmt.Sprintf("api-key present (%s), endpoint reachable but rejected credentials (HTTP %d)", preflight.MaskKey(key), status)
+	case status >= http.StatusInternalServerError:
+		return false, fmt.Sprintf("api-key present (%s), endpoint reachable but returned HTTP %d", preflight.MaskKey(key), status)
 	default:
-		return true, "api-key present (" + preflight.MaskKey(key) + "), " + hostOf(apiURL) + " reachable"
+		return true, fmt.Sprintf("api-key present (%s), endpoint reachable (HTTP %d)", preflight.MaskKey(key), status)
 	}
 }
 
 func probeBedrock(ctx context.Context, kv map[string]string) (bool, string) {
 	profile := strings.TrimSpace(preflight.Get(kv, "aws-profile"))
 	region := strings.TrimSpace(preflight.Get(kv, "aws-region"))
-	model := strings.TrimSpace(preflight.Get(kv, "bedrock-model"))
-	if model == "" {
-		model = "amazon.nova-lite-v1:0"
-	}
 	ac, err := awsLoadConfig(profile, region)
 	if err != nil {
-		return false, "AWS credentials do not resolve (" + err.Error() + ")"
+		return false, "AWS credentials do not resolve"
 	}
 	if _, err := ac.Creds().Retrieve(ctx); err != nil {
-		return false, "no credentials resolve for profile " + defaultStr(profile, "default") + " (" + err.Error() + ")"
+		return false, "no AWS credentials resolve"
 	}
-	detail := "credentials resolve (profile " + defaultStr(profile, "default") + ", model " + model + ")"
-	if region != "" {
-		detail += ", region " + region
-	}
-	return true, detail
+	return true, "AWS credentials resolve"
 }
 
 func probeOllama(ctx context.Context, kv map[string]string) (bool, string) {
@@ -368,39 +434,38 @@ func probeOllama(ctx context.Context, kv map[string]string) (bool, string) {
 	if apiURL == "" {
 		apiURL = "http://localhost:8000"
 	}
-	model := strings.TrimSpace(preflight.Get(kv, "ollama-model"))
-	if model == "" {
-		model = "qwen2:1.5b"
-	}
 	st, _, err := httpGet(ctx, apiURL+"/api/tags", nil)
 	if err != nil {
-		return false, "ollama at " + apiURL + " is unreachable (" + err.Error() + ")"
+		return false, "configured endpoint is unreachable"
 	}
 	if st != 200 {
-		return false, "ollama at " + apiURL + " returned HTTP " + strconv.Itoa(st)
+		return false, "configured endpoint returned HTTP " + strconv.Itoa(st)
 	}
-	detail := "ollama at " + apiURL + " answers /api/tags"
-	if model != "" {
-		detail += " (model " + model + ")"
-	}
-	return true, detail
+	return true, "configured endpoint answers /api/tags"
 }
 
 func probeOpenRouter(ctx context.Context, kv map[string]string) (bool, string) {
-	key := strings.TrimSpace(preflight.Get(kv, "api-key"))
+	key := strings.TrimSpace(preflight.Get(kv, "openrouter-api-key"))
+	if key == "" {
+		key = strings.TrimSpace(preflight.Get(kv, "api-key"))
+	}
 	apiURL := strings.TrimSpace(preflight.Get(kv, "openrouter-api-url"))
 	if apiURL == "" {
 		apiURL = "https://openrouter.ai/api/v1"
 	}
 	configured := key != ""
-	reachable := probeHost(ctx, apiURL)
+	status, reachable := probeEndpoint(ctx, apiURL)
 	switch {
 	case !configured:
 		return false, "no api-key configured (provider not usable)"
 	case !reachable:
 		return false, "api-key present (" + preflight.MaskKey(key) + "), but " + hostOf(apiURL) + " is unreachable"
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return false, fmt.Sprintf("api-key present (%s), endpoint reachable but rejected credentials (HTTP %d)", preflight.MaskKey(key), status)
+	case status >= http.StatusInternalServerError:
+		return false, fmt.Sprintf("api-key present (%s), endpoint reachable but returned HTTP %d", preflight.MaskKey(key), status)
 	default:
-		return true, "api-key present (" + preflight.MaskKey(key) + "), " + hostOf(apiURL) + " reachable"
+		return true, fmt.Sprintf("api-key present (%s), endpoint reachable (HTTP %d)", preflight.MaskKey(key), status)
 	}
 }
 
@@ -419,8 +484,9 @@ func (r *Report) audio() {
 	} else {
 		r.finding("audio", "default-device", false, "no default PCM device found", "set an ALSA default or configure a sound card")
 	}
-	player := findFirst(ttsPlayers())
-	r.finding("audio", "players", true, strings.Join(ttsPlayers(), ", "), "install alsa-utils (aplay), pulseaudio-utils (paplay) or ffmpeg (ffplay) for TTS playback")
+	playerCandidates := ttsPlayers()
+	player := findFirst(playerCandidates)
+	r.finding("audio", "players", true, strings.Join(playerCandidates, ", "), "install alsa-utils (aplay), pulseaudio-utils (paplay) or ffmpeg (ffplay) for TTS playback")
 	r.finding("audio", "player-selected", player != "", player, "no playable audio device - replies will not be spoken")
 	recorders := sttRecorders()
 	rec := findFirst(recorders)
@@ -432,15 +498,16 @@ func (r *Report) audio() {
 // text-to-speech
 // ---------------------------------------------------------------------------
 
-func (r *Report) tts() {
-	cfgPath := confpath.Default()
-	kv := map[string]string{}
-	if cfgPath != "" {
-		kv, _ = preflight.ReadINI(cfgPath)
-	}
+func (r *Report) tts(ctx context.Context, kv map[string]string, skipNetwork bool) {
 	tts := strings.ToLower(strings.TrimSpace(preflight.Get(kv, "tts")))
 	ttsOn := tts != "off"
-	r.finding("tts", "enabled", ttsOn, fmt.Sprintf("tts = %q (default on)", tts), "set tts = on in chat-app.ini to enable spoken replies")
+	ttsDetail := "enabled (default on)"
+	if tts == "off" {
+		ttsDetail = "disabled"
+	} else if tts != "" && tts != "on" {
+		ttsDetail = "enabled (unrecognized value omitted)"
+	}
+	r.finding("tts", "enabled", ttsOn, ttsDetail, "set tts = on in chat-app.ini to enable spoken replies")
 
 	key := strings.TrimSpace(preflight.Get(kv, "tts-key"))
 	r.finding("tts", "key", key != "", "typecast api-key "+preflight.MaskKey(key), "set tts-key in chat-app.ini or $TYPECAST_API_KEY (bundled demo key used when empty)")
@@ -448,8 +515,20 @@ func (r *Report) tts() {
 	player := findFirst(ttsPlayers())
 	r.finding("tts", "player", player != "", player, "install alsa-utils/pulseaudio-utils/ffmpeg so TTS audio can play")
 
-	reachable := probeHost(context.Background(), "https://api.typecast.ai")
-	r.finding("tts", "endpoint", reachable, "typecast.ai "+boolStr(reachable, "reachable", "unreachable"), "check internet and proxy settings if TTS synthesis fails")
+	if skipNetwork {
+		r.finding("tts", "endpoint", false, "skipped in quick mode", "")
+		return
+	}
+	status, reachable := probeEndpoint(ctx, "https://api.typecast.ai")
+	detail := "typecast.ai unreachable"
+	ok := reachable && status < http.StatusInternalServerError
+	if reachable {
+		detail = fmt.Sprintf("typecast.ai reachable (HTTP %d)", status)
+		if !ok {
+			detail = fmt.Sprintf("typecast.ai reachable but returned HTTP %d", status)
+		}
+	}
+	r.finding("tts", "endpoint", ok, detail, "check internet and proxy settings if TTS synthesis fails")
 }
 
 // ---------------------------------------------------------------------------
@@ -458,12 +537,17 @@ func (r *Report) tts() {
 
 func (r *Report) deps() {
 	disp := os.Getenv("DISPLAY")
-	r.finding("deps", "x11-display", disp != "", "DISPLAY="+disp, "run inside an X/Wayland session or export DISPLAY=:0")
+	displayDetail := "not configured"
+	if disp != "" {
+		displayDetail = "configured"
+	}
+	r.finding("deps", "x11-display", disp != "", displayDetail, "run inside an X/Wayland session or export DISPLAY=:0")
 	r.finding("deps", "x11-library", true, "raw X11 (github.com/jezek/xgb) - built into the binary", "")
 
-	recorders := sttRecorders()
-	r.finding("deps", "speech2text-recorder", len(recorders) > 0, strings.Join(recorders, ", "), "install pipewire-utils (pw-record), alsa-utils (arecord) or ffmpeg for speech input")
-	r.finding("deps", "tts-player", len(ttsPlayers()) > 0, strings.Join(ttsPlayers(), ", "), "install alsa-utils (aplay), pulseaudio-utils (paplay) or ffplay for speech output")
+	recorder := findFirst(sttRecorders())
+	r.finding("deps", "speech2text-recorder", recorder != "", recorder, "install pipewire-utils (pw-record), alsa-utils (arecord) or ffmpeg for speech input")
+	player := findFirst(ttsPlayers())
+	r.finding("deps", "tts-player", player != "", player, "install alsa-utils (aplay), pulseaudio-utils (paplay) or ffplay for speech output")
 
 	if _, err := exec.LookPath("ffmpeg"); err == nil {
 		r.finding("deps", "ffmpeg", true, "ffmpeg available", "")
@@ -610,29 +694,9 @@ func findFirst(cands []string) string {
 	return ""
 }
 
-func probeHost(ctx context.Context, rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Hostname() == "" {
-		return false
-	}
-	port := u.Port()
-	if port == "" {
-		switch u.Scheme {
-		case "http":
-			port = "80"
-		case "https":
-			port = "443"
-		default:
-			return false
-		}
-	}
-	d := net.Dialer{Timeout: probeTimeout}
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(u.Hostname(), port))
-	if err != nil {
-		return false
-	}
-	defer conn.Close()
-	return true
+func probeEndpoint(ctx context.Context, rawURL string) (int, bool) {
+	status, _, err := httpGet(ctx, rawURL, nil)
+	return status, err == nil
 }
 
 // probeHTTPS tries each URL with a bounded GET and reports the first reachable
@@ -666,30 +730,15 @@ func httpGet(ctx context.Context, rawURL string, header map[string]string) (int,
 	return resp.StatusCode, body, nil
 }
 
-func hostOf(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Host == "" {
-		return rawURL
-	}
-	return u.Host
+func hostOf(string) string {
+	return "configured endpoint"
 }
 
 func maskProxy(s string) string {
-	if at := strings.Index(s, "@"); at > 0 {
-		before := s[:at]
-		if colon := strings.Index(before, ":"); colon > 0 {
-			before = before[:colon] + ":***"
-		}
-		return before + s[at:]
+	if s != "" {
+		return "configured proxy"
 	}
-	return s
-}
-
-func defaultStr(v, def string) string {
-	if v == "" {
-		return def
-	}
-	return v
+	return ""
 }
 
 func boolStr(ok bool, yes, no string) string {
@@ -702,14 +751,6 @@ func boolStr(ok bool, yes, no string) string {
 func mustParseURL(raw string) *url.URL {
 	u, _ := url.Parse(raw)
 	return u
-}
-
-func isSecretKey(k string) bool {
-	kl := strings.ToLower(k)
-	if secretKeys[kl] {
-		return true
-	}
-	return strings.Contains(kl, "secret") || strings.Contains(kl, "token") || strings.Contains(kl, "key")
 }
 
 func installDir() string {

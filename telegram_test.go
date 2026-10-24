@@ -3,9 +3,21 @@ package main
 
 import (
 	"context"
+	"errors"
+	"image"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
+
+type telegramRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f telegramRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestResolveTelegramPrecedence(t *testing.T) {
 	cfg := &Config{TelegramToken: "ini-token", TelegramAllow: "1,@a"}
@@ -43,6 +55,7 @@ func TestTelegramHandleUpdate(t *testing.T) {
 	ch := newTelegramChannel(telegramConfig{
 		Token: "x", Allow: parseAllowlist("100,@alice"), SendImages: true, PollSec: 30,
 	})
+	ch.http = &http.Client{Transport: failTransport{}}
 	var submitted []Incoming
 	submit := func(in Incoming) { submitted = append(submitted, in) }
 	ctx := context.Background()
@@ -75,6 +88,96 @@ func TestTelegramHandleUpdate(t *testing.T) {
 	if len(submitted) != 1 {
 		t.Fatalf("updateless message must be skipped: %+v", submitted)
 	}
+}
+
+func TestTelegramHelpPayload(t *testing.T) {
+	var body string
+	ch := newTelegramChannel(telegramConfig{Token: "x", Allow: parseAllowlist("100")})
+	ch.http = &http.Client{Transport: telegramRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		raw, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		body = string(raw)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	ch.handleUpdate(context.Background(), telegramUpdate{Message: &telegramMessage{
+		Chat: telegramChat{ID: 100}, From: &telegramUser{ID: 100}, Text: "/help",
+	}}, func(Incoming) { t.Fatal("/help must not submit a prompt") })
+	values, err := url.ParseQuery(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := values.Get("text"); got != telegramHelpText {
+		t.Fatalf("help payload = %q, want %q", got, telegramHelpText)
+	}
+	if got := values.Get("chat_id"); got != "100" {
+		t.Fatalf("help chat_id = %q, want 100", got)
+	}
+}
+
+func TestTelegramRequestErrorsRedactToken(t *testing.T) {
+	const token = "123456789:secret-token-value"
+	ch := newTelegramChannel(telegramConfig{Token: token, PollSec: 30})
+	ch.http = &http.Client{Transport: telegramRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("connection failed")
+	})}
+	for name, send := range map[string]func() error{
+		"apiCall": func() error {
+			return ch.sendText(context.Background(), "123", "hello")
+		},
+		"sendPhoto": func() error {
+			return ch.sendPhoto(context.Background(), "123", image.NewRGBA(image.Rect(0, 0, 1, 1)), "")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := send()
+			if err == nil {
+				t.Fatal("expected transport error")
+			}
+			if strings.Contains(err.Error(), token) {
+				t.Fatalf("transport error exposed token: %v", err)
+			}
+		})
+	}
+}
+
+func TestTelegramTimeoutExceedsPollingWindow(t *testing.T) {
+	ch := newTelegramChannel(telegramConfig{PollSec: 120})
+	if want := 135 * time.Second; ch.http.Timeout != want {
+		t.Fatalf("HTTP timeout = %s, want %s", ch.http.Timeout, want)
+	}
+}
+
+func TestTelegramBackgroundSendsPreserveOrder(t *testing.T) {
+	ch := newTelegramChannel(telegramConfig{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		ch.sendLoop(ctx)
+		close(done)
+	}()
+	got := make(chan int, 3)
+	for i := 1; i <= 3; i++ {
+		n := i
+		ch.enqueueSend(func(context.Context) { got <- n })
+	}
+	for want := 1; want <= 3; want++ {
+		select {
+		case n := <-got:
+			if n != want {
+				t.Fatalf("send order = %d, want %d", n, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("background sender did not process queued sends")
+		}
+	}
+	cancel()
+	<-done
 }
 
 func TestTelegramNewCommand(t *testing.T) {

@@ -23,7 +23,7 @@ func (t *telegramChannel) apiCall(ctx context.Context, method string, form url.V
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := t.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%s: %v", method, err)
+		return telegramRequestError(method, err, t.cfg.Token)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, telegramMaxPollBytes))
@@ -39,6 +39,14 @@ func (t *telegramChannel) apiCall(ctx context.Context, method string, form url.V
 		}
 	}
 	return nil
+}
+
+func telegramRequestError(method string, err error, token string) error {
+	message := err.Error()
+	if token != "" {
+		message = strings.ReplaceAll(message, token, "[REDACTED]")
+	}
+	return fmt.Errorf("%s: %s", method, message)
 }
 
 // shortTelegramErr extracts Telegram's description from an error body,

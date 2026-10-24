@@ -14,8 +14,9 @@
 //
 // All UI mutation happens on the main/UI goroutine: the channel poller only
 // posts Incoming values onto ui.externalIncoming; the main loop drains it and
-// calls SubmitExternal. History therefore stays linear (one in-flight turn at
-// a time, like the SEND button being disabled while Thinking).
+// calls SubmitExternal. Current UI turns stay linear (one active turn at a time,
+// like the SEND button being disabled while Thinking); /new invalidates stale
+// completions without allowing them to mutate that history.
 //
 // Contrast with agent/ : an agent is an ability the MODEL invokes ([AGENT:
 // id ...] tag, one short process per run). A channel is how the WORLD invokes
@@ -50,6 +51,16 @@ type externalOrigin struct {
 	Channel string
 	ChatID  string
 	User    string
+}
+
+type replyEnvelope struct {
+	generation uint64
+	result     ReplyResult
+}
+
+type streamEnvelope struct {
+	generation uint64
+	text       string
 }
 
 // Channel is the transport contract every external integration implements.
@@ -122,9 +133,7 @@ func buildChannel(name string, cfg *Config) (Channel, bool) {
 // goroutine (the main loop drains ui.externalIncoming for this).
 //
 // origin is queued in parallel with the reply so the main-loop reply handler
-// can fork the rendered reply to the originating channel. The queue is FIFO:
-// every Submit/SubmitExternal produces exactly one Replies result, so origins
-// stay aligned even when local and remote turns interleave.
+// can fork the rendered reply to the originating channel.
 func (u *UI) SubmitExternal(text string, origin externalOrigin) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -136,11 +145,7 @@ func (u *UI) SubmitExternal(text string, origin externalOrigin) {
 	u.Thinking = true
 	u.streamText = ""
 	u.scroll = u.maxScroll()
-	bot := u.Bot
-	go func() {
-		result := bot.Reply(hist, text)
-		u.Replies <- result
-	}()
+	u.startTurn(func(bot *Bot) ReplyResult { return bot.Reply(hist, text) })
 }
 
 // takeExternalOrigin pops the origin queued for the next Replies result.
@@ -156,19 +161,13 @@ func (u *UI) takeExternalOrigin() *externalOrigin {
 
 // ---- main-loop helpers (called on the UI goroutine only) ------------------
 
-// fireGreeting fires the startup hello: queues its nil origin (keeping the
-// Replies/origin FIFO exact) and runs Bot.Greeting in the background like
-// SubmitExternal does.
+// fireGreeting fires the startup hello and runs Bot.Greeting in the background.
 func fireGreeting(u *UI) {
 	u.externalPending = append(u.externalPending, nil)
 	u.Thinking = true
 	u.streamText = ""
 	u.scroll = u.maxScroll()
-	bot := u.Bot
-	go func() {
-		result := bot.Greeting()
-		u.Replies <- result
-	}()
+	u.startTurn(func(bot *Bot) ReplyResult { return bot.Greeting() })
 }
 
 // submitIncoming injects a remote prompt and starts its typing indicator on
@@ -190,12 +189,26 @@ func submitIncoming(u *UI, in Incoming, channels []Channel) {
 // resetConversation clears the shared window history back to a fresh hello,
 // so /new from Telegram and the local window stay the same conversation.
 func resetConversation(u *UI) {
+	u.turnGeneration++
 	u.msgs = nil
 	u.scroll = 0
 	u.Thinking = false
 	u.streamText = ""
 	u.externalPending = nil
+	stopTyping()
 	u.AddMsg(u.Bot.Name, "fresh conversation - history cleared. ask me anything!")
+}
+
+func (u *UI) startTurn(run func(*Bot) ReplyResult) {
+	u.turnGeneration++
+	generation := u.turnGeneration
+	bot := *u.Bot
+	bot.OnDelta = func(text string) {
+		u.Stream <- streamEnvelope{generation: generation, text: text}
+	}
+	go func() {
+		u.Replies <- replyEnvelope{generation: generation, result: run(&bot)}
+	}()
 }
 
 // forkReplyToChannel delivers a rendered reply to the originating channel.
@@ -207,9 +220,11 @@ func forkReplyToChannel(channels []Channel, origin externalOrigin, reply ReplyRe
 		}
 		if tg, ok := ch.(*telegramChannel); ok {
 			stopTyping()
-			ctx, cancel := context.WithTimeout(context.Background(), telegramHTTPTimeout)
-			defer cancel()
-			tg.deliverReply(ctx, origin.ChatID, reply.Text, reply.Image)
+			tg.enqueueSend(func(parent context.Context) {
+				ctx, cancel := context.WithTimeout(parent, telegramHTTPTimeout)
+				defer cancel()
+				tg.deliverReply(ctx, origin.ChatID, reply.Text, reply.Image)
+			})
 			return
 		}
 		log.Printf("channels: no sender for %q, reply stays in the window", origin.Channel)
